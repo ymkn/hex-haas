@@ -2,7 +2,7 @@
 
 日本語音声認識モデル Haas-ja-v1.0 をWindows版Hexから使うための個人用Forkです。公式Hexのリリースではありません。
 
-- Fork: https://github.com/ymkn/hex
+- Fork: https://github.com/ymkn/hex-haas
 - 上流: https://github.com/anomalyco/hex
 - 改修ブランチ: `haas`
 - ベース: 公式 `v3.0.0` (`7b05b5fd1fa0e3b9c333209cd1644d9603693d5c`)
@@ -15,14 +15,14 @@ Haasは speech.cpp v0.10.0 の常駐worker経由で動きます。Whisperなど�
 現在の作業場所は `~/source/repos/hex-haas` です。Gitのリモートは次の役割に分けます。
 
 ```text
-origin   -> ymkn/hex          自分の変更の取得・push
+origin   -> ymkn/hex-haas     自分の変更の取得・push
 upstream -> anomalyco/hex     公式更新の取得のみ
 ```
 
 `remote.pushDefault=origin`、`pull.ff=only` を設定し、`upstream` へのpush URLは意図的に無効化しています。これらのGit設定はclone先へ自動継承されません。別PCでは以下で構成します。
 
 ```powershell
-git clone --branch haas https://github.com/ymkn/hex.git hex-haas
+git clone --branch haas https://github.com/ymkn/hex-haas.git hex-haas
 Set-Location hex-haas
 git remote add upstream https://github.com/anomalyco/hex.git
 git remote set-url --push upstream https://example.invalid/upstream-push-disabled
