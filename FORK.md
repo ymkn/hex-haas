@@ -1,6 +1,6 @@
 # Hex Haas fork
 
-日本語音声認識モデル Haas-ja-v1.0 をWindows版Hexから使うための個人用Forkです。公式Hexのリリースではありません。
+日本語音声認識モデル Haas-ja-v1.0 をWindows版Hexから使うための個人用Forkです。公式Hexに代えて普段使いする前提です。公式Hexのリリースではありません。
 
 - Fork: https://github.com/ymkn/hex-haas
 - 上流: https://github.com/anomalyco/hex
@@ -9,6 +9,13 @@
 - `dev` は上流用として残し、個人の変更は `haas` にだけコミットします。
 
 Haasは speech.cpp v0.10.0 の常駐worker経由で動きます。Whisperなど既存モデルは元の認識処理を使います。15秒以内の音声は分割せず、Haas自身の句読点出力を保持します。詳細・制約・検証結果は [docs/haas-ja.md](docs/haas-ja.md) を参照してください。
+
+Haas対応以外の使い方は通常のHexと同じで、ログイン時起動も通常どおり使えます。保存先のディレクトリ名だけを `hex` から `hex-haas` に変えています。
+
+- 設定・履歴・ログ・モデル: `%APPDATA%\hex-haas`
+- `hex.config.ts`・実験設定: `~/.config/hex-haas`
+
+`dist/haas/hex.exe` を直接起動できます。専用の環境変数や起動先切り替えは不要です。ローカルビルドのため、公式のローカルビルドと同じく自動更新は行いません。
 
 ## ローカル作業場所とリモート
 
@@ -32,7 +39,7 @@ git config pull.ff only
 
 ## 上流の変更を取り込む
 
-自動更新は無効です。公式更新の取得、ソースへのマージ、ビルド、実行ファイルの入れ替えは別々に行います。公式をfetchしただけでは、使用中のHexは変わりません。
+ローカルビルドの更新は手動です。公式更新の取得、ソースへのマージ、ビルド、実行ファイルの入れ替えは別々に行います。公式をfetchしただけでは、使用中のHexは変わりません。
 
 安定版を使い続ける場合は、まず上流のリリースタグを確認し、取り込むタグを選びます。`upstream/dev` は開発中の変更を含むため、安定版より競合・不具合の可能性があります。
 
@@ -61,7 +68,7 @@ git merge --no-ff $target
 ./scripts/build-haas.ps1 -TestFilter haas
 ./scripts/build-haas.ps1 -BuildOnly
 
-# この後、起動中の試験版をトレイから終了する。
+# この後、起動中のHexをトレイから終了する。
 Copy-Item ./target/release/hex.exe ./dist/haas/hex.exe -Force
 ./scripts/test-haas-package.ps1
 uv run --no-project python ./scripts/check_haas_punctuation.py
@@ -80,11 +87,13 @@ Visual Studio x64 C++ツール・Windows SDK・Rust・PowerShell 7を用意し�
 ./Start-Hex-Haas.cmd
 ```
 
-Haasモデルは初回セットアップかモデル選択から取得します。通常のHexが既にあるPCではランチャーが設定を別フォルダーへコピーしますが、モデル本体はGitからは復元されません。試験版は `haas-data/` と `haas-config/` を使い、公式Hexのデータは変更しません。
+Haasモデルはモデル選択から取得します。モデルの推奨や初回セットアップの動作は通常のHexと同じです。ランチャーは起動するだけで、設定のコピーやHaasへの強制変更は行いません。設定とモデルはGitからは復元されません。
+
+以前の `haas-data/` と `haas-config/` を引き継ぐ場合は、Hexを終了し、それぞれ `%APPDATA%\hex-haas` と `~/.config/hex-haas` に移します。移動先に既存データがある場合は上書きしないでください。通常版の `%APPDATA%\hex` と `~/.config/hex` は読み書きしません。
 
 GitHubへ保存するのはソース・スクリプト・文書だけです。次は `.gitignore` で除外しています。
 
-- `haas-data/`、`haas-config/`: 個人設定、履歴、ログ、モデル
+- `haas-data/`、`haas-config/`: 旧保存先（移行前の個人データを誤ってコミットしないため引き続き除外）
 - `tools/haas/`: ダウンロードしたツール、検証音声、旧バイナリのバックアップ
 - `target/`、`dist/`: ビルド結果と実行ファイル
 

@@ -10,9 +10,6 @@ const VALUE_NAME: &str = "Hex";
 
 /// Return the Windows-owned startup registration state.
 pub fn is_enabled() -> Result<bool> {
-    if crate::app_paths::is_haas_build() {
-        return Ok(false);
-    }
     let current_user = RegKey::predef(HKEY_CURRENT_USER);
     let key = match current_user.open_subkey_with_flags(RUN_KEY, KEY_READ) {
         Ok(key) => key,
@@ -28,11 +25,6 @@ pub fn is_enabled() -> Result<bool> {
 
 /// Register or unregister the current executable for the current Windows user.
 pub fn set_enabled(enabled: bool) -> Result<()> {
-    if crate::app_paths::is_haas_build() {
-        color_eyre::eyre::bail!(
-            "Launch at login is disabled in the isolated Haas build; the installed Hex registration is unchanged."
-        );
-    }
     if enabled {
         let executable = std::env::current_exe().wrap_err("could not locate the Hex executable")?;
         write_startup_command(&executable, "could not register Hex to launch at login")?;

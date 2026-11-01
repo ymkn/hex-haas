@@ -1,6 +1,6 @@
-# Experimental Haas-ja support for Windows
+# Haas-ja support for Windows
 
-This local fork is based on Hex v3.0.0 (`7b05b5fd1fa0e3b9c333209cd1644d9603693d5c`). It adds a Japanese-only `haas_ja_v1` picker choice, off unless the `haas-ja` experiment is enabled in a local build. It does not change the recommended model or the installed Hex binary.
+This local fork is based on Hex v3.0.0 (`7b05b5fd1fa0e3b9c333209cd1644d9603693d5c`). It adds a Japanese-only `haas_ja_v1` picker choice and is intended to replace ordinary Hex for daily use. Haas builds enable the backend without launcher environment variables. The recommended model and normal Hex behavior remain unchanged; only the data/config directory name is `hex-haas` instead of `hex`.
 
 ## Runtime
 
@@ -52,9 +52,9 @@ Extract the pinned speech.cpp archive under `tools/haas/speech/`. Verify its has
 ./scripts/build-haas.ps1 -TestFilter haas
 ```
 
-`Start-Hex-Haas.cmd` launches `dist/haas/hex.exe` with separate `haas-data/` and `haas-config/` folders. It refuses to start while any Hex process is running, rather than interfering with a dictation in progress. First launch copies settings from the installed Hex into the separate folder, selects Haas there, and leaves the originals untouched. The local build never updates itself. Launch at login is blocked in this build so the installed Hex's Windows startup registration cannot be changed. A direct launch without the script also defaults to separate `hex-haas` data/config folders, never the installed `hex` folders.
+Launch `dist/haas/hex.exe` directly, or use `Start-Hex-Haas.cmd` as a convenience. Both use `%APPDATA%\hex-haas` for settings, history, logs and models, and `~/.config/hex-haas` for `hex.config.ts` and experiments. No special launch environment is required, no settings are automatically copied or forced, and Hex's ordinary single-instance handling applies. Launch at login uses the unmodified Windows registration behavior. As with any official local build, automatic updates are off; rebuild to update the fork.
 
-To return to ordinary Hex, quit the experimental copy and launch the installed Hex normally. Its model and settings have not changed.
+The former checkout-local `haas-data/` and `haas-config/` directories are no longer used. To keep that profile, quit Hex and move them to the corresponding `hex-haas` directories, only when the destinations do not already contain data. The ordinary `hex` directories remain untouched. There is no parallel-install or launcher-switching mechanism; uninstall the official application if replacing it, keeping its old data if desired.
 
 ## Verification
 
@@ -73,7 +73,7 @@ Observed on this PC:
 - The release build succeeds with the exact original transcribe.cpp fork and Vulkan enabled. The packaged Hex CLI loads Haas through speech.cpp and transcribes the synthetic Japanese WAV; the same package also loads and transcribes with Whisper on the RTX 3060 Ti Vulkan backend.
 - The first cold speech.cpp run took 18.1 s for 7.6 s audio. A subsequent standalone run with one CPU decoder thread took 0.192 s; this is not an end-to-end dictation latency measurement.
 - The light and dark Japanese picker fixture renders were generated and visually inspected; Haas appears as a selectable model. Linux golden comparisons were not run on this Windows host.
-- The launcher refuses to open a second listener while the installed Hex is running. The installed Hex was left running throughout these checks.
+- Earlier checks used a launcher that refused to start while the installed Hex was running. That fork-specific restriction has since been removed; repeated launches now use ordinary Hex single-instance handling. The earlier check is not proof of the new launch behavior.
 - This small synthetic fixture is not an accuracy benchmark. Haas misrecognized the initial `今日は` as `共和`, while Whisper transcribed it correctly. Better accuracy than Whisper has not been established.
 
 A physical shortcut/microphone/paste test has not been run. The packaged CLI and fixture renders do not prove that the current foreground application consumes a pasted transcript.

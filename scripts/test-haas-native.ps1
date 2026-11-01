@@ -20,5 +20,5 @@ $text = '今日は音声認識のテストをしています。日本語の文�
 try { [void]$voice.Speak($text) } finally { $stream.Close() }
 Write-Output "Fixture: $file"
 Write-Output "Expected: $text"
-& "$root\tools\haas\speech\speech.exe" asr "$root\haas-data\models\Haas-616M-ja-v1.0-Q8_0.gguf" $file
+& "$root\tools\haas\speech\speech.exe" asr "$env:APPDATA\hex-haas\models\Haas-616M-ja-v1.0-Q8_0.gguf" $file
 if ($LASTEXITCODE) { throw "speech.cpp failed with exit code $LASTEXITCODE" }

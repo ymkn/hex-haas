@@ -134,9 +134,13 @@ impl Experiment {
         self as usize
     }
 
-    /// On without being named: `Hex Test.app` always runs the new
-    /// onboarding, so a fresh test install shows it.
+    /// Build defaults do not need a launcher or an environment variable.
+    /// `Hex Test.app` runs the new onboarding; the Haas fork offers Haas.
     fn on_by_default(self) -> bool {
+        #[cfg(target_os = "windows")]
+        if self == Self::HaasJa {
+            return crate::app_paths::is_haas_build();
+        }
         self == Self::NewOnboarding && option_env!("HEX_TEST_BUILD") == Some("1")
     }
 }
@@ -225,7 +229,7 @@ fn snapshot() -> &'static Snapshot {
 struct Sources {
     env: bool,
     file: bool,
-    /// On by default in this build (`new-onboarding` in test builds).
+    /// On by default in this build (test onboarding or the Haas backend).
     build: bool,
 }
 
@@ -286,14 +290,18 @@ impl Snapshot {
                 Ok(file) => (file, None),
                 Err(error) => (None, Some(format!("{error:#}"))),
             };
-        let mut snapshot = Self {
+        Self {
             file_error,
             ..Self::parse(env.as_deref(), file.as_deref())
-        };
-        for experiment in Experiment::ALL {
-            snapshot.sources[experiment.index()].build = experiment.on_by_default();
         }
-        snapshot
+        .with_build_defaults()
+    }
+
+    fn with_build_defaults(mut self) -> Self {
+        for experiment in Experiment::ALL {
+            self.sources[experiment.index()].build = experiment.on_by_default();
+        }
+        self
     }
 
     fn parse(env: Option<&str>, file: Option<&str>) -> Self {
@@ -443,7 +451,8 @@ pub fn run(command: &ExperimentsCommand) -> Result<()> {
     match command {
         ExperimentsCommand::List { json } => {
             let env = std::env::var_os(ENV).map(|value| value.to_string_lossy().into_owned());
-            let snapshot = Snapshot::parse(env.as_deref(), read_optional(&path)?.as_deref());
+            let snapshot = Snapshot::parse(env.as_deref(), read_optional(&path)?.as_deref())
+                .with_build_defaults();
             let mut out = std::io::stdout().lock();
             if *json {
                 serde_json::to_writer_pretty(&mut out, &list_json(&snapshot, &path))?;
@@ -819,6 +828,29 @@ mod tests {
         print_list(&mut text, &snapshot, Path::new("/tmp/experiments")).unwrap();
         let text = String::from_utf8(text).unwrap();
         assert!(text.contains("new-onboarding  on   build"), "{text}");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn haas_build_needs_no_launcher_environment_or_experiments_file() {
+        let snapshot = Snapshot::parse(None, None).with_build_defaults();
+        let haas = snapshot.sources[Experiment::HaasJa.index()];
+        assert_eq!(haas.build, crate::app_paths::is_haas_build());
+        assert_eq!(snapshot.enabled(Experiment::HaasJa), haas.build);
+        assert!(!haas.env);
+        assert!(!haas.file);
+        assert!(!snapshot.enabled(Experiment::LiveText));
+        assert!(!snapshot.enabled(Experiment::VoiceFilter));
+
+        let json = serde_json::to_value(list_json(&snapshot, Path::new("experiments"))).unwrap();
+        let row = json["experiments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["name"] == "haas-ja")
+            .unwrap();
+        assert_eq!(row["enabled"], haas.build);
+        assert_eq!(row["sources"], serde_json::json!(haas.labels()));
     }
 
     #[test]

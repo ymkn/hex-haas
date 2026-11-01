@@ -158,14 +158,24 @@ does not prove the physical dictation shortcut; see the [feature index](README.m
 
 ### Experimental Windows Haas-ja backend
 
-Local builds with `HEX_EXPERIMENTS=haas-ja` offer `Haas-ja-v1.0 (speech.cpp)`
-in the existing model picker. The default recommendation stays Whisper.
+Haas builds offer `Haas-ja-v1.0 (speech.cpp)` in the existing model picker
+without launcher environment variables. Other local builds still need
+`HEX_EXPERIMENTS=haas-ja`. The default recommendation stays Whisper.
 The Windows adapter keeps a speech.cpp worker warm, sends audio through anonymous
 pipes, preserves native Haas punctuation, keeps dictations up to 15 seconds whole,
 partitions longer clips only when necessary, and reuses ordinary processing and
 paste. It provides no streaming, timestamps, or custom vocabulary yet. See the
-[local integration guide](../haas-ja.md) for pinned artifacts, isolation, tests,
+[local integration guide](../haas-ja.md) for pinned artifacts, tests,
 observed native smoke results, and unverified end-to-end behavior.
+
+The fork is used in place of ordinary Hex, with the same launch, single-instance,
+settings and Windows login-item behavior. Only the data/config directory name
+changes to `hex-haas` (`%APPDATA%\hex-haas`, `~/.config/hex-haas`). The convenience
+launcher no longer copies or forces settings or overrides paths. Like any local
+build, it does not self-update. Checks include
+`haas_build_needs_no_launcher_environment_or_experiments_file`,
+`haas_data_uses_the_standard_location_with_its_own_directory_name`, and
+`scripts/test-haas-package.ps1`; their existence alone is not a passing run.
 
 ### Vocabulary Quality Checks
 

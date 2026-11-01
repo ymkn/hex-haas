@@ -58,10 +58,12 @@ else:
     manifest.write_text(json.dumps(clips, ensure_ascii=False, indent=2), encoding="utf-8")
 
 env = os.environ.copy()
-env.update(HEX_APPLICATION_SUPPORT_DIR=str(ROOT / "haas-data"), HEX_USER_CONFIG_DIR=str(ROOT / "haas-config"), HEX_EXPERIMENTS="haas-ja", HEX_SPEECH_CPP_EXE=str(ROOT / "dist" / "haas" / "speech.exe"))
+for name in ("HEX_APPLICATION_SUPPORT_DIR", "HEX_USER_CONFIG_DIR", "HEX_EXPERIMENTS", "HEX_SPEECH_CPP_EXE"):
+    if env.get(name):
+        raise RuntimeError(f"Unset {name} before testing the ordinary Haas package.")
 speech = ROOT / "dist" / "haas" / "speech.exe"
 hex_exe = Path(os.environ.get("HEX_PUNCTUATION_TEST_EXE", ROOT / "dist" / "haas" / "hex.exe"))
-model = ROOT / "haas-data" / "models" / "Haas-616M-ja-v1.0-Q8_0.gguf"
+model = Path(os.environ["APPDATA"]) / "hex-haas" / "models" / "Haas-616M-ja-v1.0-Q8_0.gguf"
 
 def canonical_pcm16(source):
     """Use exactly the same PCM16 file for every engine, avoiding a float-WAV
