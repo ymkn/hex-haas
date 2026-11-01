@@ -10,7 +10,7 @@ foreach ($key in @('HEX_APPLICATION_SUPPORT_DIR','HEX_USER_CONFIG_DIR','HEX_SPEE
 }
 # The fork's own build gates Haas on is_haas_build(); a successful model
 # check proves the catalog offers and verifies it without any switch.
-& $exe model check --model haas_ja_v1 --language ja
+& $exe model check haas_ja_v1 --language ja
 if ($LASTEXITCODE) { throw 'Haas model check failed.' }
 foreach ($model in @('haas_ja_v1', 'whisper_large_v3_turbo')) {
     $output = & $exe model transcribe $wav --model $model --language ja
