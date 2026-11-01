@@ -45,6 +45,9 @@ with tempfile.TemporaryDirectory(prefix="hex-instance-", dir=os.environ.get("TMP
     fake.chmod(0o755)
     env = os.environ | {
         "HEX_APPLICATION_SUPPORT_DIR": str(support),
+        # Hex tidies its launcher and autostart entries at startup.
+        "XDG_DATA_HOME": str(root / "xdg-data"),
+        "XDG_CONFIG_HOME": str(root / "xdg-config"),
         "ALSA_CONFIG_PATH": str(alsa),
         "PATH": f'{fakebin}:{os.environ["PATH"]}',
     }
@@ -98,10 +101,10 @@ with tempfile.TemporaryDirectory(prefix="hex-instance-", dir=os.environ.get("TMP
             missing = run(*command)
             assert missing.returncode != 0 and "not running" in missing.stderr, missing.stderr
             assert time.monotonic() - started < 2
-        assert run("quit").returncode == 0, "quitting nothing succeeds"
+        assert run("quit").returncode == 3, "quitting nothing says Hex isn't running"
 
-        # `hex start` with no unit becomes the instance in this process.
-        instance = spawn("start")
+        # `hex app --hidden` with no unit becomes the instance in this process.
+        instance = spawn("app", "--hidden")
         state = wait_for(status)
         assert state["pid"] == instance.pid
         assert state["window_open"] is False
@@ -109,7 +112,8 @@ with tempfile.TemporaryDirectory(prefix="hex-instance-", dir=os.environ.get("TMP
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
         assert stat.S_IMODE(support.stat().st_mode) == 0o700
 
-        # A second launch forwards and exits 0, leaving the same instance.
+        # A second launch forwards and exits 0, leaving the same instance;
+        # `hex start` finds it running.
         for command in (["start"], ["app", "--hidden"], ["service"]):
             forwarded = run(*command)
             assert forwarded.returncode == 0, (command, forwarded.stderr)
@@ -130,12 +134,16 @@ with tempfile.TemporaryDirectory(prefix="hex-instance-", dir=os.environ.get("TMP
             }})
             assert reply["error"] is None and reply["status"]["pid"] == instance.pid
 
-        printed = run("status")
+        printed = run("status", "--json")
         assert printed.returncode == 0, printed.stderr
         printed = json.loads(printed.stdout)
-        assert printed["pid"] == instance.pid
-        # No listener has registered shortcuts, so none is claimed, not even X11's.
-        assert printed["desktop"]["listener"]["shortcuts"] == "Unregistered"
+        assert printed["status"] == "status" and printed["pid"] == instance.pid
+        assert printed["listener"]["running"] is False
+        # Control commands ride the same socket.
+        assert run("settings", "set", "sound_effects", "off").returncode == 0
+        assert run("settings", "get", "sound_effects").stdout.strip() == "false"
+        refused = run("window", "story", "HUD")
+        assert refused.returncode == 1 and "macOS-only" in refused.stderr, refused.stderr
 
         # Keybinding commands need a listening Hex; they fail fast without one,
         # with one line rather than an error report.
@@ -165,7 +173,7 @@ with tempfile.TemporaryDirectory(prefix="hex-instance-", dir=os.environ.get("TMP
         assert missing.stderr.count("\n") == 1, missing.stderr
 
         # Two racing launches produce one instance; the other forwards and exits 0.
-        first, second = spawn("start"), spawn("start")
+        first, second = spawn("app", "--hidden"), spawn("app", "--hidden")
         state = wait_for(status)
         owners = {first.pid, second.pid}
         assert state["pid"] in owners
@@ -179,8 +187,8 @@ with tempfile.TemporaryDirectory(prefix="hex-instance-", dir=os.environ.get("TMP
         assert not path.exists()
         assert (support / "settings.json").exists()
 
-        for command in (["restart"], ["dictation", "start"], ["paste-last"]):
-            assert run(*command).returncode != 0, command
+        for command in (["quit"], ["dictation", "start"], ["paste-last"]):
+            assert run(*command).returncode == 3, command
         assert not marker.exists(), "a custom data root ran systemctl"
     finally:
         for child in children:

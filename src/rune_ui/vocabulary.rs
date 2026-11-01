@@ -12,8 +12,8 @@ use super::controls::{
     ButtonKind, DESCRIPTION, Paint, button, modal_scrim_transition, modal_transition, note,
 };
 use super::lists::remove_button;
-use crate::desktop_i18n::{tr, tr_fill};
-use crate::vocabulary::{self, VocabularyEntry};
+use crate::desktop::i18n::{tr, tr_fill};
+use crate::dictation::vocabulary::{self, VocabularyEntry};
 
 const MODAL_WIDTH: f32 = 620.0;
 const PADDING: f32 = 18.0;
@@ -72,7 +72,7 @@ impl VocabularyEditor {
     }
 
     /// Adds a row at the end and returns its identity.
-    fn push(&mut self, term: TextEdit, sounds_like: TextEdit) -> u64 {
+    pub(super) fn push(&mut self, term: TextEdit, sounds_like: TextEdit) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
         self.rows.push(TermRow {
@@ -136,10 +136,11 @@ pub(super) fn summary(ui: &Ui) -> String {
     }
 }
 
-/// Why the list doesn't reach transcription, when the selected model is
-/// one transcription doesn't bias (only Parakeet-based models take it).
+/// Why the list doesn't reach transcription, when the selected model takes
+/// none (Parakeet biases toward it; Whisper and Qwen3-ASR read it as a
+/// prompt).
 pub(super) fn unused_note(ui: &Ui) -> Option<String> {
-    let model = crate::transcription_models::definition(ui.settings.transcription.model);
+    let model = crate::transcription::models::definition(ui.settings.transcription.model);
     (!model.uses_vocabulary()).then(|| {
         tr_fill(
             "{} doesn't use these terms; rewriting and search still do",
@@ -223,7 +224,7 @@ fn term_row(p: Paint, entry: &TermRow, added: bool) -> El {
         .center_y()
         .child(
             TextInput::new(&entry.term)
-                .placeholder(tr("Term (e.g. abattoir)"))
+                .placeholder(tr("Term (e.g. cappuccino)"))
                 .width(Some(TERM_WIDTH))
                 .on_edit(edit_access(move |ui: &mut Ui| {
                     ui.vocabulary.field(id, false)
@@ -233,7 +234,7 @@ fn term_row(p: Paint, entry: &TermRow, added: bool) -> El {
         )
         .child(
             TextInput::new(&entry.sounds_like)
-                .placeholder(tr("Sounds like (e.g. avatar, a bat war)"))
+                .placeholder(tr("Sounds like (e.g. capuchin, cap a chino)"))
                 .width(None)
                 .on_edit(edit_access(move |ui: &mut Ui| {
                     ui.vocabulary.field(id, true)
@@ -320,7 +321,16 @@ pub(super) fn modal(ui: &Ui, p: Paint) -> Option<[El; 2]> {
                 .color(p.muted())
                 .wrap(),
         );
-    if let Some(unused) = unused_note(ui) {
+    let biases = crate::transcription::models::definition(ui.settings.transcription.model)
+        .vocabulary_use()
+        == crate::transcription::models::VocabularyUse::Bias;
+    let unused = unused_note(ui).or_else(|| {
+        (biases && !ui.settings.labs.vocabulary_biasing).then(|| {
+            tr("Transcription uses these only with Labs › Vocabulary biasing on; rewriting and search always do")
+                .to_string()
+        })
+    });
+    if let Some(unused) = unused {
         heading = heading.child(
             text(unused)
                 .key("unused")
@@ -385,7 +395,7 @@ pub(super) fn fixture(ui: &mut Ui, filled: bool) {
     ui.settings.vocabulary = if filled {
         let mut entries = Vec::new();
         for (term, sounds_like) in [
-            ("abattoir", "avatar, a bat war"),
+            ("cappuccino", "capuchin, cap a chino"),
             ("OpenCode", "open code"),
             ("Rune", "roon"),
             ("Parakeet", ""),
@@ -431,11 +441,11 @@ mod tests {
         assert_eq!(summary(&ui), "None");
 
         open(&mut ui);
-        ui.vocabulary.rows[0].term = TextEdit::new("abattoir");
+        ui.vocabulary.rows[0].term = TextEdit::new("cappuccino");
         add_row(&mut ui);
         close(&mut ui);
         assert_eq!(ui.vocabulary.rows.len(), 1);
-        assert_eq!(ui.settings.vocabulary[0].term, "abattoir");
+        assert_eq!(ui.settings.vocabulary[0].term, "cappuccino");
         assert_eq!(summary(&ui), "1 term");
 
         open(&mut ui);
@@ -445,19 +455,26 @@ mod tests {
     #[test]
     fn rows_project_to_cleaned_merged_entries() {
         let mut editor = VocabularyEditor::new(&[VocabularyEntry {
-            term: "abattoir".into(),
-            sounds_like: vec!["avatar".into(), "a bat war".into()],
+            term: "cappuccino".into(),
+            sounds_like: vec!["capuchin".into(), "cap a chino".into()],
         }]);
-        assert_eq!(editor.rows[0].sounds_like.text, "avatar, a bat war");
+        assert_eq!(editor.rows[0].sounds_like.text, "capuchin, cap a chino");
         editor.push(TextEdit::default(), TextEdit::new("ignored"));
-        editor.push(TextEdit::new(" Abattoir "), TextEdit::new("abba toy,"));
+        editor.push(
+            TextEdit::new(" Cappuccino "),
+            TextEdit::new("cap you chino,"),
+        );
         editor.push(TextEdit::new("Rune"), TextEdit::new(" roon "));
         assert_eq!(
             editor.project(),
             [
                 VocabularyEntry {
-                    term: "abattoir".into(),
-                    sounds_like: vec!["avatar".into(), "a bat war".into(), "abba toy".into()],
+                    term: "cappuccino".into(),
+                    sounds_like: vec![
+                        "capuchin".into(),
+                        "cap a chino".into(),
+                        "cap you chino".into()
+                    ],
                 },
                 VocabularyEntry {
                     term: "Rune".into(),
@@ -473,13 +490,13 @@ mod tests {
         let spellings: Vec<String> = (0..17).map(|index| format!("spelling {index}")).collect();
         let mut editor = VocabularyEditor::new(&[]);
         editor.push(
-            TextEdit::new("abattoir"),
+            TextEdit::new("cappuccino"),
             TextEdit::new(format!("{}, {}", spellings.join(", "), "y".repeat(65))),
         );
         editor.push(TextEdit::new("Rune"), TextEdit::new("roon"));
         let entries = editor.project();
         assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].term, "abattoir");
+        assert_eq!(entries[0].term, "cappuccino");
         assert_eq!(entries[0].sounds_like, spellings[..16]);
         assert_eq!(entries[1].sounds_like, ["roon"]);
         assert!(editor.clamped());

@@ -123,7 +123,7 @@ pub fn updates_disabled_by_policy() -> bool {
 /// The Linux targets are the bare executable, so this build is the file
 /// whose SHA-256 it has.
 pub fn running_sha256() -> Option<String> {
-    crate::transcription_models::sha256_hex(&std::env::current_exe().ok()?, None).ok()
+    crate::transcription::models::sha256_hex(&std::env::current_exe().ok()?, None).ok()
 }
 
 /// The support directory and this executable's version directory, when it
@@ -172,7 +172,7 @@ pub fn restart_into(staged: &Staged) -> Result<()> {
     if !staged.0.is_file() {
         bail!("the prepared Hex update is no longer installed");
     }
-    crate::linux_service::schedule_restart()
+    crate::linux::service::schedule_restart()
 }
 
 fn validate_executable(path: &Path, version: &str) -> Result<()> {

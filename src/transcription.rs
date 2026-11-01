@@ -1,42 +1,59 @@
-use color_eyre::eyre::Result;
-use serde::{Deserialize, Serialize};
+pub(crate) mod background_priority;
+#[cfg(target_os = "macos")]
+pub(crate) mod benchmark;
+#[cfg(all(
+    target_arch = "x86_64",
+    any(target_os = "linux", target_os = "windows")
+))]
+pub(crate) mod cpu_floor;
+pub(crate) mod engine;
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+pub(crate) mod gguf_session;
+pub(crate) mod keyboard_model_switching;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub(crate) mod local_transcriber;
+pub(crate) mod models;
+pub(crate) mod pause_segmenter;
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
+pub(crate) mod preparation;
+pub(crate) mod service;
+pub(crate) mod speech_detector;
+pub(crate) mod stream;
+pub(crate) mod transcript;
 
+#[cfg(target_os = "macos")]
+use color_eyre::eyre::Result;
+
+#[cfg(target_os = "macos")]
 use crate::apple_speech::AppleSpeech;
+#[cfg(target_os = "macos")]
 use crate::parakeet::Parakeet;
-use crate::transcription_models::{
+#[cfg(target_os = "macos")]
+use crate::transcription::models::{
     ModelRuntime, TranscriptionModelId, TranscriptionSelection, validate,
 };
+#[cfg(target_os = "macos")]
+pub use crate::transcription::transcript::{Transcript, TranscriptSegment};
 
-const UNIFIED_ENGLISH_TRAILING_SILENCE_SAMPLES: usize = 3_200;
+/// Silence after a Unified English clip (400 ms at 16 kHz), so the model
+/// has the context to emit the final word and its closing punctuation
+/// (issue 657: sentences lost their full stop or question mark).
+#[cfg(target_os = "macos")]
+pub(crate) const UNIFIED_ENGLISH_TRAILING_SILENCE_SAMPLES: usize = 6_400;
 
+#[cfg(target_os = "macos")]
 pub enum Transcriber {
     Gguf(Box<Parakeet>),
     AppleSpeech(AppleSpeech),
 }
 
+#[cfg(target_os = "macos")]
 #[derive(Default)]
 pub struct WarmTranscriber {
     active: Option<Transcriber>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TranscriptSegment {
-    pub start_ms: i64,
-    pub end_ms: i64,
-    pub text: String,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Transcript {
-    pub text: String,
-    pub segments: Vec<TranscriptSegment>,
-    /// Word timings, when the model produces them.
-    #[serde(default)]
-    pub words: Vec<TranscriptSegment>,
-}
-
+#[cfg(target_os = "macos")]
 impl Transcriber {
     pub fn load() -> Result<Self> {
         let (_, selection) = crate::app_settings::transcription_selection();
@@ -115,16 +132,23 @@ impl Transcriber {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn prepare_gguf_samples(samples: &mut Vec<f32>, model: Option<TranscriptionModelId>) {
     crate::dictation::pad_for_parakeet(samples);
+    samples.resize(samples.len() + trailing_silence_samples(model), 0.0);
+}
+
+/// Silence a clip of `model` gets after its audio, whole clip or stream.
+#[cfg(target_os = "macos")]
+fn trailing_silence_samples(model: Option<TranscriptionModelId>) -> usize {
     if model == Some(TranscriptionModelId::ParakeetUnifiedEnglish) {
-        samples.resize(
-            samples.len() + UNIFIED_ENGLISH_TRAILING_SILENCE_SAMPLES,
-            0.0,
-        );
+        UNIFIED_ENGLISH_TRAILING_SILENCE_SAMPLES
+    } else {
+        0
     }
 }
 
+#[cfg(target_os = "macos")]
 impl WarmTranscriber {
     /// A warm transcriber already serving `model`, for opt-in harnesses.
     #[cfg(test)]
@@ -145,6 +169,15 @@ impl WarmTranscriber {
         match &self.active {
             Some(Transcriber::Gguf(model)) => model.selection(),
             _ => None,
+        }
+    }
+
+    /// Silence a live stream of the warm model hears before it finalizes,
+    /// the same trailing silence its whole-clip runs get.
+    pub(crate) fn stream_trailing_silence(&self) -> usize {
+        match &self.active {
+            Some(Transcriber::Gguf(model)) => trailing_silence_samples(model.model_id()),
+            _ => 0,
         }
     }
 
@@ -191,10 +224,10 @@ impl WarmTranscriber {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::{Transcript, UNIFIED_ENGLISH_TRAILING_SILENCE_SAMPLES, prepare_gguf_samples};
-    use crate::transcription_models::TranscriptionModelId;
+    use crate::transcription::models::TranscriptionModelId;
 
     #[test]
     fn apple_bridge_transcript_uses_the_canonical_wire_shape() {
@@ -243,7 +276,7 @@ mod tests {
             Some(TranscriptionModelId::ParakeetUnifiedEnglish),
         );
 
-        // The 200 ms context is additional to the 1.5 s minimum, not part of it.
+        // The 400 ms context is additional to the 1.5 s minimum, not part of it.
         assert_eq!(
             samples.len(),
             24_000 + UNIFIED_ENGLISH_TRAILING_SILENCE_SAMPLES

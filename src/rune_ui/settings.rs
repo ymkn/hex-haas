@@ -15,13 +15,13 @@ use super::{Menu, Request, Service, ShortcutTarget, Ui};
 use crate::app_settings::{
     AppSettings, HotkeyBinding, HotkeyKey, HotkeyModifiers, KeyboardModelChoice, ModifierSide,
 };
-use crate::desktop_host::{
+use crate::desktop::host::{
     DesktopAction, DesktopGrantedShortcut, DesktopShortcut, DesktopShortcuts, DesktopUpdateStatus,
 };
-use crate::desktop_i18n::{tr, tr_fill};
+use crate::desktop::i18n::{tr, tr_fill};
 use crate::dictation::ShortcutMode;
-use crate::keyboard_model_switching::InputSource;
-use crate::transcription_models::{self, ModelPreparationStage};
+use crate::transcription::keyboard_model_switching::InputSource;
+use crate::transcription::models::{self as transcription_models, ModelPreparationStage};
 
 static CHECK: &rune::Icon = &rune_theme_opencode::icons::CHECK_SMALL;
 
@@ -359,8 +359,11 @@ pub(super) fn conflicts(
     let slot = match target {
         ShortcutTarget::Dictation => HotkeySlot::Dictation,
         ShortcutTarget::PasteLast => HotkeySlot::PasteLast,
+        ShortcutTarget::RawDictation => HotkeySlot::RawDictation,
         #[cfg(hex_capture)]
         ShortcutTarget::Capture => HotkeySlot::Capture,
+        #[cfg(target_os = "macos")]
+        ShortcutTarget::SecondDictation => HotkeySlot::SecondDictation,
     };
     settings.hotkey_in_use(slot, binding)
 }
@@ -385,8 +388,11 @@ pub(super) fn binding(settings: &AppSettings, target: ShortcutTarget) -> Option<
     match target {
         ShortcutTarget::Dictation => Some(&settings.dictation_hotkey),
         ShortcutTarget::PasteLast => settings.paste_last_hotkey.as_ref(),
+        ShortcutTarget::RawDictation => settings.raw_dictation_hotkey.as_ref(),
         #[cfg(hex_capture)]
         ShortcutTarget::Capture => Some(&settings.capture.hotkey),
+        #[cfg(target_os = "macos")]
+        ShortcutTarget::SecondDictation => settings.second_dictation_hotkey.as_ref(),
     }
 }
 
@@ -398,8 +404,33 @@ pub(super) fn set_binding(
     match target {
         ShortcutTarget::Dictation => settings.dictation_hotkey = binding,
         ShortcutTarget::PasteLast => settings.paste_last_hotkey = Some(binding),
+        ShortcutTarget::RawDictation => settings.raw_dictation_hotkey = Some(binding),
         #[cfg(hex_capture)]
         ShortcutTarget::Capture => settings.capture.hotkey = binding,
+        #[cfg(target_os = "macos")]
+        ShortcutTarget::SecondDictation => settings.second_dictation_hotkey = Some(binding),
+    }
+}
+
+/// Labs › Restore shortcut default: puts `default` back as `target`'s
+/// shortcut under the rules a recorded one meets. A default another
+/// shortcut already uses changes nothing and opens the recorder with the
+/// usual conflict, so another can be recorded.
+pub(super) fn restore_default(ui: &mut Ui, target: ShortcutTarget, default: HotkeyBinding) {
+    match validate(&ui.settings, target, &default) {
+        Ok(()) => {
+            cancel_capture(ui);
+            ui.update(|settings| set_binding(settings, target, default.clone()));
+        }
+        Err(message) => {
+            if !matches!(ui.capture, Capture::Listening { target: active, .. } if active == target)
+            {
+                begin_capture(ui, target);
+            }
+            if let Capture::Listening { message: shown, .. } = &mut ui.capture {
+                *shown = Some(message);
+            }
+        }
     }
 }
 
@@ -537,7 +568,15 @@ pub(super) fn listener_card(ui: &Ui, p: Paint) -> El {
         }
         None => tr("Connecting…").to_string(),
     };
-    let shortcut = ui.settings.dictation_hotkey.keycaps().join("+");
+    // The key the desktop granted, which it may have changed in its own
+    // settings (#723), else the one Hex records.
+    let shortcut = match portal_grant(ui, ShortcutTarget::Dictation) {
+        Some(DesktopGrantedShortcut {
+            trigger: Some(trigger),
+            ..
+        }) => trigger.clone(),
+        _ => ui.settings.dictation_hotkey.keycaps().join("+"),
+    };
     let hint = match (running, ui.settings.shortcut_mode) {
         _ if !ui.records_shortcuts() => {
             tr("Ready anywhere · Use your desktop's shortcuts to dictate").to_string()
@@ -631,6 +670,14 @@ pub(super) fn granted(ui: &Ui, p: Paint, target: ShortcutTarget) -> Option<(Stri
             trigger: Some(trigger),
             ..
         } => (tr_fill("Your desktop granted {}", trigger), p.muted()),
+        DesktopGrantedShortcut {
+            trigger: None,
+            unconfirmed: true,
+            ..
+        } => (
+            tr("Your desktop assigns this key itself, so Hex can't confirm it").to_string(),
+            p.muted(),
+        ),
         DesktopGrantedShortcut { trigger: None, .. } => (
             tr("Your desktop did not grant this shortcut").to_string(),
             p.danger(),
@@ -645,16 +692,122 @@ fn portal_grant(ui: &Ui, target: ShortcutTarget) -> Option<&DesktopGrantedShortc
     let name = match target {
         ShortcutTarget::Dictation => "Dictation",
         ShortcutTarget::PasteLast => "Paste last dictation",
+        ShortcutTarget::RawDictation => "Dictate without processing",
+        // The portal lists Annotate's shortcut under that name.
         #[cfg(hex_capture)]
-        ShortcutTarget::Capture => "Capture",
+        ShortcutTarget::Capture => "Annotate",
+        // macOS has no shortcuts portal.
+        #[cfg(target_os = "macos")]
+        ShortcutTarget::SecondDictation => return None,
     };
     granted.iter().find(|shortcut| shortcut.name == name)
+}
+
+/// The key a shortcuts portal's desktop gave Cancel dictation. Hex suggests
+/// none, so a key here comes from the desktop (#624), and it takes that key
+/// from every app.
+pub(super) fn cancel_grant(ui: &Ui) -> Option<&str> {
+    let Some(DesktopShortcuts::Portal(granted)) = ui.shortcuts() else {
+        return None;
+    };
+    granted
+        .iter()
+        .find(|shortcut| shortcut.name == "Cancel dictation")
+        .and_then(|shortcut| shortcut.trigger.as_deref())
+}
+
+/// Keys GNOME keeps for itself by default (window menu, input sources, app
+/// switching, the overview, screenshots, …), normalized as [`chord`] writes
+/// them. A portal shortcut on one is listed in GNOME Settings but never
+/// reaches Hex (#723).
+const GNOME_KEYS: &[&str] = &[
+    "alt+space",
+    "super+space",
+    "shift+super+space",
+    "alt+tab",
+    "alt+shift+tab",
+    "super+tab",
+    "alt+f1",
+    "alt+f2",
+    "alt+f4",
+    "alt+f7",
+    "alt+f8",
+    "alt+f10",
+    "super+a",
+    "super+h",
+    "super+l",
+    "super+s",
+    "super+v",
+    "super+up",
+    "super+down",
+    "super+left",
+    "super+right",
+    "print",
+    "alt+print",
+    "shift+print",
+    "alt+ctrl+delete",
+];
+
+/// `keys` (`Ctrl+Alt+Space`, `Super+D`) lowercased with its modifiers in
+/// one order, so the same chord always reads the same.
+fn chord(keys: &str) -> String {
+    let mut parts = keys
+        .split('+')
+        .map(|part| match part.trim().to_ascii_lowercase().as_str() {
+            "control" => "ctrl".to_string(),
+            "meta" | "logo" => "super".to_string(),
+            other => other.to_string(),
+        })
+        .collect::<Vec<_>>();
+    let key = parts.pop().unwrap_or_default();
+    parts.sort();
+    parts.push(key);
+    parts.join("+")
+}
+
+fn gnome_keeps(keys: &str) -> bool {
+    GNOME_KEYS.contains(&chord(keys).as_str())
+}
+
+#[cfg(target_os = "linux")]
+fn on_gnome() -> bool {
+    crate::linux::portal::gnome()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn on_gnome() -> bool {
+    false
+}
+
+/// On GNOME, the note under `target`'s row when its key, the one GNOME
+/// granted or else the one Hex asks for, is one GNOME keeps for itself.
+pub(super) fn gnome_clash_note(ui: &Ui, p: Paint, target: ShortcutTarget) -> Option<El> {
+    if !on_gnome() {
+        return None;
+    }
+    let keys = match portal_grant(ui, target) {
+        Some(DesktopGrantedShortcut {
+            trigger: Some(trigger),
+            ..
+        }) => trigger.clone(),
+        _ => binding(&ui.settings, target)?.keycaps().join("+"),
+    };
+    gnome_keeps(&keys).then(|| {
+        note(
+            "gnome-clash",
+            &tr_fill(
+                "GNOME uses {} itself, so it never reaches Hex. Record another shortcut, or change it in GNOME Settings › Keyboard › Keyboard Shortcuts.",
+                &keys,
+            ),
+            p.danger(),
+        )
+    })
 }
 
 /// The desktop kept `target`'s shortcut for itself: the note under its row.
 pub(super) fn refused_note(ui: &Ui, p: Paint, target: ShortcutTarget) -> Option<El> {
     portal_grant(ui, target)
-        .is_some_and(|shortcut| shortcut.trigger.is_none())
+        .is_some_and(|shortcut| shortcut.trigger.is_none() && !shortcut.unconfirmed)
         .then(|| {
             note(
                 "refused",
@@ -707,6 +860,13 @@ pub(super) fn desktop_commands(p: Paint) -> El {
             tr("Re-paste the most recent dictation"),
             &["hex paste-last"],
         ),
+        command_row(
+            p,
+            "raw-dictation",
+            tr("Dictate without processing"),
+            tr("Paste your words as Hex heard them, skipping every step"),
+            &["hex dictation toggle --raw"],
+        ),
     ];
     section(p, "desktop-shortcuts", tr("Desktop shortcuts"), rows)
 }
@@ -723,6 +883,31 @@ fn command_row(p: Paint, key: &str, title: &str, description: &str, commands: &[
                 .align(rune::Align::End)
         }));
     setting_row(p, key, title, Some(description), lines)
+}
+
+/// Lists keyboard input sources every few seconds while General shows the
+/// switching rows. The window lists them itself on Windows and Linux.
+#[cfg(not(target_os = "macos"))]
+pub(super) fn poll_input_sources(ui: &mut Ui, clock: f64) -> bool {
+    let switching =
+        ui.platform.caps.keyboard_model_switching && ui.settings.keyboard_model_switching.enabled;
+    if !switching {
+        let changed = !ui.platform.input_sources.is_empty();
+        ui.platform.input_sources.clear();
+        return changed;
+    }
+    if ui.pane != super::Pane::General
+        || !ui.live()
+        || !ui.window.as_ref().is_some_and(rune::AppHandle::is_visible)
+        || clock < ui.input_sources_listed_at + 2.0
+    {
+        return false;
+    }
+    ui.input_sources_listed_at = clock;
+    let listed = crate::keyboard_input_sources::enabled();
+    let changed = ui.platform.input_sources != listed;
+    ui.platform.input_sources = listed;
+    changed
 }
 
 /// One row per enabled input source: "Don't switch" or an installed model,
@@ -927,8 +1112,11 @@ pub(super) fn hotkey_key(target: ShortcutTarget) -> &'static str {
     match target {
         ShortcutTarget::Dictation => "dictation-hotkey",
         ShortcutTarget::PasteLast => "paste-last-hotkey",
+        ShortcutTarget::RawDictation => "raw-dictation-hotkey",
         #[cfg(hex_capture)]
         ShortcutTarget::Capture => "capture-hotkey",
+        #[cfg(target_os = "macos")]
+        ShortcutTarget::SecondDictation => "second-dictation-hotkey",
     }
 }
 
@@ -1134,4 +1322,20 @@ pub(super) fn updates_itself(ui: &Ui) -> bool {
                 | DesktopUpdateStatus::SwitchAvailable { .. }
         )
     })
+}
+
+#[cfg(test)]
+mod gnome_keys_tests {
+    use super::*;
+
+    #[test]
+    fn gnome_keeps_its_window_menu_key_however_it_is_written() {
+        assert!(gnome_keeps("Alt+Space"));
+        assert!(gnome_keeps("alt+space"));
+        assert!(gnome_keeps("Ctrl+Alt+Delete"));
+        assert!(gnome_keeps("Shift+Alt+Tab"));
+        assert!(!gnome_keeps("Ctrl+Alt+Space"));
+        assert!(!gnome_keeps("F9"));
+        assert!(!gnome_keeps("Super+D"));
+    }
 }

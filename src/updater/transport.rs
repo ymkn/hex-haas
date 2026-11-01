@@ -31,8 +31,11 @@ pub struct ManifestCache {
 }
 
 fn curl(user_agent: &str) -> Command {
-    let mut command =
-        crate::background_process::command(if cfg!(windows) { "curl.exe" } else { "curl" });
+    let mut command = crate::desktop::background_process::command(if cfg!(windows) {
+        "curl.exe"
+    } else {
+        "curl"
+    });
     command.args([
         "--silent",
         "--show-error",
@@ -210,7 +213,7 @@ pub fn verify(path: &Path, target: &Target) -> Result<()> {
     if size != target.size {
         bail!("the update has {size} bytes, expected {}", target.size);
     }
-    if crate::transcription_models::sha256_hex(path, None)? != target.sha256 {
+    if crate::transcription::models::sha256_hex(path, None)? != target.sha256 {
         bail!("the update's SHA-256 does not match the manifest");
     }
     Ok(())
@@ -261,7 +264,7 @@ mod tests {
         let mut target = Target {
             url: "files/x/file".into(),
             size: 3,
-            sha256: crate::transcription_models::sha256_hex(&path, None).unwrap(),
+            sha256: crate::transcription::models::sha256_hex(&path, None).unwrap(),
         };
         assert!(verify(&path, &target).is_ok());
         target.size = 4;
@@ -280,7 +283,7 @@ mod tests {
         let source = directory.join("source");
         fs::create_dir_all(&directory).unwrap();
         fs::write(&source, b"bytes").unwrap();
-        let sha256 = crate::transcription_models::sha256_hex(&source, None).unwrap();
+        let sha256 = crate::transcription::models::sha256_hex(&source, None).unwrap();
         let target = Target {
             url: format!("files/{sha256}/Hex.zip"),
             size: 5,

@@ -19,7 +19,7 @@ use std::time::{Duration, Instant, SystemTime};
 use color_eyre::eyre::{Result, WrapErr, eyre};
 use serde::{Deserialize, Serialize};
 
-use crate::context::ContextSnapshot;
+use crate::dictation::context::ContextSnapshot;
 
 use script::Script;
 
@@ -183,9 +183,7 @@ fn persist_status_at(path: &Path, status: &StatusSnapshot) -> Result<()> {
         .parent()
         .ok_or_else(|| eyre!("personal command status path has no parent"))?;
     fs::create_dir_all(parent)?;
-    let temporary = path.with_extension(format!("json.{}.tmp", std::process::id()));
-    fs::write(&temporary, encoded)?;
-    fs::rename(temporary, path)?;
+    crate::durable::write(path, &encoded)?;
     Ok(())
 }
 

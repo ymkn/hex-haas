@@ -398,8 +398,8 @@ jobs:
           digests: sign-macos=${{ needs.sign-macos.outputs.digest }}
       - name: Check the signed app and DMG
         run: |
-          dmg="$RUNNER_TEMP/in/sign-macos/Hex-$HEX_VERSION-macos-arm64.dmg"
-          zip="$RUNNER_TEMP/in/sign-macos/Hex-$HEX_VERSION-macos-arm64.zip"
+          dmg="$RUNNER_TEMP/in/sign-macos/hex-$HEX_VERSION-macos-arm64.dmg"
+          zip="$RUNNER_TEMP/in/sign-macos/hex-$HEX_VERSION-macos-arm64.zip"
           xcrun stapler validate "$dmg"
           spctl --assess --type open --context context:primary-signature --verbose=2 "$dmg"
           check=$(mktemp -d)
@@ -588,7 +588,7 @@ jobs:
           curl -fsS "$LINUX_X64_URL" | cmp - "$x64"
           curl -fsS "$LINUX_ARM64_URL" | cmp - "$arm64"
           mkdir -p "$RUNNER_TEMP/aur-out"
-          (cd "$stage" && cp PKGBUILD .SRCINFO hex.desktop hex.service LICENSE hex-bin.install "$RUNNER_TEMP/aur-out/")
+          (cd "$stage" && cp PKGBUILD .SRCINFO anomaly.hex.desktop hex.service LICENSE hex-bin.install anomaly.hex-*.png "$RUNNER_TEMP/aur-out/")
           { echo '### AUR PKGBUILD'; echo '```'; cat "$stage/PKGBUILD"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - id: upload
         uses: ./.github/release/upload
@@ -666,8 +666,16 @@ jobs:
         run: |
           brew tap anomalyco/tap
           cp "$RUNNER_TEMP/cask/hex.rb" "$(brew --repo anomalyco/tap)/Casks/hex.rb"
+          # Homebrew 6 refuses to load casks from third-party taps until they
+          # are trusted; this runner trusts our own tap. Older Homebrew has no
+          # `brew trust` and no such check.
+          if brew trust --help > /dev/null 2>&1; then brew trust anomalyco/tap; fi
           brew style --cask anomalyco/tap/hex
-          brew audit --cask --strict --online anomalyco/tap/hex
+          # Skipped audits: the DMG URL names its own SHA-256 rather than the
+          # version, so a pinned sha256 is right; and the token "hex" belongs to
+          # this tap's cask, not homebrew/core's unrelated hex formula.
+          brew audit --cask --strict --online \
+            --except=sha256_no_check_if_unversioned,token_conflicts anomalyco/tap/hex
       - id: upload
         uses: ./.github/release/upload
         with:

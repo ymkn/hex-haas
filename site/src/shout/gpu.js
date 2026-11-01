@@ -83,6 +83,8 @@ fn saiyanCol(h0: f32) -> vec3f {
 // ─── 1. Physical Cards Shader (Razor-Sharp Resting Text, Gated Cracks, Clean Resolve) ───
 const PROBLEMS = /* wgsl */ `
 ${COMMON}
+// 1.0 for the base pass; the legibility pass redraws the cards over the blast glow at less than that.
+override LEGIBLE: f32 = 1.0;
 struct Prob {
   pos: vec2f, hs: vec2f,
   rot: f32, alpha: f32, flash: f32, dmg: f32,
@@ -255,7 +257,7 @@ struct VO {
   let specSweep = exp(-pow((q.x * 0.7 + q.y * 0.5 - (tilt.x - tilt.y) * 0.65) * 3.2, 2.0)) * tiltMag * 0.14;
   rgb = rgb + vec3f(0.92, 0.95, 1.0) * specSweep * bodyMask * t.a;
 
-  return vec4f(rgb, t.a) * i.b.y;
+  return vec4f(rgb, t.a) * i.b.y * LEGIBLE;
 }
 `
 
@@ -1172,6 +1174,9 @@ struct VO {
 }
 `
 
+const STAGING_WIDTH = 2048
+// Larger uploads (the words atlas's first full upload) go straight from the atlas, as before.
+const STAGING_MAX_AREA = 1024 * 1024
 const MAX_PROBLEMS = 96
 const MAX_WORDS = 256
 const MAX_SHARDS = 4096
@@ -1207,7 +1212,9 @@ export class GpuRenderer {
     this.fx = shoutFx
     this.fx.onSpawnShards = (list) => this.rawSpawnShards(list)
     this.fx.onSpawnSparks = (list) => this.spawnSparks(list)
-    this.ctx.configure({ device, format, alphaMode: "premultiplied" })
+    // Every frame clears to opaque #070707 and no blend lowers alpha, so the canvas is opaque; saying so
+    // lets the compositor skip blending a full-viewport layer.
+    this.ctx.configure({ device, format, alphaMode: "opaque" })
 
     const U = GPUBufferUsage
     this.uni = device.createBuffer({ size: 288, usage: U.UNIFORM | U.COPY_DST })
@@ -1227,18 +1234,19 @@ export class GpuRenderer {
 
     const pre = { color: { srcFactor: "one", dstFactor: "one-minus-src-alpha" }, alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha" } }
     const add = { color: { srcFactor: "one", dstFactor: "one" }, alpha: { srcFactor: "zero", dstFactor: "one" } }
-    const pipe = (code, blend) => {
+    const pipe = (code, blend, constants) => {
       const m = device.createShaderModule({ code })
       return device.createRenderPipeline({
         layout: "auto",
         vertex: { module: m, entryPoint: "vs" },
-        fragment: { module: m, entryPoint: "fs", targets: [{ format, blend }] },
+        fragment: { module: m, entryPoint: "fs", targets: [{ format, blend }], constants },
         primitive: { topology: "triangle-list" },
       })
     }
     const cpipe = (code) => device.createComputePipeline({ layout: "auto", compute: { module: device.createShaderModule({ code }), entryPoint: "sim" } })
 
     this.probPipe = pipe(PROBLEMS, pre)
+    this.probTopPipe = pipe(PROBLEMS, pre, { LEGIBLE: 0.62 })
     this.headPipe = pipe(HEAD, pre)
     this.shardPipe = pipe(SHARDS, pre)
     this.wordPipe = pipe(WORDS, pre)
@@ -1254,6 +1262,7 @@ export class GpuRenderer {
       })
     const B = (b) => ({ buffer: b })
     this.probBind = bg(this.probPipe, [B(this.probBuf), this.probTex.createView(), this.samp])
+    this.probTopBind = bg(this.probTopPipe, [B(this.probBuf), this.probTex.createView(), this.samp])
     this.headBind = bg(this.headPipe, [])
     this.shardBind = bg(this.shardPipe, [B(this.shards), this.probTex.createView(), this.samp])
     this.wordBind = bg(this.wordPipe, [B(this.wordBuf), this.wordTex.createView(), this.samp])
@@ -1324,15 +1333,64 @@ export class GpuRenderer {
   }
 
   uploadAtlases() {
+    this.upload(this.sprites.cards, this.probTex, true)
+    this.upload(this.sprites.words, this.wordTex, false)
+  }
+
+  // copyExternalImageToTexture snapshots its whole source canvas on every call: from a 4096² atlas that
+  // is ~15 ms per call (Radeon, Vulkan) however small the rect, several times a frame while cards type.
+  // So each frame's changed rects, once each, are copied 1:1 into a small staging canvas and the texture
+  // is filled from there. Every copy reads the atlas as it is now, exactly as the direct copies did.
+  upload(src, tex, premultipliedAlpha) {
+    if (!src.dirty.length) return
     const q = this.device.queue
-    const up = (src, tex, premultipliedAlpha) => {
-      for (const r of src.dirty) {
-        q.copyExternalImageToTexture({ source: src.canvas, origin: { x: r.x, y: r.y } }, { texture: tex, origin: { x: r.x, y: r.y }, premultipliedAlpha }, [r.w, r.h])
-      }
-      src.dirty.length = 0
+    const rects = []
+    for (const r of src.dirty) {
+      if (!rects.some((o) => o.x <= r.x && o.y <= r.y && o.x + o.w >= r.x + r.w && o.y + o.h >= r.y + r.h)) rects.push(r)
     }
-    up(this.sprites.cards, this.probTex, true)
-    up(this.sprites.words, this.wordTex, false)
+    src.dirty.length = 0
+    const direct = (r) =>
+      q.copyExternalImageToTexture({ source: src.canvas, origin: { x: r.x, y: r.y } }, { texture: tex, origin: { x: r.x, y: r.y }, premultipliedAlpha }, [r.w, r.h])
+    const staged = []
+    let rowX = 0
+    let rowY = 0
+    let rowH = 0
+    let width = 0
+    for (const r of rects) {
+      const whole = [r.x, r.y, r.w, r.h].every(Number.isInteger)
+      const inside = r.x >= 0 && r.y >= 0 && r.w > 0 && r.h > 0 && r.x + r.w <= src.canvas.width && r.y + r.h <= src.canvas.height
+      if (!whole || !inside || r.w * r.h > STAGING_MAX_AREA) {
+        direct(r)
+        continue
+      }
+      if (rowX + r.w > STAGING_WIDTH) {
+        rowY += rowH
+        rowX = 0
+        rowH = 0
+      }
+      staged.push({ r, sx: rowX, sy: rowY })
+      rowX += r.w
+      rowH = Math.max(rowH, r.h)
+      width = Math.max(width, rowX)
+    }
+    if (!staged.length) return
+    const height = rowY + rowH
+    let stage = this.staging
+    if (!stage || stage.canvas.width < width || stage.canvas.height < height) {
+      const canvas = document.createElement("canvas")
+      canvas.width = Math.max(width, stage?.canvas.width ?? 0)
+      canvas.height = Math.max(height, stage?.canvas.height ?? 0)
+      const ctx = canvas.getContext("2d")
+      ctx.imageSmoothingEnabled = false
+      stage = this.staging = { canvas, ctx }
+    }
+    for (const { r, sx, sy } of staged) {
+      stage.ctx.clearRect(sx, sy, r.w, r.h)
+      stage.ctx.drawImage(src.canvas, r.x, r.y, r.w, r.h, sx, sy, r.w, r.h)
+    }
+    for (const { r, sx, sy } of staged) {
+      q.copyExternalImageToTexture({ source: stage.canvas, origin: { x: sx, y: sy } }, { texture: tex, origin: { x: r.x, y: r.y }, premultipliedAlpha }, [r.w, r.h])
+    }
   }
 
   flushRing(list, buffer, max, floats, cursorKey, pack) {
@@ -1475,10 +1533,13 @@ export class GpuRenderer {
       rp.draw(6, count)
     }
     pass(this.probPipe, this.probBind, np)
-    pass(this.headPipe, this.headBind, head.visible > 0 ? 1 : 0)
+    // Shards sit behind the head so they never slice across the face.
     pass(this.shardPipe, this.shardBind, MAX_SHARDS)
+    pass(this.headPipe, this.headBind, head.visible > 0 ? 1 : 0)
     pass(this.wordPipe, this.wordBind, nw)
     pass(this.fxPipe, this.fxBind, nf)
+    // While the blast glow washes the screen, the cards come back over it so their text stays readable.
+    if (scene.keepCardsLegible) pass(this.probTopPipe, this.probTopBind, np)
     pass(this.sparkPipe, this.sparkBind, MAX_SPARKS)
     rp.end()
     q.submit([enc.finish()])

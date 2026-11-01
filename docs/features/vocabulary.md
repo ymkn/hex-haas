@@ -8,10 +8,12 @@ Linux, and Windows; the `hex vocabulary` commands are macOS only for now.
 ```ts
 General › Vocabulary   // vocabulary.settings; after Language
 ├── Row value -> "None", "1 term", "N terms" -> opens the Vocabulary sheet
-├── Selected model transcription doesn't bias (ModelDefinition::uses_vocabulary)
-│   -> muted note on the row and under the sheet's description: "Whisper
-│   large-v3-turbo doesn't use these terms; rewriting and search still do";
-│   Parakeet-based models (Parakeet, Underdog Bark) show none
+├── Selected model takes no vocabulary (ModelDefinition::vocabulary_use)
+│   -> muted note on the row and under the sheet's description: "SenseVoice
+│   Small doesn't use these terms; rewriting and search still do"; Parakeet,
+│   Underdog Bark, Whisper, and Qwen3-ASR (QwenCleo too) show none
+├── Parakeet-based model with Labs › Vocabulary biasing off -> the sheet says
+│   transcription uses the terms only with it on
 ├── Sheet description -> what the list does, then "Terms with spaces match
 │   only when said in full" (a term is matched whole; "Dax Rad" doesn't help
 │   "Dax" said alone, so a name also said alone gets its own row)
@@ -30,7 +32,10 @@ General › Vocabulary   // vocabulary.settings; after Language
     `hex settings set vocabulary_boost off|light|normal|strong`
     (settings.json `vocabulary_boost`)  // vocabulary.boost
 
-Transcription (Parakeet: RNN-T and TDT, Underdog Bark too)  // vocabulary.transcription; gguf_session::with_vocabulary
+Transcription (Parakeet: RNN-T and TDT, Underdog Bark too)  // vocabulary.transcription; transcription::gguf_session::with_vocabulary
+├── Only with Labs › Vocabulary biasing on (`labs.vocabulary_biasing`, off by
+│   default; labs.md) -> off: no run takes the list; the sheet says so, and
+│   rewriting and search still use it
 ├── Every run and live stream reads the list and the boost at its start:
 │   dictation, meetings, captures, the local API
 ├── First 64 terms (the engine's cap) and their spellings; empty or Off -> unchanged
@@ -45,10 +50,31 @@ Transcription (Parakeet: RNN-T and TDT, Underdog Bark too)  // vocabulary.transc
 │   rescored on the same audio frames from the same decoder state: the term
 │   replaces the span only when its score plus the boost per term piece beats
 │   the heard words'
-├── Left alone: case-only differences, inflections ("Abattoirs"), and addresses
+├── Left alone: case-only differences, inflections ("Cappuccinos"), and addresses
 │   and paths ("opencode.ai"); rescoring also skips terms under 5 letters
 │   without a spelling, which the RNN-T decoder can still write ("Kip" -> Kit)
-└── Whisper, Qwen3, SenseVoice, Cohere, Apple Speech -> no biasing
+└── SenseVoice, Cohere, Apple Speech -> no vocabulary in transcription
+
+Context prompt (Whisper, Qwen3-ASR, QwenCleo)  // vocabulary.prompt-transcription; transcription::gguf_session::with_vocabulary
+├── Always on (not Labs): replaced the per-model Recognition hints box (#129)
+├── Every whole-clip run reads the list at its start: dictation, meetings,
+│   captures, the local API; live streams run without it
+├── "Term, Term, …": the first terms in list order, at most 64, as many as
+│   fit 500 characters (Whisper: its prompt slot holds 223 tokens and trims
+│   an overlong one from the front) or 1,000 (Qwen3-ASR's system message)
+├── Whisper: transcribe.cpp's generic context prompt in the <|startofprev|>
+│   slot; Qwen3-ASR: the system message
+├── Output that only repeats the prompt (two or more terms) is dropped, as
+│   both models return it on silence or noise (README.md#get-ready)
+└── "Sounds like" spellings are not sent; rewriting and search use them
+
+Recognition hints, folded in                // vocabulary.hints
+├── Loading settings.json -> `recognition_hints` of the selected model and the
+│   recent models (newest first), split on commas, semicolons, and line
+│   breaks, become terms; names already listed (any case) are skipped, and
+│   the rewritten file drops the field
+└── `hex settings get|set transcription.recognition_hints` -> deprecated alias:
+    reads the terms comma-separated; set adds names (cli.md)
 
 hex vocabulary                           // vocabulary.cli
 ├── list [--json]
@@ -95,30 +121,37 @@ Provisional defaults, each changed in one place:
 
 ```ts
 hex vocabulary listed in --help          // control/cli.rs: add #[command(hide = true)] to hide it
-Prompt wording                           // dictation_processor.rs: vocabulary_lines
-Chapter prompt wording                   // meeting_chapters.rs: vocabulary_line
-Short-name rule                          // meeting_query.rs: SOUND_ALIKE_MIN_CONSONANTS
-Suggested terms                          // vocabulary.rs: SUGGESTED
-Boost strengths (nats per term piece)    // vocabulary.rs: VocabularyBoost::nats
+Prompt wording                           // dictation/processor.rs: vocabulary_lines
+Chapter prompt wording                   // meeting/chapters.rs: vocabulary_line
+Short-name rule                          // meeting/query.rs: SOUND_ALIKE_MIN_CONSONANTS
+Suggested terms                          // dictation/vocabulary.rs: SUGGESTED
+Boost strengths (nats per term piece)    // dictation/vocabulary.rs: VocabularyBoost::nats
 ```
 
-Sources: [vocabulary.rs](../../src/vocabulary.rs),
+Sources: [dictation/vocabulary.rs](../../src/dictation/vocabulary.rs),
 [rune_ui/vocabulary.rs](../../src/rune_ui/vocabulary.rs),
-[meeting_query.rs](../../src/meeting_query.rs) (`vocabulary_aliases`,
-`sounds_alike`), [dictation_processor.rs](../../src/dictation_processor.rs)
+[meeting/query.rs](../../src/meeting/query.rs) (`vocabulary_aliases`,
+`sounds_alike`), [dictation/processor.rs](../../src/dictation/processor.rs)
 (`vocabulary_lines`), and [control.rs](../../src/control.rs)
 (`edit_vocabulary`).
 
-Checks: `vocabulary::tests` (dedupe and merge, clamping, case-insensitive removal,
+Checks: `dictation::vocabulary::tests` (dedupe and merge, clamping, case-insensitive removal,
 comma splitting, reading the saved list without settings, the
-first 64 terms and their spellings reaching transcription, boost names);
+first 64 terms and their spellings reaching transcription, the bounded prompt,
+folding hints, boost names);
+`loading_folds_saved_recognition_hints_into_the_vocabulary_once` in
+[app_settings.rs](../../src/app_settings.rs);
+`recognition_hints_alias_the_vocabulary` in
+[control/settings.rs](../../src/control/settings.rs);
+`whisper_and_qwen3_asr_read_the_vocabulary_as_a_prompt_and_parakeet_biases` in
+[transcription/models.rs](../../src/transcription/models.rs);
 `vocabulary_round_trips_and_stays_out_of_files_without_one` in
 [app_settings.rs](../../src/app_settings.rs);
 `a_vocabulary_term_finds_its_mis_transcriptions_below_exact_hits`,
 `sounds_like_spellings_and_split_words_alias_a_term`,
 `vocabulary_never_pulls_in_common_words`, and
 `sound_alikes_need_two_consonant_sounds_and_few_changes` in
-[meeting_query_tests.rs](../../src/meeting_query_tests.rs);
+[meeting/query_tests.rs](../../src/meeting/query_tests.rs);
 `prompt_names_vocabulary_terms_and_their_mistranscriptions`;
 `vocabulary_edits_report_whether_they_changed_the_list` and the request round
 trip in control.rs; `vocabulary_lists_terms_with_their_spellings` in
@@ -135,7 +168,7 @@ trip in control.rs; `vocabulary_lists_terms_with_their_spellings` in
 `add_term_scrolls_the_new_row_into_view`, and
 `the_vocabulary_row_says_when_the_model_ignores_the_list` in [rune_ui/tests.rs](../../src/rune_ui/tests.rs);
 `only_parakeet_based_models_use_the_vocabulary` in
-[transcription_models.rs](../../src/transcription_models.rs). Scenes:
+[transcription/models.rs](../../src/transcription/models.rs). Scenes:
 `mac-settings-vocabulary`, `mac-settings-vocabulary-empty`,
 `vocabulary-unused` (Whisper, no golden). Passed on macOS on
 2026-10-23; the unused-model note's checks have not been observed running. Not yet observed: the sheet edited in a running Hex, a CLI edit

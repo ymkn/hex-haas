@@ -37,27 +37,25 @@ for what stays on your device and what optional features send to a provider.
 
 ### Downloads
 
-Each link serves the current release: the newest dev build (published on
-every change to `dev`, and updating itself from the Dev channel) until Hex's
-first stable release, then the stable release.
+Stable is the current release. Dev is the newest build of `dev`, published
+on every change; it updates itself from the Dev channel.
 
-| Platform | Download |
-| --- | --- |
-| macOS (Apple silicon) | [DMG](https://anoma.ly/hex/download/macos-arm64-dmg) |
-| Windows x64 | [Installer](https://anoma.ly/hex/download/windows-x64-setup) |
-| Windows ARM64 | [Installer](https://anoma.ly/hex/download/windows-arm64-setup) |
-| Linux x86_64 | [Executable](https://anoma.ly/hex/download/linux-x64) |
-| Linux x86_64 (Debian, Ubuntu) | [.deb](https://anoma.ly/hex/download/linux-x64-deb) |
-| Linux x86_64 (Fedora, openSUSE) | [.rpm](https://anoma.ly/hex/download/linux-x64-rpm) |
-| Linux ARM64 | [Executable](https://anoma.ly/hex/download/linux-arm64) |
-| Linux ARM64 (Debian, Ubuntu) | [.deb](https://anoma.ly/hex/download/linux-arm64-deb) |
-| Linux ARM64 (Fedora, openSUSE) | [.rpm](https://anoma.ly/hex/download/linux-arm64-rpm) |
+| Platform | Stable | Dev |
+| --- | --- | --- |
+| macOS (Apple silicon) | [DMG](https://anoma.ly/hex/download/macos-arm64-dmg) | [DMG](https://anoma.ly/hex/download/dev/macos-arm64-dmg) |
+| Windows x64 | [Installer](https://anoma.ly/hex/download/windows-x64-setup) | [Installer](https://anoma.ly/hex/download/dev/windows-x64-setup) |
+| Windows ARM64 | [Installer](https://anoma.ly/hex/download/windows-arm64-setup) | [Installer](https://anoma.ly/hex/download/dev/windows-arm64-setup) |
+| Linux x86_64 | [Executable](https://anoma.ly/hex/download/linux-x64) | [Executable](https://anoma.ly/hex/download/dev/linux-x64) |
+| Linux x86_64 (Debian, Ubuntu) | [.deb](https://anoma.ly/hex/download/linux-x64-deb) | [.deb](https://anoma.ly/hex/download/dev/linux-x64-deb) |
+| Linux x86_64 (Fedora, openSUSE) | [.rpm](https://anoma.ly/hex/download/linux-x64-rpm) | [.rpm](https://anoma.ly/hex/download/dev/linux-x64-rpm) |
+| Linux ARM64 | [Executable](https://anoma.ly/hex/download/linux-arm64) | [Executable](https://anoma.ly/hex/download/dev/linux-arm64) |
+| Linux ARM64 (Debian, Ubuntu) | [.deb](https://anoma.ly/hex/download/linux-arm64-deb) | [.deb](https://anoma.ly/hex/download/dev/linux-arm64-deb) |
+| Linux ARM64 (Fedora, openSUSE) | [.rpm](https://anoma.ly/hex/download/linux-arm64-rpm) | [.rpm](https://anoma.ly/hex/download/dev/linux-arm64-rpm) |
+| macOS updater | [ZIP](https://anoma.ly/hex/download/macos-arm64) | [ZIP](https://anoma.ly/hex/download/dev/macos-arm64) |
+| Windows x64 updater | [EXE](https://anoma.ly/hex/download/windows-x64) | [EXE](https://anoma.ly/hex/download/dev/windows-x64) |
+| Windows ARM64 updater | [EXE](https://anoma.ly/hex/download/windows-arm64) | [EXE](https://anoma.ly/hex/download/dev/windows-arm64) |
 
-Updater files: [macOS ZIP](https://anoma.ly/release/hex/desktop/dev/macos-arm64),
-[Windows x64 EXE](https://anoma.ly/release/hex/desktop/dev/windows-x64),
-[Windows ARM64 EXE](https://anoma.ly/release/hex/desktop/dev/windows-arm64).
-Windows links work once Windows signing is configured. On Linux you can also
-use `yay -S hex-bin` or the install script below.
+On Arch Linux you can also use `yay -S hex-bin`, or the install script below.
 
 With Homebrew:
 
@@ -128,15 +126,16 @@ visibility. Corrections in Modes fix names and preferred spellings before text
 is pasted; modes can also apply optional rewriting and text transformations.
 
 Use **menu bar > Transcription Model** to switch between downloaded models without
-opening Settings. Each model remembers its last selected language and, for
-Whisper, recognition hints. Choose the language in Settings once, then switch
+opening Settings. Each model remembers its last selected language. Choose the
+language in Settings once, then switch
 between combinations such as English with Parakeet and French with Whisper from
 the menu. **Manage Models…** opens the full picker for downloads and language changes.
 
 ## Optional OpenCode Features
 
-[OpenCode V2 beta](https://v2.opencode.ai/) (`opencode2`) is optional. Ordinary
-dictation does not require it.
+[OpenCode](https://v2.opencode.ai/) is optional, and ordinary dictation does not
+require it. Hex never launches OpenCode: these features use an OpenCode service
+that is already running, and say "OpenCode isn't running" otherwise.
 
 - **Post-processing:** enable OpenCode in Modes to rewrite a transcript before
   paste. Hex sends the transcript, foreground application, and Brave website
@@ -158,8 +157,9 @@ until you first use it.
 - **One key:** **Option-Shift-S** on macOS, **F9** on Linux. Tap it to start
   and tap again to stop. While it records, hold it and move the pointer to
   draw, no click needed; let go and the mouse is the app's again. macOS asks
-  for Screen Recording the first time; Linux asks through the desktop's
-  screen-sharing dialog once, then remembers the screen. While it records,
+  for Screen Recording the first time; Linux on Wayland asks through
+  the desktop's screen-sharing dialog once, then remembers the screen; on
+  X11 (i3 and the like) Hex reads the screen itself and asks nothing. While it records,
   the dictation shortcut does nothing.
 - **The bar:** the recording bar at the top shows the timer, a pen (click it,
   then drag to draw like a real pen; click it again or press Esc to stop), stop, and ✕ to
@@ -259,7 +259,8 @@ Diagnostics are stored at:
 
 ## Windows Beta
 
-The Windows beta runs on Windows 10 and 11, x64 and ARM64. It covers hotkey
+The Windows beta runs on Windows 10 and 11, x64 and ARM64. x64 PCs need a 2013 or
+newer processor with AVX2 (Intel Haswell / AMD Excavator or later). It covers hotkey
 dictation (Hold or Toggle, `Ctrl+Space` by default), Modes,
 History, a tray icon, and signed self-updates. On x64 with a Vulkan graphics
 driver, Parakeet Unified English streams while you speak, so text arrives within
@@ -275,7 +276,8 @@ source.
 
 ## Linux Beta
 
-The Linux beta targets x86_64 Linux on i3/X11 and compatible wlroots Wayland
+The Linux beta (x86_64 needs a 2013 or newer processor with AVX2: Intel
+Haswell / AMD Excavator or later) targets x86_64 Linux on i3/X11 and compatible wlroots Wayland
 compositors. It supports local hotkey dictation, Modes, History,
 the Hex window, and signed updates for direct installs. With a Vulkan graphics driver, dictation
 streams while you speak, as on macOS and Windows. Native Wayland requires

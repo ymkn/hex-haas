@@ -24,12 +24,12 @@ use super::lists::{PermissionControl, allowed, permission_control};
 use super::platform::{Os, PlatformRequest, PlatformState};
 use super::{Menu, Request};
 use crate::app_settings::AppSettings;
-use crate::desktop_i18n::{tr, tr_fill};
-use crate::dictation::ShortcutMode;
-use crate::onboarding::{
+use crate::desktop::i18n::{tr, tr_fill};
+use crate::desktop::onboarding::{
     Effect, Flow, Input, ItemStatus, ModelProgress, Observation, PermissionState, Practice, Row,
     SetupItem, Step, View,
 };
+use crate::dictation::ShortcutMode;
 
 const WIDTH: f32 = 520.0;
 const ART_HEIGHT: f32 = 140.0;
@@ -150,31 +150,28 @@ impl Tour {
     pub(super) fn start(settings: &AppSettings, platform: &PlatformState) -> Option<Tour> {
         let installed = super::picker::Picker::default().selected_installed(settings);
         let status = platform.setup_status(installed);
-        let completed = crate::onboarding::completion_recorded();
-        let resume = crate::onboarding::take_resume();
-        let saved = (!completed).then(crate::onboarding::saved_step).flatten();
-        // The new first run shows until it finishes, even when setup is
-        // already ready, so the whole story plays once.
-        let story = super::onboarding_kit::live::wanted_for(platform);
-        (resume.is_some() || (!completed && (story || !status.ready() || saved.is_some()))).then(
-            || {
-                Tour::new(
-                    Flow::new(
-                        resume.or(saved).unwrap_or(Step::Welcome),
-                        status,
-                        platform.caps.permissions,
-                        platform.caps.practice_dictation,
-                    ),
-                    completed,
-                )
-            },
-        )
+        let completed = crate::desktop::onboarding::completion_recorded();
+        let resume = crate::desktop::onboarding::take_resume();
+        let saved = (!completed)
+            .then(crate::desktop::onboarding::saved_step)
+            .flatten();
+        (resume.is_some() || (!completed && (!status.ready() || saved.is_some()))).then(|| {
+            Tour::new(
+                Flow::new(
+                    resume.or(saved).unwrap_or(Step::Welcome),
+                    status,
+                    platform.caps.permissions,
+                    platform.caps.practice_dictation,
+                ),
+                completed,
+            )
+        })
     }
 }
 
-fn progress(ui: &Ui) -> (bool, ModelProgress) {
+pub(super) fn progress(ui: &Ui) -> (bool, ModelProgress) {
     let installed = ui.picker.selected_installed(&ui.settings);
-    let selected = crate::transcription_models::validate(&ui.settings.transcription).ok();
+    let selected = crate::transcription::models::validate(&ui.settings.transcription).ok();
     let transcription = ui.view.as_ref().map(|view| &view.transcription);
     let downloading = selected.and_then(|model| {
         (transcription.and_then(|t| t.preparing) == Some(model.id)).then(|| {
@@ -199,6 +196,9 @@ fn progress(ui: &Ui) -> (bool, ModelProgress) {
 pub(super) fn poll(ui: &mut Ui) -> bool {
     let (installed, model) = progress(ui);
     let status = ui.platform.setup_status(installed);
+    let accessibility_stale = ui
+        .platform
+        .stale(crate::desktop::onboarding::PermissionKind::Accessibility);
     let live = ui.live();
     let Some(tour) = &mut ui.tour else {
         return false;
@@ -206,6 +206,7 @@ pub(super) fn poll(ui: &mut Ui) -> bool {
     let before = tour.flow.view();
     let step = before.step;
     let mut effect = tour.flow.on(Input::Status(status, model));
+    tour.flow.set_accessibility_stale(accessibility_stale);
     if tour
         .advance_at
         .is_some_and(|at| at.elapsed() >= ADVANCE_BEAT)
@@ -217,7 +218,7 @@ pub(super) fn poll(ui: &mut Ui) -> bool {
     }
     if status.ready() && !tour.completed {
         tour.completed = true;
-        if live && let Err(error) = crate::onboarding::record_completion() {
+        if live && let Err(error) = crate::desktop::onboarding::record_completion() {
             tracing::warn!(%error, "could not record onboarding completion");
         }
     }
@@ -240,6 +241,16 @@ pub(super) fn poll(ui: &mut Ui) -> bool {
     }
     remember_step(ui, step);
     let after = ui.tour.as_ref().map(|tour| tour.flow.view());
+    // Done waited for the model: the success chime sounds once it is ready.
+    if ui.live()
+        && before.step == Step::Done
+        && !before.dictation_ready
+        && after
+            .as_ref()
+            .is_some_and(|after| after.step == Step::Done && after.dictation_ready)
+    {
+        crate::feedback::play(crate::feedback::Tone::OnboardingSuccess);
+    }
     changed || after.as_ref() != Some(&before)
 }
 
@@ -256,14 +267,14 @@ pub(super) fn input(ui: &mut Ui, input: Input) {
 }
 
 /// Saves a new step so a tour quit part-way resumes there, and sounds the
-/// success chime on reaching the last one.
+/// success chime on reaching the last one once dictation can run.
 fn remember_step(ui: &Ui, before: Step) {
     if let Some(tour) = &ui.tour
         && tour.flow.step() != before
         && ui.live()
     {
-        crate::onboarding::record_step(tour.flow.step());
-        if tour.flow.step() == Step::Done {
+        crate::desktop::onboarding::record_step(tour.flow.step());
+        if tour.flow.step() == Step::Done && tour.flow.view().dictation_ready {
             crate::feedback::play(crate::feedback::Tone::OnboardingSuccess);
         }
     }
@@ -285,7 +296,7 @@ fn focus_practice(tour: &mut Tour, live: bool) -> bool {
 fn apply(ui: &mut Ui, effect: Effect) {
     match effect {
         Effect::DownloadModel => {
-            if crate::transcription_models::validate(&ui.settings.transcription).is_ok() {
+            if crate::transcription::models::validate(&ui.settings.transcription).is_ok() {
                 let selection = ui.settings.transcription.clone();
                 ui.send(Request::ChooseModel {
                     model: selection.model,
@@ -299,10 +310,13 @@ fn apply(ui: &mut Ui, effect: Effect) {
             }
         }
         Effect::RequestMicrophone => ui.ask(PlatformRequest::Permission(
-            crate::onboarding::PermissionAction::RequestMicrophone,
+            crate::desktop::onboarding::PermissionAction::RequestMicrophone,
         )),
         Effect::ShowGuide(kind) => ui.ask(PlatformRequest::Permission(
-            crate::onboarding::PermissionAction::ShowGuide(kind),
+            crate::desktop::onboarding::PermissionAction::ShowGuide(kind),
+        )),
+        Effect::ResetPermission(kind) => ui.ask(PlatformRequest::Permission(
+            crate::desktop::onboarding::PermissionAction::ResetAndPrompt(kind),
         )),
         Effect::Relaunch => ui.ask(PlatformRequest::Relaunch),
         Effect::Finish => ui.tour = None,
@@ -327,7 +341,7 @@ pub(super) fn overlay(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> Option<El> {
         Step::Welcome => welcome(ui, p),
         Step::Setup => setup(ui, p, &view),
         Step::TryIt => try_it(ui, p, tour, &view, layer),
-        Step::Done => done(ui, p),
+        Step::Done => done(ui, p, &view),
     };
     let primary = match view.step {
         Step::Welcome => Some((tr("Get started"), true, Input::Continue)),
@@ -337,6 +351,7 @@ pub(super) fn overlay(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> Option<El> {
             Some((tr("Continue"), true, Input::Continue))
         }
         Step::TryIt => None,
+        Step::Done if !view.dictation_ready => Some((tr("Continue"), true, Input::Continue)),
         Step::Done => Some((tr("Start using Hex"), true, Input::Continue)),
     };
     // Until setup is ready the next setup row carries the accent, so
@@ -414,7 +429,10 @@ pub(super) fn overlay(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> Option<El> {
         .px(20.0)
         .center_y()
         .justify_end()
-        .children(view.show_download.then(|| download(p, view.model)));
+        .children(
+            (view.show_download && !waiting_for_model(&view) && !done_shows_progress(&view))
+                .then(|| download(p, view.model)),
+        );
     Some(
         col()
             .key("tour")
@@ -547,6 +565,18 @@ fn setup(ui: &Ui, p: Paint, view: &View) -> El {
         .gap(28.0)
         .child(if permissions {
             title(p, tr("Let Hex hear you and type for you"), None)
+        } else if view
+            .rows
+            .iter()
+            .any(|row| row.item == SetupItem::Microphone)
+        {
+            title(
+                p,
+                tr("Let Hex hear you"),
+                Some(tr(
+                    "Windows has the microphone turned off for desktop apps.",
+                )),
+            )
         } else {
             title(
                 p,
@@ -575,7 +605,7 @@ fn setup(ui: &Ui, p: Paint, view: &View) -> El {
 
 fn setup_row(ui: &Ui, p: Paint, row: Row) -> El {
     let waiting = row.status == ItemStatus::Waiting;
-    let model = crate::transcription_models::validate(&ui.settings.transcription).ok();
+    let model = crate::transcription::models::validate(&ui.settings.transcription).ok();
     let (key, glyph, title, description): (&str, &'static rune::Icon, &str, String) = match row.item
     {
         SetupItem::Microphone => (
@@ -583,6 +613,10 @@ fn setup_row(ui: &Ui, p: Paint, row: Row) -> El {
             &glyphs::MIC,
             tr("Microphone"),
             match row.status {
+                ItemStatus::Denied | ItemStatus::Waiting if ui.platform.caps.os == Os::Windows => {
+                    tr("Turn on “Let desktop apps access your microphone” in Windows Settings.")
+                        .into()
+                }
                 ItemStatus::Denied => {
                     tr("Turned off earlier. Switch Hex on in System Settings.").into()
                 }
@@ -600,6 +634,8 @@ fn setup_row(ui: &Ui, p: Paint, row: Row) -> El {
             super::platform_settings::accessibility_name(ui.platform.accessibility_renamed),
             if row.status == ItemStatus::Restart {
                 tr("Turns on when Hex restarts").into()
+            } else if row.status == ItemStatus::Stale {
+                tr("An older Hex entry can keep this off").into()
             } else if waiting {
                 tr("Drag Hex into the list, or switch it on if it is there").into()
             } else {
@@ -647,6 +683,7 @@ fn setup_row(ui: &Ui, p: Paint, row: Row) -> El {
             "setup-grant",
             match row.status {
                 ItemStatus::Ready | ItemStatus::Restart => PermissionControl::Allowed,
+                ItemStatus::Stale => PermissionControl::Stale,
                 ItemStatus::Waiting => PermissionControl::Waiting,
                 _ => PermissionControl::Allow,
             },
@@ -655,6 +692,20 @@ fn setup_row(ui: &Ui, p: Paint, row: Row) -> El {
         )
     };
     icon_row(p, key, glyph, title, Some(&description), control)
+}
+
+/// Give it a try while dictation can't run yet: the speech model is still
+/// downloading, or its download stopped. Permissions are ready by then.
+fn waiting_for_model(view: &View) -> bool {
+    view.step == Step::TryIt && !view.reopen && !view.dictation_ready
+}
+
+/// Done while the model still downloads: its progress shows in the ring,
+/// not the corner. A stopped download keeps its Retry in the corner.
+fn done_shows_progress(view: &View) -> bool {
+    view.step == Step::Done
+        && !view.dictation_ready
+        && matches!(view.model, ItemStatus::Downloading(_))
 }
 
 fn holds(ui: &Ui) -> bool {
@@ -676,15 +727,26 @@ fn try_it(ui: &Ui, p: Paint, tour: &Tour, view: &View, layer: &mut Vec<El>) -> E
         })
         .build(p.k)
         .key("practice-field");
-    let body = if holds(ui) {
-        tr_fill("Hold {}, say a sentence, then let go.", &shortcut)
+    let (heading, body) = if waiting_for_model(view) {
+        (
+            tr("Almost ready"),
+            tr("Hex starts listening once the speech model has downloaded.").to_string(),
+        )
+    } else if holds(ui) {
+        (
+            tr("Give it a try"),
+            tr_fill("Hold {}, say a sentence, then let go.", &shortcut),
+        )
     } else {
-        tr_fill("Press {}, say a sentence, then press it again.", &shortcut)
+        (
+            tr("Give it a try"),
+            tr_fill("Press {}, say a sentence, then press it again.", &shortcut),
+        )
     };
     col()
         .key("try-it")
         .gap(28.0)
-        .child(title(p, tr("Give it a try"), Some(&body)))
+        .child(title(p, heading, Some(&body)))
         .child(
             col().key("practice").gap(12.0).child(field).child(
                 col()
@@ -856,11 +918,10 @@ fn practice_hint(ui: &Ui, p: Paint, view: &View, shortcut: &str) -> El {
                 |ui: &mut Ui, _| input(ui, Input::Reopen),
             ));
     }
-    if !view.dictation_ready {
-        return line.child(hint(
-            tr("Hex starts listening once the speech model has downloaded."),
-            p.faint(),
-        ));
+    // The heading and body say why the shortcut does nothing yet; the
+    // download's progress, or its Retry, sits here instead of the corner.
+    if waiting_for_model(view) {
+        return line.child(download(p, view.model));
     }
     let (dot, copy, color) = match view.practice {
         Practice::Waiting => (
@@ -935,7 +996,8 @@ fn practice_hint(ui: &Ui, p: Paint, view: &View, shortcut: &str) -> El {
     line.child(hint(&copy, color))
 }
 
-fn done(ui: &Ui, p: Paint) -> El {
+fn done(ui: &Ui, p: Paint, view: &View) -> El {
+    let ready = view.dictation_ready;
     let shortcut = ui.settings.dictation_hotkey.keycaps().join("+");
     let mut tips = Vec::new();
     if let Some(binding) = &ui.settings.paste_last_hotkey {
@@ -969,31 +1031,48 @@ fn done(ui: &Ui, p: Paint) -> El {
         ),
     };
     let c = &p.k.c;
+    let badge = row().key("badge").size(72.0, 72.0).radius(36.0).center();
+    // Until dictation can run, the badge stays neutral and shows how far
+    // the speech model has downloaded.
+    let badge = if ready {
+        badge.fill(c.success.bg).child(
+            rune::icon(p.k.glyph.check_small, 40.0)
+                .key("check")
+                .color(p.success()),
+        )
+    } else {
+        let inner = match view.model {
+            ItemStatus::Downloading(fraction) => text(format!("{}%", (fraction * 100.0).round()))
+                .key("percent")
+                .font(p.k.ty.ui_medium.features("'tnum' 1"))
+                .color(p.muted()),
+            _ => rune::icon(&glyphs::SPARKLE, 32.0)
+                .key("model")
+                .color(p.muted()),
+        };
+        badge.fill(c.bg_button_neutral).child(inner)
+    };
     let art = row().key("art").h(ART_HEIGHT).w_full().center().child(
         row()
             .key("ring")
             .padding(16.0)
             .radius(52.0)
             .border(1.0, c.border_base.alpha(0.3))
-            .child(
-                row()
-                    .key("badge")
-                    .size(72.0, 72.0)
-                    .radius(36.0)
-                    .center()
-                    .fill(c.success.bg)
-                    .child(
-                        rune::icon(p.k.glyph.check_small, 40.0)
-                            .key("check")
-                            .color(p.success()),
-                    ),
-            ),
+            .child(badge),
     );
+    let (heading, body) = if ready {
+        (tr("You're all set"), send_off)
+    } else {
+        (
+            tr("Almost ready"),
+            tr("Hex starts listening once the speech model has downloaded.").to_string(),
+        )
+    };
     col()
         .key("done")
         .gap(24.0)
         .children((ui.platform.caps.os == Os::Macos).then_some(art))
-        .child(title(p, tr("You're all set"), Some(&send_off)))
+        .child(title(p, heading, Some(&body)))
         .child(
             col()
                 .key("more")
@@ -1033,7 +1112,7 @@ pub(super) fn fixture(ui: &mut Ui, step: Step, downloading: bool) {
 fn set_downloaded(ui: &mut Ui, percent: u64) {
     if let Some(view) = &mut ui.view {
         let model = ui.settings.transcription.model;
-        let bytes = crate::transcription_models::definition(model)
+        let bytes = crate::transcription::models::definition(model)
             .download_bytes()
             .unwrap_or(0);
         view.transcription.preparing = Some(model);
@@ -1048,6 +1127,7 @@ pub(super) enum MacStep {
     Welcome,
     Setup,
     SetupProgress,
+    SetupStale,
     SetupDenied,
     /// Every permission on, Accessibility waiting for a restart.
     SetupRestart,
@@ -1063,7 +1143,7 @@ pub(super) enum MacStep {
 /// macOS capabilities.
 pub(super) fn mac_fixture(ui: &mut Ui, state: MacStep) {
     use PermissionState::{NeedsRequest, NeedsRestart, NeedsSettings, Ready};
-    let fresh = crate::onboarding::SetupStatus {
+    let fresh = crate::desktop::onboarding::SetupStatus {
         microphone: NeedsRequest,
         accessibility: NeedsSettings,
         transcription_model: false,
@@ -1078,20 +1158,20 @@ pub(super) fn mac_fixture(ui: &mut Ui, state: MacStep) {
     );
     let permissions = match state {
         MacStep::Welcome | MacStep::Setup | MacStep::SetupDownloadFailed => fresh,
-        MacStep::SetupProgress => crate::onboarding::SetupStatus {
+        MacStep::SetupProgress | MacStep::SetupStale => crate::desktop::onboarding::SetupStatus {
             microphone: Ready,
             ..fresh
         },
-        MacStep::SetupDenied => crate::onboarding::SetupStatus {
+        MacStep::SetupDenied => crate::desktop::onboarding::SetupStatus {
             microphone: NeedsSettings,
             ..fresh
         },
-        MacStep::SetupRestart => crate::onboarding::SetupStatus {
+        MacStep::SetupRestart => crate::desktop::onboarding::SetupStatus {
             microphone: Ready,
             accessibility: NeedsRestart,
             ..fresh
         },
-        _ => crate::onboarding::SetupStatus {
+        _ => crate::desktop::onboarding::SetupStatus {
             microphone: Ready,
             accessibility: Ready,
             transcription_model: true,
@@ -1108,10 +1188,14 @@ pub(super) fn mac_fixture(ui: &mut Ui, state: MacStep) {
     if state != MacStep::Welcome {
         input(ui, Input::Continue);
     }
-    if state == MacStep::SetupProgress {
+    if matches!(state, MacStep::SetupProgress | MacStep::SetupStale) {
         for item in [SetupItem::Microphone, SetupItem::Accessibility] {
             input(ui, Input::Grant(item));
         }
+    }
+    if state == MacStep::SetupStale {
+        ui.platform
+            .note_stale(crate::desktop::onboarding::PermissionKind::Accessibility);
     }
     ui.platform.permissions = permissions;
     match state {
@@ -1173,7 +1257,7 @@ mod tests {
 
     #[test]
     fn try_it_focuses_the_practice_field_until_the_dictation_lands() {
-        let ready = crate::onboarding::SetupStatus {
+        let ready = crate::desktop::onboarding::SetupStatus {
             microphone: PermissionState::Ready,
             accessibility: PermissionState::Ready,
             transcription_model: true,
@@ -1197,5 +1281,94 @@ mod tests {
         assert_eq!(tour.flow.view().practice, Practice::Landed);
         assert!(!focus_practice(&mut tour, true));
         assert!(!tour.practice.focused, "a landed practice frees the field");
+    }
+
+    #[test]
+    fn try_it_waits_for_the_model_until_it_is_ready() {
+        let downloading = crate::desktop::onboarding::SetupStatus {
+            microphone: PermissionState::Ready,
+            accessibility: PermissionState::Ready,
+            transcription_model: false,
+        };
+        let mut flow = Flow::new(Step::TryIt, downloading, true, true);
+        assert_eq!(flow.step(), Step::TryIt);
+        assert!(waiting_for_model(&flow.view()));
+
+        let ready = crate::desktop::onboarding::SetupStatus {
+            transcription_model: true,
+            ..downloading
+        };
+        flow.on(Input::Status(
+            ready,
+            ModelProgress {
+                installed: true,
+                ..ModelProgress::default()
+            },
+        ));
+        assert!(!waiting_for_model(&flow.view()));
+    }
+
+    #[test]
+    fn done_waits_for_the_model_after_a_skipped_practice() {
+        let downloading = crate::desktop::onboarding::SetupStatus {
+            microphone: PermissionState::Ready,
+            accessibility: PermissionState::Ready,
+            transcription_model: false,
+        };
+        let progress = ModelProgress {
+            downloading: Some(0.4),
+            ..ModelProgress::default()
+        };
+        let mut flow = Flow::new(Step::TryIt, downloading, true, true);
+        flow.on(Input::Status(downloading, progress));
+        flow.on(Input::Skip);
+        let view = flow.view();
+        assert_eq!(view.step, Step::Done);
+        assert!(!view.dictation_ready, "Done must not claim Hex is ready");
+        assert!(done_shows_progress(&view));
+
+        let ready = crate::desktop::onboarding::SetupStatus {
+            transcription_model: true,
+            ..downloading
+        };
+        flow.on(Input::Status(
+            ready,
+            ModelProgress {
+                installed: true,
+                ..ModelProgress::default()
+            },
+        ));
+        let view = flow.view();
+        assert!(view.dictation_ready);
+        assert!(!done_shows_progress(&view));
+    }
+
+    #[test]
+    fn mac_stale_fixture_marks_accessibility_stale_and_dispatches_reset() {
+        let mut ui = crate::rune_ui::mac_fixture();
+        mac_fixture(&mut ui, MacStep::SetupStale);
+        let rows = ui.tour.as_ref().unwrap().flow.view().rows;
+        assert!(
+            rows.iter()
+                .any(|row| row.item == SetupItem::Accessibility && row.status == ItemStatus::Stale)
+        );
+        input(&mut ui, Input::Grant(SetupItem::Accessibility));
+        assert!(
+            !ui.platform
+                .stale(crate::desktop::onboarding::PermissionKind::Accessibility)
+        );
+        match &ui.host {
+            crate::rune_ui::platform::PlatformHost::Fixture(sent) => {
+                assert_eq!(
+                    sent.last(),
+                    Some(&PlatformRequest::Permission(
+                        crate::desktop::onboarding::PermissionAction::ResetAndPrompt(
+                            crate::desktop::onboarding::PermissionKind::Accessibility
+                        )
+                    ))
+                );
+            }
+            _ => panic!("expected fixture host"),
+        }
     }
 }

@@ -8,17 +8,20 @@
 use rune::{El, TextEdit, Tx, col, row, text};
 use rune_kit::{Button, ButtonVariant, TextInput};
 
-use super::Ui;
 use super::controls::{
     ButtonKind, CardRow, DESCRIPTION, METRICS, Paint, PushSize, button, card, folding, note, page,
     raised,
 };
+use super::icons::MIC;
 use super::lists::{Tone, tone_tag};
 use super::modes::{application_icon, monogram};
-use super::spark::spark;
+use super::spark::{Spark, spark};
+use super::{ShortcutTarget, Ui};
 use crate::app_settings::DictationMode;
-use crate::desktop_i18n::{tr, tr_fill};
-use crate::text_replacements::ReplacementSet;
+use crate::desktop::i18n::{tr, tr_fill};
+use crate::dictation::text_replacements::ReplacementSet;
+
+mod examples;
 
 /// The agent card's spark, this many points square.
 const SPARK: f32 = 30.0;
@@ -44,6 +47,32 @@ pub(super) struct OutputPane {
     pub(super) prompt_copied: bool,
     /// The app rule opened to show its steps.
     pub(super) expanded: Option<usize>,
+    /// Where the agent card's examples stand.
+    pub(super) examples: examples::Moment,
+    /// The order they show in.
+    pub(super) order: examples::Order,
+    /// The agent card's turning spark.
+    pub(super) spark: Spark,
+}
+
+impl OutputPane {
+    /// The pane for a window, its examples in a fresh order.
+    pub(super) fn shuffled() -> Self {
+        Self {
+            order: examples::Order::shuffled(),
+            ..Self::default()
+        }
+    }
+}
+
+/// Steps the agent card's examples to `clock`; true when they changed.
+pub(super) fn poll(ui: &mut Ui, clock: f64, tx: &mut Tx) -> bool {
+    let (changed, wait) = examples::poll(&mut ui.output.examples, clock);
+    let wait = wait.min(super::spark::poll(&ui.output.spark, clock));
+    if ui.window.as_ref().is_none_or(rune::AppHandle::is_visible) {
+        tx.wake_after(std::time::Duration::from_secs_f64(wait.max(0.0)));
+    }
+    changed
 }
 
 /// What runs a step: Hex itself, a script from the person's config, or
@@ -143,45 +172,30 @@ fn preview(mode: &DictationMode, input: &str) -> String {
 // ---------------------------------------------------------------------------
 // View
 
-pub(super) fn pane(ui: &Ui, p: Paint) -> El {
+pub(super) fn pane(ui: &Ui, p: Paint, reduced: bool) -> El {
     let processing = &ui.settings.dictation_processing;
     let mut content = page("output-content")
-        .child(agent_card(ui, p))
+        .child(agent_card(ui, p, reduced))
         .child(every_dictation(ui, p, &processing.default_mode))
         .child(try_card(ui, p, &processing.default_mode));
     if !processing.modes.is_empty() {
         content = content.child(some_apps(ui, p, &processing.modes));
+    }
+    if ui.records_shortcuts() {
+        content = content.child(without_processing(ui, p));
     }
     super::scroll_body("output-scroll", content)
 }
 
 /// The pane's one action: the agent writes the steps, so this card is how
 /// to change them.
-fn agent_card(ui: &Ui, p: Paint) -> El {
-    let mark = spark(p, "spark", SPARK);
-    let detail = if ui.output.prompt_copied {
-        tr("Copied. Paste it into your agent and say what you want")
+fn agent_card(ui: &Ui, p: Paint, reduced: bool) -> El {
+    let mark = spark(&ui.output.spark, p, "spark", SPARK, reduced);
+    let copy = if ui.output.prompt_copied {
+        examples::copied(p)
     } else {
-        tr("Tell it what you want, like “no final period in Slack”")
+        examples::copy(p, ui.output.examples, &ui.output.order, reduced)
     };
-    let copy = col()
-        .key("copy")
-        .grow(1.0)
-        .shrink()
-        .gap(2.0)
-        .child(
-            text(tr("Your agent writes these steps"))
-                .key("title")
-                .font(p.k.ty.ui_medium)
-                .color(p.text()),
-        )
-        .child(
-            text(detail)
-                .key("detail")
-                .font(DESCRIPTION)
-                .color(p.muted())
-                .wrap(),
-        );
     let open = Button::new(tr("Open file"))
         .variant(ButtonVariant::Ghost)
         .on_press(open_settings_file)
@@ -255,6 +269,26 @@ fn every_dictation(ui: &Ui, p: Paint, mode: &DictationMode) -> El {
         tr("Every dictation"),
         tr("Runs top to bottom"),
         rows,
+    )
+}
+
+/// Dictate without processing: a second dictation shortcut that skips
+/// every step above. Unbound until the person records one.
+fn without_processing(ui: &Ui, p: Paint) -> El {
+    labeled(
+        p,
+        "without-processing",
+        tr("Without processing"),
+        tr("Skips every step"),
+        super::general::shortcut_rows(
+            ui,
+            p,
+            "raw-dictation",
+            &MIC,
+            tr("Dictate without processing"),
+            ShortcutTarget::RawDictation,
+            Some(tr("Pastes your words as Hex heard them")),
+        ),
     )
 }
 
@@ -507,7 +541,7 @@ fn open_settings_file(ui: &mut Ui) {
         return;
     }
     let opened = crate::app_settings::path()
-        .and_then(|path| crate::opencode_catalog::open_url(&path.display().to_string()));
+        .and_then(|path| crate::desktop::opencode_catalog::open_url(&path.display().to_string()));
     if let Err(error) = opened {
         ui.error = Some(format!("{error:#}"));
     }
@@ -550,8 +584,8 @@ fn agent_prompt() -> String {
 /// Every dictation corrects words, lowercases, and drops the final period,
 /// then a script; chat apps add one more step.
 pub(super) fn fixture(ui: &mut Ui) {
+    use crate::dictation::text_replacements::TextReplacement;
     use crate::personal_commands::StatusTransformation;
-    use crate::text_replacements::TextReplacement;
     super::modes::fixture(ui);
     let pair = |phrase: &str, output: &str| TextReplacement {
         matched_phrase: phrase.into(),
@@ -588,7 +622,7 @@ mod tests {
     #[test]
     fn the_preview_runs_corrections_then_built_in_steps_in_order() {
         let mode = DictationMode {
-            replacements: vec![crate::text_replacements::TextReplacement {
+            replacements: vec![crate::dictation::text_replacements::TextReplacement {
                 matched_phrase: "open code".into(),
                 output: "OpenCode".into(),
             }],

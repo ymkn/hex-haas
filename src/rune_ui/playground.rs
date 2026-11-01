@@ -1,18 +1,18 @@
-//! The `playground` experiment: Rune's playground in Hex's window. ⇧⌘D
-//! (Ctrl+Shift+D off macOS) swaps the window for a folded list of
+//! The playground (Labs › Playground): Rune's playground in Hex's window,
+//! opened from its sidebar item or ⇧⌘D (Ctrl+Shift+D off macOS). It swaps
+//! the window for a folded list of
 //! prototypes (the onboarding options, live meeting notes, and on macOS
 //! the HUD and the capture capsule), then every fixture
 //! scene in [`SCENES`] under a readable name, by pane. Each opens on a fresh
 //! fixture state; the real window's state keeps running underneath,
-//! untouched. Off, nothing is attached: no shortcut, menu item, or scene
-//! list.
+//! untouched. The window always attaches it, so the toggle applies at once;
+//! off, no shortcut, menu item, sidebar item, or link opens it.
 
 use std::sync::OnceLock;
 
 use rune::{App, AppSpec, Playground};
 
 use super::{DesktopShortcuts, SCENES, Scene, Ui, WINDOW_SIZE, fixture};
-use crate::experiments::{self, Experiment};
 
 /// The list's top-level groups, in order. Each starts folded.
 const GROUPS: &[&str] = &[PROTOTYPES, WINDOW, LINUX_WINDOWS];
@@ -42,6 +42,10 @@ const PATHS: &[(&str, &str)] = &[
     (
         "mac-settings-permissions",
         "Window/General/Permissions missing",
+    ),
+    (
+        "mac-settings-permissions-stale",
+        "Window/General/Permissions · stale entry",
     ),
     (
         "mac-microphone-missing",
@@ -132,7 +136,10 @@ const PATHS: &[(&str, &str)] = &[
         "modes-transformation-menu",
         "Window/Modes/Transformation menu",
     ),
-    ("modes-opencode-v1", "Window/Modes/OpenCode V1"),
+    (
+        "modes-opencode-not-running",
+        "Window/Modes/OpenCode not running",
+    ),
     (
         "mac-input-source-models",
         "Window/General/Input source models",
@@ -178,9 +185,9 @@ const PATHS: &[(&str, &str)] = &[
         "Window/Voice Filter/Driver missing",
     ),
     ("mac-hud-lab", "Window/HUD Lab/HUD Lab"),
-    ("mac-labs", "Window/General/Labs & experiments"),
+    ("mac-labs", "Window/General/Labs"),
+    ("mac-labs-link", "Window/General/Labs link"),
     ("mac-production", "Window/General/Production build"),
-    ("mac-production-labs", "Window/General/Production Labs"),
     ("mac-activity", "Window/Activity/Activity"),
     ("mac-onboarding", "Window/Onboarding tour/Welcome"),
     ("onboarding-hero", "Window/Onboarding tour/Welcome · hero"),
@@ -192,6 +199,10 @@ const PATHS: &[(&str, &str)] = &[
     (
         "mac-onboarding-progress",
         "Window/Onboarding tour/Setup · progress",
+    ),
+    (
+        "mac-onboarding-stale",
+        "Window/Onboarding tour/Setup · stale entry",
     ),
     (
         "mac-onboarding-denied",
@@ -240,12 +251,18 @@ const PATHS: &[(&str, &str)] = &[
     ("capturing", "Linux & Windows/Recording a shortcut"),
     ("menus", "Linux & Windows/Microphone menu"),
     ("chinese", "Linux & Windows/Chinese"),
+    ("voice-filter", "Linux & Windows/Voice Filter"),
+    (
+        "voice-filter-unavailable",
+        "Linux & Windows/Voice Filter unavailable",
+    ),
     ("onboarding", "Linux & Windows/Onboarding"),
     ("onboarding-setup", "Linux & Windows/Onboarding · setup"),
 ];
 
+/// Labs › Playground is on.
 pub(crate) fn enabled() -> bool {
-    experiments::enabled(Experiment::Playground)
+    crate::labs::playground()
 }
 
 /// `spec` with the playground's scenes: every fixture scene but `live`, at
@@ -261,6 +278,17 @@ pub(super) fn spec(spec: AppSpec<Ui>) -> AppSpec<Ui> {
 }
 
 pub(super) fn attach(app: App<Ui>) -> App<Ui> {
+    app.playground(playground())
+}
+
+/// The window's playground: always attached, so Labs › Playground applies at
+/// once. Rune's own ⇧⌘D is off; the window's `on_key`, its sidebar item, and
+/// the macOS View menu open it only while the toggle is on.
+pub(super) fn attach_gated(app: App<Ui>) -> App<Ui> {
+    app.playground(playground().shortcut(None))
+}
+
+fn playground() -> Playground<Ui> {
     let playground = Playground::new()
         .enabled(true)
         .bar(false)
@@ -274,7 +302,7 @@ pub(super) fn attach(app: App<Ui>) -> App<Ui> {
     let playground = super::hud_stories::add(playground);
     #[cfg(all(hex_capture, target_os = "macos"))]
     let playground = super::capture_capsule::playground::stories(playground);
-    app.playground(playground)
+    playground
 }
 
 fn blank() -> Ui {
@@ -469,7 +497,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn every_hud_story_and_variant_opens_from_its_link() {
-        crate::dot_scope::set_lab(crate::dot_scope::Tuning::default());
+        crate::rune_hud::dot_scope::set_lab(crate::rune_hud::dot_scope::Tuning::default());
         let app = attach(App::new(spec(super::super::spec())));
         let mut rt = app.headless_runtime(WINDOW_SIZE, rune::Env::new(false, 1.0));
         rt.frame(0.0);

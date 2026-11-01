@@ -3,16 +3,17 @@ use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use color_eyre::eyre::{Result, WrapErr, eyre};
 use hound::{SampleFormat, WavSpec, WavWriter};
-use screencapturekit::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::events::now_ms;
+use crate::app_settings::MeetingRetention;
+use crate::desktop::events::now_ms;
+use crate::durable::{sync_directory, sync_file};
 
 const SAMPLE_RATE: u32 = 16_000;
 const TRANSCRIPT_TURN_GAP_MS: u64 = 3_000;
@@ -20,27 +21,45 @@ const TRANSCRIPT_TURN_GAP_MS: u64 = 3_000;
 /// saved and its final transcript runs at the next launch.
 const FINAL_PENDING_FILE: &str = "final.pending";
 
-#[path = "meeting_capture.rs"]
 mod capture;
-#[path = "meeting_chapters.rs"]
 mod chapters;
-pub(crate) use capture::create_tap_aggregate;
-pub use capture::{
-    SystemAudioAuthorization, request_system_audio_access, system_audio_authorization,
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) mod detection;
+#[cfg(target_os = "linux")]
+#[path = "meeting/linux.rs"]
+mod os;
+#[cfg(target_os = "macos")]
+#[path = "meeting/macos.rs"]
+mod os;
+#[cfg(target_os = "windows")]
+#[path = "meeting/windows.rs"]
+mod os;
+pub(crate) use os::reveal;
+#[cfg(target_os = "macos")]
+pub(crate) use os::{
+    SystemAudioAuthorization, create_tap_aggregate, request_screen_recording,
+    request_system_audio_access, reset_system_audio_request, screen_recording_permitted,
+    system_audio_authorization, system_audio_ready,
 };
-#[path = "meeting_echo.rs"]
+mod delta;
 mod echo;
-#[path = "meeting_notes.rs"]
+pub(crate) mod generator;
+pub(crate) mod mcp;
 mod notes;
-#[path = "meeting_query.rs"]
 pub mod query;
-#[path = "meeting_transcript.rs"]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub(crate) mod runtime;
 mod transcript;
-#[cfg(debug_assertions)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) mod watcher;
+#[cfg(all(debug_assertions, target_os = "macos"))]
 pub use chapters::chapters_file;
-pub use chapters::{Chapter, chapter_entries, section_for_id, section_markdown};
+#[cfg(target_os = "macos")]
+pub use chapters::section_for_id;
+pub use chapters::{Chapter, chapter_entries, section_markdown};
+pub use delta::*;
 pub use notes::{MeetingNotes, display_title, notes_in_progress, notes_wanted, spawn_summary};
-#[cfg(debug_assertions)]
+#[cfg(all(debug_assertions, target_os = "macos"))]
 pub use notes::{summarize, summarize_file};
 pub use transcript::TranscriptReader;
 
@@ -89,7 +108,7 @@ pub enum RecordingUpdate {
     Started { id: String, title: String },
     /// A provisional title from the transcript so far.
     Retitled { title: String },
-    /// The live chapters so far (experiment `live-chapters`).
+    /// The live chapters so far (Labs).
     Chapters(Vec<Chapter>),
     /// Capture stopped; final transcription is running.
     Transcribing,
@@ -100,50 +119,6 @@ pub fn default_title(app: Option<&str>, created_at_ms: u64) -> String {
     match app {
         Some(app) => format!("{app} call — {clock}"),
         None => format!("Meeting — {clock}"),
-    }
-}
-
-unsafe extern "C" {
-    fn CGPreflightScreenCaptureAccess() -> bool;
-    fn CGRequestScreenCaptureAccess() -> bool;
-}
-
-/// Whether macOS currently allows Screen & System Audio Recording, which
-/// meeting capture needs for remote audio.
-pub fn screen_recording_permitted() -> bool {
-    // SAFETY: A CoreGraphics query without arguments or side effects.
-    unsafe { CGPreflightScreenCaptureAccess() }
-}
-
-/// Asks macOS to list Hex under Screen & System Audio Recording. The system
-/// prompts at most once; later requests return the current state.
-pub fn request_screen_recording() -> bool {
-    // SAFETY: A CoreGraphics request without arguments.
-    unsafe { CGRequestScreenCaptureAccess() }
-}
-
-/// Whether meeting capture can hear the other participants: through the
-/// System Audio Recording consent process taps need, or Screen Recording for
-/// the ScreenCaptureKit fallback.
-pub fn system_audio_permitted() -> bool {
-    system_audio_ready() || screen_recording_permitted()
-}
-
-/// Whether system audio uses the display-independent process tap.
-pub fn system_audio_ready() -> bool {
-    matches!(
-        system_audio_authorization(),
-        SystemAudioAuthorization::Granted | SystemAudioAuthorization::Unknown
-    )
-}
-
-pub fn reveal(path: &Path) {
-    if let Err(error) = std::process::Command::new("/usr/bin/open")
-        .arg("-R")
-        .arg(path)
-        .spawn()
-    {
-        tracing::error!(%error, "could not reveal meeting file");
     }
 }
 
@@ -199,12 +174,21 @@ pub struct MeetingManifest {
     /// than the default one counts as the user's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title_source: Option<TitleSource>,
-    /// Topic chapters in time order (experiment `live-chapters`).
+    /// Topic chapters in time order (Labs).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub chapters: Vec<Chapter>,
     /// The chapter boundaries were corrected over the whole transcript.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub chapters_refined: bool,
+    /// Recorded since retention began: until the user chooses one, it is
+    /// kept [`MeetingRetention::DEFAULT`]. Older meetings stay until then.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub retention_applies: bool,
+    /// SHA-256 of the exported Markdown as Hex last wrote it. Expiry moves
+    /// that file to the Trash only while it still matches, so a copy the
+    /// user edited stays.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub export_sha256: Option<String>,
 }
 
 impl MeetingManifest {
@@ -368,7 +352,7 @@ impl ActiveMeeting {
             .open(directory.join("active.lock"))?;
         match fs2::FileExt::try_lock_exclusive(&file) {
             Ok(()) => Ok(Some(Self { _file: file })),
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
+            Err(error) if lock_contended(&error) => Ok(None),
             Err(error) => Err(error.into()),
         }
     }
@@ -397,21 +381,14 @@ pub fn record(
     updates: Option<SyncSender<RecordingUpdate>>,
 ) -> Result<MeetingManifest> {
     let (_, transcription_selection) = crate::app_settings::transcription_selection();
-    let transcription_model = crate::transcription_models::validate(&transcription_selection)?;
-    if !crate::transcription_models::is_installed(
+    let transcription_model = crate::transcription::models::validate(&transcription_selection)?;
+    if !crate::transcription::models::is_installed(
         transcription_model,
         &transcription_selection.language,
     ) {
         return Err(eyre!("{} is not installed", transcription_model.name));
     }
-    if !system_audio_permitted() {
-        if !request_system_audio_access() {
-            request_screen_recording();
-        }
-        return Err(eyre!(
-            "Allow Hex in System Settings › Privacy & Security › Screen & System Audio Recording, then try again"
-        ));
-    }
+    os::ensure_system_audio()?;
     let created_at_ms = now_ms();
     let id = format!("{created_at_ms}-{}", std::process::id());
     let meeting_dir = root()?.join(&id);
@@ -455,6 +432,8 @@ pub fn record(
         title_source: None,
         chapters: Vec::new(),
         chapters_refined: false,
+        retention_applies: true,
+        export_sha256: None,
     };
     set_title_source(&mut manifest, title_source);
     write_manifest(&meeting_dir, &manifest)?;
@@ -480,7 +459,7 @@ pub fn record(
                 }
             };
         let capture_clock = Instant::now();
-        let sleep_prevention = crate::recording_environment::prevent_sleep();
+        let sleep_prevention = crate::audio::idle_sleep::prevent_sleep();
         let sink = |source, drops: &Arc<AtomicU64>| capture::PacketSink {
             source,
             sender: sender.clone(),
@@ -511,9 +490,8 @@ pub fn record(
 
         let started = Instant::now();
         let titles = notes::ProvisionalTitles::start(manifest.id.clone());
-        let live_chapters =
-            crate::experiments::enabled(crate::experiments::Experiment::LiveChapters)
-                .then(|| chapters::LiveChapters::start(manifest.id.clone()));
+        let live_chapters = crate::labs::live_chapters()
+            .then(|| chapters::LiveChapters::start(manifest.id.clone()));
         println!("Recording '{}' (Ctrl-C to stop)", manifest.title);
         let take_updates = |manifest: &mut MeetingManifest| {
             if let Some(title) = titles.take() {
@@ -547,7 +525,7 @@ pub fn record(
         stats.microphone.dropped_packets = microphone_drops.load(Ordering::Relaxed);
         manifest.system = stats.system;
         manifest.microphone = stats.microphone;
-        if crate::process_exit::quitting() && has_recorded_audio(&manifest) {
+        if crate::desktop::process_exit::quitting() && has_recorded_audio(&manifest) {
             // Final transcription would outlast quitting's drain.
             drop(rolling.finish());
             fs::write(meeting_dir.join(FINAL_PENDING_FILE), b"")?;
@@ -642,15 +620,15 @@ fn record_chapters(
 fn set_title_source(manifest: &mut MeetingManifest, source: TitleSource) {
     if manifest.title_source.is_some()
         || !manifest.chapters.is_empty()
-        || crate::experiments::enabled(crate::experiments::Experiment::LiveChapters)
+        || crate::labs::live_chapters()
     {
         manifest.title_source = Some(source);
     }
 }
 
-/// Keeps a rename made while recording (experiment `live-chapters`).
+/// Keeps a rename made while recording (Labs).
 fn keep_rename(directory: &Path, manifest: &mut MeetingManifest) {
-    if crate::experiments::enabled(crate::experiments::Experiment::LiveChapters) {
+    if crate::labs::live_chapters() {
         adopt_rename(directory, manifest);
     }
 }
@@ -742,113 +720,6 @@ fn prepare_for_transcription(
     write_manifest(directory, manifest)
 }
 
-fn media_time_us(time: CMTime) -> Option<i64> {
-    if !time.is_valid()
-        || time.is_indefinite()
-        || time.is_positive_infinity()
-        || time.is_negative_infinity()
-    {
-        return None;
-    }
-    let microseconds = time.as_seconds()? * 1_000_000.0;
-    microseconds
-        .is_finite()
-        .then(|| microseconds.round() as i64)
-}
-
-fn decode_audio(sample: &CMSampleBuffer) -> Option<Vec<f32>> {
-    let format = sample.format_description()?;
-    if format.audio_is_big_endian() {
-        return None;
-    }
-    let channels = format.audio_channel_count()? as usize;
-    let bytes_per_frame = format.audio_bytes_per_frame()? as usize;
-    let bytes_per_sample = bytes_per_frame.checked_div(channels)?;
-    let bits_per_channel = format.audio_bits_per_channel()?;
-    let flags = format.audio_format_flags()?;
-    let frames = usize::try_from(sample.num_samples()).ok()?;
-    let buffers = sample.audio_buffer_list().ok()?;
-    if buffers.num_buffers() == channels && channels > 1 {
-        let channel_samples: Vec<Vec<f32>> = buffers
-            .iter()
-            .map(|buffer| {
-                decode_samples(
-                    buffer.data(),
-                    frames,
-                    bytes_per_sample,
-                    bits_per_channel,
-                    flags,
-                )
-            })
-            .collect::<Option<_>>()?;
-        return Some(
-            (0..frames)
-                .map(|frame| {
-                    channel_samples
-                        .iter()
-                        .map(|samples| samples[frame])
-                        .sum::<f32>()
-                        / channels as f32
-                })
-                .collect(),
-        );
-    }
-    let buffer = buffers.get(0)?;
-    let available_channels = usize::try_from(buffer.number_channels).ok()?.max(1);
-    let samples = decode_samples(
-        buffer.data(),
-        frames.checked_mul(available_channels)?,
-        bytes_per_sample,
-        bits_per_channel,
-        flags,
-    )?;
-    Some(
-        samples
-            .chunks_exact(available_channels)
-            .map(|frame| frame.iter().sum::<f32>() / available_channels as f32)
-            .collect(),
-    )
-}
-
-fn decode_samples(
-    bytes: &[u8],
-    samples: usize,
-    bytes_per_sample: usize,
-    bits_per_channel: u32,
-    flags: u32,
-) -> Option<Vec<f32>> {
-    let required = samples.checked_mul(bytes_per_sample)?;
-    if bytes.len() < required {
-        return None;
-    }
-    let is_float = flags & 1 != 0;
-    let is_signed_integer = flags & 4 != 0;
-    bytes[..required]
-        .chunks_exact(bytes_per_sample)
-        .map(
-            |sample| match (is_float, is_signed_integer, bytes_per_sample) {
-                (true, _, 4) => Some(f32::from_le_bytes(sample.try_into().ok()?)),
-                (_, true, 2) => {
-                    Some(f32::from(i16::from_le_bytes(sample.try_into().ok()?)) / 32_768.0)
-                }
-                (_, true, 3) => {
-                    let raw = i32::from_le_bytes([
-                        sample[0],
-                        sample[1],
-                        sample[2],
-                        if sample[2] & 0x80 == 0 { 0 } else { 0xff },
-                    ]);
-                    Some(raw as f32 / 8_388_608.0)
-                }
-                (_, true, 4) if bits_per_channel <= 32 => {
-                    Some(i32::from_le_bytes(sample.try_into().ok()?) as f32 / 2_147_483_648.0)
-                }
-                _ => None,
-            },
-        )
-        .collect()
-}
-
 fn write_tracks(
     directory: &Path,
     receiver: Receiver<AudioPacket>,
@@ -932,8 +803,7 @@ fn write_tracks(
 fn finalize_track(path: PathBuf, writer: Option<WavWriter<BufWriter<File>>>) -> Result<()> {
     if let Some(writer) = writer {
         writer.finalize()?;
-        File::open(path)?.sync_all()?;
-        Ok(())
+        Ok(sync_file(&path)?)
     } else {
         create_empty_track(path)
     }
@@ -951,14 +821,13 @@ fn create_empty_track(path: PathBuf) -> Result<()> {
     )?
     .finalize()?;
     set_owner_only(&path, false)?;
-    File::open(path)?.sync_all()?;
-    Ok(())
+    Ok(sync_file(&path)?)
 }
 
 fn transcribe(
     directory: &Path,
     manifest: &mut MeetingManifest,
-    selection: &crate::transcription_models::TranscriptionSelection,
+    selection: &crate::transcription::models::TranscriptionSelection,
     rolling: Option<transcript::RollingOutcome>,
 ) -> Result<()> {
     let (transcript, echo_suppressed) =
@@ -995,6 +864,7 @@ fn transcribe(
     ) {
         Ok(path) => {
             tracing::info!(path = %path.display(), "published meeting transcript");
+            manifest.export_sha256 = file_sha256(&path);
             manifest.export_path = Some(path);
         }
         Err(error) => {
@@ -1034,8 +904,8 @@ pub fn finish_pending(id: &str) -> Result<Option<MeetingManifest>> {
         return Ok(None);
     }
     let (_, selection) = crate::app_settings::transcription_selection();
-    let model = crate::transcription_models::validate(&selection)?;
-    if !crate::transcription_models::is_installed(model, &selection.language) {
+    let model = crate::transcription::models::validate(&selection)?;
+    if !crate::transcription::models::is_installed(model, &selection.language) {
         return Err(eyre!("{} is not installed", model.name));
     }
     let mut manifest = read_manifest(&directory)?;
@@ -1050,7 +920,7 @@ pub fn finish_pending(id: &str) -> Result<Option<MeetingManifest>> {
             write_manifest(&directory, &manifest)?;
             Ok(Some(manifest))
         }
-        Err(error) if crate::process_exit::quitting() => Err(error),
+        Err(error) if crate::desktop::process_exit::quitting() => Err(error),
         Err(error) => {
             manifest.status = MeetingStatus::Interrupted;
             manifest.error = Some(error.to_string());
@@ -1125,12 +995,19 @@ fn meeting_is_active(directory: &Path) -> Option<bool> {
             let _ = fs2::FileExt::unlock(&file);
             Some(false)
         }
-        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Some(true),
+        Err(error) if lock_contended(&error) => Some(true),
         Err(error) => {
             tracing::warn!(%error, directory = %directory.display(), "could not inspect meeting lock");
             None
         }
     }
+}
+
+/// Whether a failed try-lock means another handle holds the lock: `flock`'s
+/// `EWOULDBLOCK` on Unix, `ERROR_LOCK_VIOLATION` on Windows.
+fn lock_contended(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::WouldBlock
+        || error.raw_os_error() == fs2::lock_contended_error().raw_os_error()
 }
 
 fn recovered_status(
@@ -1202,7 +1079,7 @@ pub fn transcript_markdown(entries: &[TranscriptEntry]) -> String {
 /// its recording folder. Refuses while it records, transcribes, or writes
 /// notes. A missing Markdown file is skipped.
 pub fn trash(id: &str) -> Result<()> {
-    trash_meeting(&root()?.join(id), move_to_trash)
+    trash_meeting(&root()?.join(id), os::move_to_trash)
 }
 
 fn trash_meeting(
@@ -1222,18 +1099,113 @@ fn trash_meeting(
     move_to_trash(directory)
 }
 
-fn move_to_trash(path: &Path) -> Result<()> {
-    use objc2_foundation::{NSFileManager, NSString, NSURL};
-    let url = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
-    NSFileManager::defaultManager()
-        .trashItemAtURL_resultingItemURL_error(&url, None)
-        .map_err(|error| {
-            eyre!(
-                "could not move {} to the Trash: {}",
-                path.display(),
-                error.localizedDescription()
-            )
-        })
+/// How long `manifest` is kept: the retention the user chose, else
+/// [`MeetingRetention::DEFAULT`] for meetings recorded since it began, and
+/// older meetings for good.
+pub fn retention_for(
+    manifest: &MeetingManifest,
+    chosen: Option<MeetingRetention>,
+) -> MeetingRetention {
+    chosen.unwrap_or(if manifest.retention_applies {
+        MeetingRetention::DEFAULT
+    } else {
+        MeetingRetention::Forever
+    })
+}
+
+/// Whether a finished meeting outlived its retention, counted from when it
+/// ended (or, with no end, started). A meeting that records or transcribes
+/// never has.
+pub fn expired(
+    manifest: &MeetingManifest,
+    status: MeetingStatus,
+    chosen: Option<MeetingRetention>,
+    now_ms: u64,
+) -> bool {
+    !status.is_active()
+        && retention_for(manifest, chosen)
+            .max_age_ms()
+            .is_some_and(|max_age_ms| {
+                let ended = manifest.ended_at_ms.unwrap_or(manifest.created_at_ms);
+                now_ms.saturating_sub(ended) > max_age_ms
+            })
+}
+
+/// Moves every expired meeting to the Trash: its folder, and its exported
+/// Markdown while that is still the copy Hex wrote. One that is recording,
+/// transcribing, writing notes, or waiting for its final transcript stays
+/// for a later pass. Returns how many moved.
+pub fn expire(chosen: Option<MeetingRetention>) -> Result<usize> {
+    let meetings = list()?;
+    let pending = pending_final_transcripts();
+    let root = root()?;
+    let mut moved = 0;
+    for id in expired_meetings(&meetings, chosen, &pending, now_ms()) {
+        match trash_expired(&root.join(id), os::move_to_trash) {
+            Ok(()) => {
+                moved += 1;
+                tracing::info!(meeting = id, "moved an expired meeting to the Trash");
+            }
+            Err(error) => {
+                tracing::info!(%error, meeting = id, "kept an expired meeting for now");
+            }
+        }
+    }
+    Ok(moved)
+}
+
+/// The expired meetings in `meetings`, leaving out `pending` ones.
+fn expired_meetings<'a>(
+    meetings: &'a [MeetingManifest],
+    chosen: Option<MeetingRetention>,
+    pending: &[String],
+    now_ms: u64,
+) -> Vec<&'a str> {
+    meetings
+        .iter()
+        .filter(|meeting| !pending.contains(&meeting.id))
+        .filter(|meeting| expired(meeting, meeting.status, chosen, now_ms))
+        .map(|meeting| meeting.id.as_str())
+        .collect()
+}
+
+/// [`trash_meeting`] for expiry: an exported Markdown the user changed is
+/// left where it is.
+fn trash_expired(
+    directory: &Path,
+    mut move_to_trash: impl FnMut(&Path) -> Result<()>,
+) -> Result<()> {
+    let manifest = read_manifest(directory)?;
+    if meeting_is_active(directory) != Some(false) {
+        return Err(eyre!("the meeting is recording"));
+    }
+    if notes_in_progress(&manifest.id) {
+        return Err(eyre!("its notes are being written"));
+    }
+    if let Some(path) = manifest.export_path.filter(|path| path.exists()) {
+        if manifest.export_sha256.is_some() && file_sha256(&path) == manifest.export_sha256 {
+            move_to_trash(&path)?;
+        } else {
+            tracing::info!(
+                meeting = manifest.id,
+                "kept the meeting's Markdown, which changed since Hex wrote it"
+            );
+        }
+    }
+    move_to_trash(directory)
+}
+
+/// The lowercase hex SHA-256 of a file, `None` when it can't be read.
+fn file_sha256(path: &Path) -> Option<String> {
+    fs::read(path).ok().map(|bytes| text_sha256(&bytes))
+}
+
+fn text_sha256(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 /// Renames a meeting. The Markdown heading follows only while it still reads
@@ -1259,7 +1231,8 @@ fn rename_meeting(directory: &Path, title: &str) -> Result<MeetingManifest> {
     let mut markdown_error = None;
     if previous != next
         && let Some(path) = manifest.export_path.clone().filter(|path| path.exists())
-        && let Err(error) = notes::retitle_markdown_file(&path, &previous, &next)
+        && let Err(error) =
+            notes::retitle_markdown_file(&path, &mut manifest.export_sha256, &previous, &next)
     {
         tracing::warn!(%error, meeting = id, "could not retitle meeting Markdown");
         markdown_error = Some(error);
@@ -1276,8 +1249,8 @@ fn rename_meeting(directory: &Path, title: &str) -> Result<MeetingManifest> {
 #[cfg(debug_assertions)]
 pub fn transcribe_meeting(id: &str) -> Result<MeetingManifest> {
     let (_, selection) = crate::app_settings::transcription_selection();
-    let model = crate::transcription_models::validate(&selection)?;
-    if !crate::transcription_models::is_installed(model, &selection.language) {
+    let model = crate::transcription::models::validate(&selection)?;
+    if !crate::transcription::models::is_installed(model, &selection.language) {
         return Err(eyre!("{} is not installed", model.name));
     }
     let directory = root()?.join(id);
@@ -1363,229 +1336,6 @@ fn transcript_entries_in(directory: &Path) -> Result<Vec<TranscriptEntry>> {
         .entries)
 }
 
-static MEETING_PASTE_CURSOR: OnceLock<Mutex<MeetingPasteCursor>> = OnceLock::new();
-
-pub fn shared_paste_cursor() -> &'static Mutex<MeetingPasteCursor> {
-    MEETING_PASTE_CURSOR.get_or_init(Default::default)
-}
-
-/// What Option-Control-V already handed out: for each source, the capture
-/// time spans of the entries pasted. The in-call transcript can still change
-/// near its live edge, where echo is judged again as audio arrives, and the
-/// final transcript replaces it after Stop, so the cursor follows time rather
-/// than identical entries. An entry is new when its midpoint lies outside
-/// every pasted span, so text the final pass recovers for audio the in-call
-/// transcript skipped is still pasted later.
-#[derive(Clone, Debug, Default)]
-pub struct MeetingPasteCursor {
-    meeting_id: Option<String>,
-    copied: [Vec<(u64, u64)>; 2],
-}
-
-/// Pasted spans closer than this merge, so a sentence split differently in
-/// the final transcript is not pasted again through the pause between two
-/// pasted ones.
-const PASTE_SPAN_JOIN_MS: u64 = 1_500;
-
-impl MeetingPasteCursor {
-    fn unseen(&self, id: &str, entries: &[TranscriptEntry]) -> Vec<TranscriptEntry> {
-        let same_meeting = self.meeting_id.as_deref() == Some(id);
-        let mut unseen = entries
-            .iter()
-            .filter(|entry| {
-                let middle = (entry.start_ms + entry.end_ms) / 2;
-                !same_meeting
-                    || !self.copied[cursor_slot(entry.source)]
-                        .iter()
-                        .any(|&(start, end)| start <= middle && middle <= end)
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        unseen.sort_by_key(|entry| entry.start_ms);
-        unseen
-    }
-
-    /// Number of coalesced speaker turns available since the last committed
-    /// copy or paste for `id`.
-    pub fn pending_turn_count(&self, id: &str, entries: &[TranscriptEntry]) -> usize {
-        coalesce_transcript(self.unseen(id, entries)).len()
-    }
-
-    /// Formats unseen entries for `id`, runs `commit_output`, and advances the
-    /// cursor only if `commit_output` succeeds.
-    pub fn consume_entries(
-        &mut self,
-        id: &str,
-        entries: &[TranscriptEntry],
-        commit_output: impl FnOnce(&str) -> Result<()>,
-    ) -> Result<String> {
-        let unseen = self.unseen(id, entries);
-        let text = format_meeting_delta(&unseen)?;
-        commit_output(&text)?;
-        if self.meeting_id.as_deref() != Some(id) {
-            self.meeting_id = Some(id.to_string());
-            self.copied = Default::default();
-        }
-        for entry in unseen {
-            let spans = &mut self.copied[cursor_slot(entry.source)];
-            spans.push((entry.start_ms, entry.end_ms));
-            spans.sort_unstable();
-            let mut merged: Vec<(u64, u64)> = Vec::with_capacity(spans.len());
-            for &(start, end) in spans.iter() {
-                match merged.last_mut() {
-                    Some(last) if start <= last.1 + PASTE_SPAN_JOIN_MS => last.1 = last.1.max(end),
-                    _ => merged.push((start, end)),
-                }
-            }
-            *spans = merged;
-        }
-        Ok(text)
-    }
-}
-
-fn cursor_slot(source: MeetingSource) -> usize {
-    match source {
-        MeetingSource::System => 0,
-        MeetingSource::Microphone => 1,
-    }
-}
-
-/// Speaker turns of `entries`, which must be in time order.
-pub fn format_meeting_delta(entries: &[TranscriptEntry]) -> Result<String> {
-    if entries.is_empty() {
-        return Err(eyre!("no new meeting transcript is available"));
-    }
-    Ok(coalesce_transcript(entries.iter().cloned())
-        .into_iter()
-        .map(|entry| format!("{}: {}", entry.source.label(), entry.text))
-        .collect::<Vec<_>>()
-        .join("\n\n"))
-}
-
-/// How long a copy of new turns waits for the recording's audio up to the
-/// click to be transcribed. That is the next audio packet (milliseconds), a
-/// meeting chunk already running (well under a second on Metal), and each
-/// source's last few seconds (a few hundred milliseconds each), so it
-/// usually takes under a second; three seconds leaves room for a slower Mac
-/// or a short backlog while still feeling like a response to the click. A
-/// dictation in progress keeps the model, so the copy may run out of time
-/// instead.
-pub const COPY_TRANSCRIBE_WAIT: Duration = Duration::from_secs(3);
-
-/// What a copy of new turns reads for meeting `id`: while this process
-/// records it, the transcript through the click, waiting up to
-/// [`COPY_TRANSCRIBE_WAIT`] for it; past that, or otherwise, the in-call
-/// or final transcript as it is.
-pub fn entries_for_copy(id: &str) -> Result<Vec<TranscriptEntry>> {
-    match transcript::transcribe_up_to_now(id, COPY_TRANSCRIBE_WAIT) {
-        transcript::Flushed::Fresh(entries) => return Ok(entries),
-        transcript::Flushed::TimedOut => tracing::warn!(
-            meeting = id,
-            "the latest audio was not transcribed in time; copying what is ready"
-        ),
-        transcript::Flushed::NotRecording => {}
-    }
-    TranscriptReader::default().read(id)
-}
-
-/// Consumes new turns for `id` using the shared cursor, advancing only if
-/// `commit_output` succeeds. While recording they come from the transcript
-/// through now ([`entries_for_copy`]), afterwards from the final one.
-pub fn consume_delta_for_id(
-    id: &str,
-    commit_output: impl FnOnce(&str) -> Result<()>,
-) -> Result<String> {
-    let entries = entries_for_copy(id)?;
-    shared_paste_cursor()
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .consume_entries(id, &entries, commit_output)
-}
-
-/// Like [`consume_delta_for_id`] over entries the caller already read, for the
-/// main thread: it fails rather than wait while Option-Control-V holds the
-/// cursor through its paste.
-pub fn try_consume_delta_from(
-    id: &str,
-    entries: &[TranscriptEntry],
-    commit_output: impl FnOnce(&str) -> Result<()>,
-) -> Result<String> {
-    let mut cursor = match shared_paste_cursor().try_lock() {
-        Ok(cursor) => cursor,
-        Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
-        Err(std::sync::TryLockError::WouldBlock) => {
-            return Err(eyre!("a meeting paste is in progress"));
-        }
-    };
-    cursor.consume_entries(id, entries, commit_output)
-}
-
-/// Speaker turns in `entries` that the shared cursor has not handed out.
-pub fn pending_delta_turns(id: &str, entries: &[TranscriptEntry]) -> usize {
-    shared_paste_cursor()
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .pending_turn_count(id, entries)
-}
-
-/// Consumes new completed turns for the active or most recent meeting using
-/// the shared cursor, advancing only if `commit_output` succeeds.
-pub fn consume_active_or_latest_delta(
-    commit_output: impl FnOnce(&str) -> Result<()>,
-) -> Result<String> {
-    let meetings = list()?;
-    let selected =
-        active_or_latest(&meetings).ok_or_else(|| eyre!("no meeting transcript is available"))?;
-    consume_delta_for_id(&selected.id, commit_output)
-}
-
-/// Returns the Markdown transcript for `manifest`, preferring its exported
-/// Markdown when present and falling back to internal or live speaker turns.
-pub fn transcript_markdown_for_manifest(manifest: &MeetingManifest) -> Result<String> {
-    if let Some(path) = manifest.export_path.as_ref().filter(|path| path.exists()) {
-        return fs::read_to_string(path)
-            .wrap_err_with(|| format!("could not read {}", path.display()));
-    }
-    let internal_md = root()?.join(&manifest.id).join("transcript.md");
-    if internal_md.exists() {
-        return fs::read_to_string(&internal_md)
-            .wrap_err_with(|| format!("could not read {}", internal_md.display()));
-    }
-    let entries = TranscriptReader::default().read(&manifest.id)?;
-    if !entries.is_empty() {
-        return Ok(transcript_markdown(&entries));
-    }
-    Err(eyre!("no meeting transcript is available"))
-}
-
-/// Returns the speaker-turn Markdown for `manifest` (without file headers),
-/// falling back to exported Markdown if raw entries are unavailable.
-pub fn speaker_turns_markdown_for_manifest(manifest: &MeetingManifest) -> Result<String> {
-    if let Ok(entries) = TranscriptReader::default().read(&manifest.id)
-        && !entries.is_empty()
-    {
-        return Ok(transcript_markdown(&entries));
-    }
-    transcript_markdown_for_manifest(manifest)
-}
-
-/// Returns the Markdown transcript for the active or most recent meeting.
-pub fn latest_transcript_markdown() -> Result<String> {
-    let meetings = list()?;
-    for meeting in meetings
-        .iter()
-        .filter(|m| m.status.is_active())
-        .chain(meetings.iter().filter(|m| !m.status.is_active()))
-    {
-        if let Ok(markdown) = speaker_turns_markdown_for_manifest(meeting)
-            && !markdown.trim().is_empty()
-        {
-            return Ok(markdown);
-        }
-    }
-    Err(eyre!("no meeting transcript is available"))
-}
-
 fn read_ndjson<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<Vec<T>> {
     let contents = fs::read(path).wrap_err_with(|| format!("could not read {}", path.display()))?;
     let complete = contents
@@ -1633,12 +1383,7 @@ fn write_manifest(directory: &Path, manifest: &MeetingManifest) -> Result<()> {
     file.flush()?;
     file.get_ref().sync_all()?;
     fs::rename(&temporary, &final_path)?;
-    sync_directory(directory)
-}
-
-fn sync_directory(directory: &Path) -> Result<()> {
-    File::open(directory)?.sync_all()?;
-    Ok(())
+    Ok(sync_directory(directory)?)
 }
 
 pub fn format_duration(milliseconds: u64) -> String {
@@ -1646,6 +1391,7 @@ pub fn format_duration(milliseconds: u64) -> String {
     format!("{:02}:{:02}", total_seconds / 60, total_seconds % 60)
 }
 
+#[cfg(unix)]
 fn set_owner_only(path: &Path, directory: bool) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(
@@ -1655,14 +1401,18 @@ fn set_owner_only(path: &Path, directory: bool) -> Result<()> {
     Ok(())
 }
 
+/// The meetings folder is inside the user's own profile, which Windows
+/// already keeps from other users.
+#[cfg(windows)]
+fn set_owner_only(_path: &Path, _directory: bool) -> Result<()> {
+    Ok(())
+}
+
 #[cfg(test)]
-#[path = "meeting_tests.rs"]
 mod tests;
 
-#[cfg(test)]
-#[path = "meeting_echo_replay_tests.rs"]
+#[cfg(all(test, target_os = "macos"))]
 mod echo_replay_tests;
 
-#[cfg(test)]
-#[path = "meeting_live_replay_tests.rs"]
+#[cfg(all(test, target_os = "macos"))]
 mod live_replay_tests;

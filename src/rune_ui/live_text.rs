@@ -1,7 +1,7 @@
-//! The live text plate (the `live-text` experiment): one click-through line
+//! The live text plate (Labs): one click-through line
 //! beside the recording HUD with what the dictation has said so far, on
 //! every OS. It shows while a recording has text and hides when the
-//! recording ends ([`crate::live_text`]); `rune_hud` says where the HUD is,
+//! recording ends ([`crate::dictation::live_text`]); `rune_hud` says where the HUD is,
 //! so the plate sits just past it, on the HUD's screen.
 //!
 //! The overlay is prewarmed: macOS keeps it drawn while hidden and refreshes
@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use rune::{Anim, Cx, El, OverlayOptions, OverlayPlacement, OverlaySpec, ScreenEdge, row, text};
 
 use super::controls::Paint;
-use crate::transcription_engine::Partial;
+use crate::transcription::engine::Partial;
 
 /// The overlay's size: room for about a dozen words on one line.
 pub(crate) const SIZE: (f32, f32) = (560.0, 44.0);
@@ -32,7 +32,8 @@ pub(crate) struct Plate {
 /// Where the plate starts, just past the HUD.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Spot {
-    /// This far from the primary display's edge that the HUD is on.
+    /// This far from the edge that the HUD is on, on the HUD's display
+    /// (`rune_hud::display`).
     Edge(ScreenEdge, f32),
     /// At `y` in Rune's global space (points from the primary display's
     /// top-left, y down), centred on `x`; the plate hangs down from `y`
@@ -65,11 +66,10 @@ impl Spot {
 /// appears, so it may read the screen.
 pub(crate) type Place = fn() -> Spot;
 
-/// Adds the plate to the app when the `live-text` experiment is on.
+/// Adds the plate to the app. It shows only while a dictation publishes its
+/// text (Labs › Live text, applied at once), so it's prewarmed only when
+/// Live text is on at launch.
 pub(crate) fn install<S: 'static>(app: &mut rune::App<S>, place: Place) {
-    if !crate::experiments::enabled(crate::experiments::Experiment::LiveText) {
-        return;
-    }
     let spec = OverlaySpec {
         name: "Hex live text",
         size: SIZE,
@@ -82,12 +82,14 @@ pub(crate) fn install<S: 'static>(app: &mut rune::App<S>, place: Place) {
         view,
     }
     .options(OverlayOptions {
-        prewarm: true,
+        prewarm: crate::labs::live_text(),
+        #[cfg(not(target_os = "macos"))]
+        display: crate::rune_hud::display(),
         ..Default::default()
     });
     let overlay = app.overlay(spec, Plate::default());
     let shown = Arc::new(AtomicBool::new(false));
-    crate::live_text::watch(move |partial| {
+    crate::dictation::live_text::watch(move |partial| {
         let partial = partial.filter(|partial| !is_blank(partial));
         let Some(Partial { stable, tentative }) = partial.cloned() else {
             if shown.swap(false, Ordering::AcqRel) {

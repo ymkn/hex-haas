@@ -74,7 +74,6 @@ pub enum OnboardingTone {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Tone {
-    #[cfg(target_os = "macos")]
     Error,
     DictationStart,
     DictationStop,
@@ -141,7 +140,14 @@ fn sounds_enabled() -> bool {
 /// release it. A tone implies recent user activity, so a grace shorter than any
 /// idle-sleep timer costs nothing while sparing bursts of dictation the cold
 /// device reopen.
+///
+/// On Linux an open output is a listed stream in the desktop's sound controls
+/// (PipeWire, PulseAudio), so it closes about a second after the last tone
+/// (#720); the start tone still opens the device during its chord grace.
+#[cfg(not(target_os = "linux"))]
 const IDLE_RELEASE_GRACE: Duration = Duration::from_secs(5 * 60);
+#[cfg(target_os = "linux")]
+const IDLE_RELEASE_GRACE: Duration = Duration::from_secs(1);
 const OPEN_RETRY_BACKOFF: Duration = Duration::from_secs(2);
 
 // Only the playback worker owns a device. It opens lazily for a tone, stays
@@ -433,8 +439,8 @@ impl SoundSet {
         }
     }
 
-    /// Whether the set plays a sound for `cue`. Classic and Thock have no done sound;
-    /// its errors play macOS Basso, and errors sound only on macOS.
+    /// Whether the set plays a sound for `cue`. Classic and Thock have no done
+    /// sound; Classic's error is macOS Basso, or Signature's elsewhere.
     pub fn has(self, cue: Cue) -> bool {
         cue != Cue::Done || BUNDLED_SETS[self as usize].done.is_some()
     }
@@ -576,7 +582,7 @@ impl Auditioning {
 }
 
 /// One set's bundled files, in `resources/audio/sounds/<set>/`. A missing
-/// done tone stays silent, a missing error plays macOS Basso, and a missing
+/// done tone stays silent, a missing error (macOS only) plays Basso, and a missing
 /// success plays the set's own stop sound.
 struct BundledSet {
     start: &'static [u8],
@@ -623,7 +629,12 @@ const BUNDLED_SETS: [BundledSet; 7] = [
         stop: bundled_sound!("classic", "stop"),
         done: None,
         cancel: bundled_sound!("classic", "cancel"),
-        error: None,
+        // macOS plays Basso; elsewhere Classic borrows Signature's error.
+        error: if cfg!(target_os = "macos") {
+            None
+        } else {
+            Some(bundled_sound!("signature", "error"))
+        },
         success: None,
     },
     synthesized_set!("click"),
@@ -647,7 +658,7 @@ struct SetSounds {
     stop: SamplesBuffer,
     done: Option<SamplesBuffer>,
     cancel: SamplesBuffer,
-    /// Played for failures on macOS, and auditioned on every OS.
+    /// Played for failures; `None` plays macOS Basso.
     error: Option<SamplesBuffer>,
     success: Option<SamplesBuffer>,
 }
@@ -811,7 +822,6 @@ impl Sounds {
                 return sounds.success.as_ref().or(Some(&sounds.stop));
             }
             Tone::Onboarding(cue) => return self.onboarding.get(cue),
-            #[cfg(target_os = "macos")]
             Tone::Error => return sounds.error.as_ref(),
             #[cfg(hex_capture)]
             Tone::CaptureStart => &self.capture[0],
@@ -1224,7 +1234,7 @@ mod tests {
         ];
         let optional = [
             ("done", bundled.done, budget(350, 0)),
-            ("error", bundled.error, budget(300, 0)),
+            ("error", bundled.error, budget(300, 300)),
             ("onboarding success", bundled.success, budget(1_200, 0)),
         ];
         for (name, bytes, budget) in optional {

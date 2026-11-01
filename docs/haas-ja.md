@@ -1,6 +1,6 @@
 # Haas-ja support for Windows
 
-This local fork is based on Hex v3.0.0 (`7b05b5fd1fa0e3b9c333209cd1644d9603693d5c`). It adds a Japanese-only `haas_ja_v1` picker choice and is intended to replace ordinary Hex for daily use. Haas builds enable the backend without launcher environment variables. The recommended model and normal Hex behavior remain unchanged; only the data/config directory name is `hex-haas` instead of `hex`.
+This local fork is based on official Hex `v3.0.0` merged with `v3.1.1`. It adds a Japanese-only `haas_ja_v1` picker choice and is intended to replace ordinary Hex for daily use. Haas builds enable the backend without any switch: the model is available only when `app_paths::is_haas_build()`. The recommended model and normal Hex behavior remain unchanged; only the data/config directory name is `hex-haas` instead of `hex`.
 
 ## Runtime
 
@@ -52,7 +52,7 @@ Extract the pinned speech.cpp archive under `tools/haas/speech/`. Verify its has
 ./scripts/build-haas.ps1 -TestFilter haas
 ```
 
-Launch `dist/haas/hex.exe` directly, or use `Start-Hex-Haas.cmd` as a convenience. Both use `%APPDATA%\hex-haas` for settings, history, logs and models, and `~/.config/hex-haas` for `hex.config.ts` and experiments. No special launch environment is required, no settings are automatically copied or forced, and Hex's ordinary single-instance handling applies. Launch at login uses the unmodified Windows registration behavior. As with any official local build, automatic updates are off; rebuild to update the fork.
+Launch `dist/haas/hex.exe` directly, or use `Start-Hex-Haas.cmd` as a convenience. Both use `%APPDATA%\hex-haas` for settings, history, logs and models, and `~/.config/hex-haas` for `hex.config.ts`. No special launch environment is required, no settings are automatically copied or forced, and Hex's ordinary single-instance handling applies. Launch at login uses the unmodified Windows registration behavior. As with any official local build, automatic updates are off; rebuild to update the fork.
 
 The former checkout-local `haas-data/` and `haas-config/` directories are no longer used. To keep that profile, quit Hex and move them to the corresponding `hex-haas` directories, only when the destinations do not already contain data. The ordinary `hex` directories remain untouched. There is no parallel-install or launcher-switching mechanism; uninstall the official application if replacing it, keeping its old data if desired.
 

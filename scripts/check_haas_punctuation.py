@@ -58,7 +58,7 @@ else:
     manifest.write_text(json.dumps(clips, ensure_ascii=False, indent=2), encoding="utf-8")
 
 env = os.environ.copy()
-for name in ("HEX_APPLICATION_SUPPORT_DIR", "HEX_USER_CONFIG_DIR", "HEX_EXPERIMENTS", "HEX_SPEECH_CPP_EXE"):
+for name in ("HEX_APPLICATION_SUPPORT_DIR", "HEX_USER_CONFIG_DIR", "HEX_SPEECH_CPP_EXE"):
     if env.get(name):
         raise RuntimeError(f"Unset {name} before testing the ordinary Haas package.")
 speech = ROOT / "dist" / "haas" / "speech.exe"

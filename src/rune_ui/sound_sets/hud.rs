@@ -13,10 +13,10 @@ use rune::compose::Frame;
 use rune::{El, el, row};
 
 use super::super::Ui;
-use crate::dictation_indicator::{DictationIndicatorEvent as Event, DotFrame, IndicatorModel};
-use crate::dot_scope::{Tuning, demo_level};
+use crate::dictation::indicator::{DictationIndicatorEvent as Event, DotFrame, IndicatorModel};
 use crate::feedback::{Audition, Cue};
-use crate::hud_placement::Layout;
+use crate::rune_hud::dot_scope::{Tuning, demo_level};
+use crate::rune_hud::hud_placement::Layout;
 use crate::rune_hud::{Painter, Target, WINDOW};
 
 const STEP: f32 = 1.0 / 60.0;

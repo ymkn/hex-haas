@@ -1,6 +1,18 @@
-use std::ops::Add;
 #[cfg(target_os = "macos")]
-use std::sync::OnceLock;
+pub(crate) mod browser_media;
+#[cfg_attr(any(target_os = "linux", target_os = "windows"), allow(dead_code))]
+pub(crate) mod hex_microphone;
+pub(crate) mod idle_sleep;
+pub(crate) mod input_level;
+pub(crate) mod instant;
+#[cfg(target_os = "macos")]
+mod lid;
+pub(crate) mod output_ducking;
+#[cfg(target_os = "macos")]
+pub(crate) mod recording_environment;
+#[cfg_attr(any(target_os = "linux", target_os = "windows"), allow(dead_code))]
+pub(crate) mod voice_filter;
+
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError};
 use std::sync::{Arc, Mutex};
@@ -178,116 +190,9 @@ use color_eyre::eyre::{Result, WrapErr, eyre};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, SampleFormat, SizedSample, Stream, StreamConfig};
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct CaptureInstant(u64);
-
-impl CaptureInstant {
-    pub const ZERO: Self = Self(0);
-
-    pub const fn from_nanos(nanos: u64) -> Self {
-        Self(nanos)
-    }
-
-    pub const fn as_nanos(self) -> u64 {
-        self.0
-    }
-
-    #[cfg(target_os = "macos")]
-    pub fn now() -> Self {
-        unsafe extern "C" {
-            fn mach_absolute_time() -> u64;
-        }
-        Self::from_mach_ticks(unsafe { mach_absolute_time() })
-    }
-
-    /// The monotonic clock. Linux's microphone streams count from when they
-    /// opened, so the capture timeline anchors them to this.
-    #[cfg(target_os = "linux")]
-    pub fn now() -> Self {
-        let mut now = libc::timespec {
-            tv_sec: 0,
-            tv_nsec: 0,
-        };
-        // SAFETY: `now` is a valid timespec to fill.
-        unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut now) };
-        Self(now.tv_sec as u64 * 1_000_000_000 + now.tv_nsec as u64)
-    }
-
-    #[cfg(target_os = "macos")]
-    pub fn from_mach_ticks(ticks: u64) -> Self {
-        let Some((numerator, denominator)) = mach_timebase() else {
-            return Self::ZERO;
-        };
-        Self(scale_mach_ticks(ticks, numerator, denominator))
-    }
-
-    pub fn from_stream(instant: cpal::StreamInstant) -> Self {
-        Self(u64::try_from(instant.as_nanos()).unwrap_or(u64::MAX))
-    }
-
-    pub fn checked_add(self, duration: Duration) -> Option<Self> {
-        let nanos = u64::try_from(duration.as_nanos()).ok()?;
-        self.0.checked_add(nanos).map(Self)
-    }
-
-    pub fn checked_sub(self, duration: Duration) -> Option<Self> {
-        let nanos = u64::try_from(duration.as_nanos()).ok()?;
-        self.0.checked_sub(nanos).map(Self)
-    }
-
-    pub fn checked_duration_since(self, earlier: Self) -> Option<Duration> {
-        self.0.checked_sub(earlier.0).map(Duration::from_nanos)
-    }
-
-    pub fn duration_since(self, earlier: Self) -> Duration {
-        Duration::from_nanos(self.0.saturating_sub(earlier.0))
-    }
-
-    pub fn sub_frames(self, frames: usize, sample_rate: u32) -> Self {
-        self.checked_sub(duration_for_frames(frames, sample_rate))
-            .unwrap_or(self)
-    }
-}
-
-pub fn duration_for_frames(frames: usize, sample_rate: u32) -> Duration {
-    let nanos = frames as u128 * 1_000_000_000 / u128::from(sample_rate);
-    Duration::from_nanos(nanos as u64)
-}
-
-#[cfg(target_os = "macos")]
-fn scale_mach_ticks(ticks: u64, numerator: u32, denominator: u32) -> u64 {
-    let nanos = u128::from(ticks) * u128::from(numerator) / u128::from(denominator);
-    u64::try_from(nanos).unwrap_or(u64::MAX)
-}
-
-#[cfg(target_os = "macos")]
-fn mach_timebase() -> Option<(u32, u32)> {
-    #[repr(C)]
-    struct MachTimebaseInfo {
-        numer: u32,
-        denom: u32,
-    }
-
-    unsafe extern "C" {
-        fn mach_timebase_info(info: *mut MachTimebaseInfo) -> i32;
-    }
-
-    static TIMEBASE: OnceLock<Option<(u32, u32)>> = OnceLock::new();
-    *TIMEBASE.get_or_init(|| {
-        let mut info = MachTimebaseInfo { numer: 0, denom: 0 };
-        let status = unsafe { mach_timebase_info(&mut info) };
-        (status == 0 && info.denom != 0).then_some((info.numer, info.denom))
-    })
-}
-
-impl Add<Duration> for CaptureInstant {
-    type Output = Self;
-
-    fn add(self, duration: Duration) -> Self::Output {
-        self.checked_add(duration)
-            .expect("capture instant overflowed")
-    }
-}
+#[cfg(all(test, target_os = "macos"))]
+use instant::scale_mach_ticks;
+pub use instant::{CaptureInstant, duration_for_frames};
 
 pub struct AudioInput {
     // Tests can deliver PCM through channels without opening a native microphone.
@@ -301,7 +206,7 @@ pub struct AudioInput {
     stream_errors: Receiver<String>,
     watch_service_restarts: bool,
     restart_generation: u64,
-    hex_microphone: crate::hex_microphone::CaptureFeedSwitch,
+    hex_microphone: crate::audio::hex_microphone::CaptureFeedSwitch,
 }
 
 pub enum AudioInputEvent {
@@ -505,7 +410,7 @@ impl AudioInput {
                 selection: Selection::InUse,
                 watch_service_restarts: false,
                 restart_generation: audio_service_restart_generation(),
-                hex_microphone: crate::hex_microphone::capture_feed(48_000).1,
+                hex_microphone: crate::audio::hex_microphone::capture_feed(48_000).1,
             },
             sender,
         )
@@ -564,7 +469,7 @@ impl AudioInput {
             sender: error_sender,
             default_name: follows_default.then(|| device_name.clone()),
         };
-        let (feed, hex_microphone) = crate::hex_microphone::capture_feed(sample_rate);
+        let (feed, hex_microphone) = crate::audio::hex_microphone::capture_feed(sample_rate);
 
         let stream = match sample_format {
             SampleFormat::F32 => build_stream(
@@ -998,6 +903,8 @@ enum InputTarget {
 /// How an input connects, as far as resolving it cares.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Transport {
+    /// The internal microphone, switched off while a MacBook's lid is
+    /// closed. A built-in headphone-jack input is `Other`.
     BuiltIn,
     /// Bluetooth or Bluetooth LE: opening its microphone switches the
     /// headset into low-quality call audio.
@@ -1045,7 +952,7 @@ fn resolve_input(
     transport: impl Fn(usize) -> Transport,
     route: Route,
 ) -> std::result::Result<InputPlan, String> {
-    let is_hex = crate::hex_microphone::is_hex_virtual_device_name;
+    let is_hex = crate::audio::hex_microphone::is_hex_virtual_device_name;
     let position = |name: &str| names.iter().position(|listed| listed == name);
     let is_built_in = |index: usize| transport(index) == Transport::BuiltIn;
     let avoided = |index: usize| route.avoid_bluetooth && transport(index) == Transport::Bluetooth;
@@ -1119,8 +1026,9 @@ fn current_route() -> Route {
 
 /// Whether a MacBook's lid is closed, which switches its built-in microphone
 /// off in hardware while CoreAudio still lists it, often as the default
-/// input. Read from `AppleClamshellState` on IOKit's power root domain;
-/// Macs without a lid, and other OSes, read open.
+/// input. A microphone in the headphone jack stays on. Read from
+/// `AppleClamshellState` on IOKit's power root domain; Macs without a lid,
+/// and other OSes, read open.
 #[cfg(not(target_os = "macos"))]
 fn lid_closed() -> bool {
     false
@@ -1128,133 +1036,6 @@ fn lid_closed() -> bool {
 
 #[cfg(target_os = "macos")]
 use lid::closed as lid_closed;
-
-#[cfg(target_os = "macos")]
-mod lid {
-    use std::ffi::{c_char, c_void};
-    use std::sync::OnceLock;
-
-    use objc2_core_foundation::CFString;
-
-    const MAIN_PORT_DEFAULT: u32 = 0;
-    /// `kIOPMMessageClamshellStateChange`:
-    /// `iokit_family_msg(sub_iokit_powermanagement, 0x100)`.
-    const CLAMSHELL_STATE_CHANGE: u32 = 0xE003_4100;
-
-    type InterestCallback = unsafe extern "C" fn(*mut c_void, u32, u32, *mut c_void);
-
-    #[link(name = "IOKit", kind = "framework")]
-    unsafe extern "C" {
-        fn IOServiceMatching(name: *const c_char) -> *mut c_void;
-        fn IOServiceGetMatchingService(main_port: u32, matching: *mut c_void) -> u32;
-        fn IORegistryEntryCreateCFProperty(
-            entry: u32,
-            key: *const c_void,
-            allocator: *const c_void,
-            options: u32,
-        ) -> *const c_void;
-        fn IONotificationPortCreate(main_port: u32) -> *mut c_void;
-        fn IONotificationPortSetDispatchQueue(port: *mut c_void, queue: *mut c_void);
-        fn IOServiceAddInterestNotification(
-            port: *mut c_void,
-            service: u32,
-            interest_type: *const c_char,
-            callback: InterestCallback,
-            refcon: *mut c_void,
-            notification: *mut u32,
-        ) -> i32;
-    }
-
-    #[link(name = "CoreFoundation", kind = "framework")]
-    unsafe extern "C" {
-        static kCFBooleanTrue: *const c_void;
-        fn CFRelease(value: *const c_void);
-    }
-
-    unsafe extern "C" {
-        fn dispatch_get_global_queue(identifier: isize, flags: usize) -> *mut c_void;
-    }
-
-    fn root_domain() -> Option<u32> {
-        static ROOT: OnceLock<Option<u32>> = OnceLock::new();
-        *ROOT.get_or_init(|| {
-            // SAFETY: the matching dictionary is consumed by the lookup, and
-            // the returned service is kept for the life of the process.
-            let service = unsafe {
-                let matching = IOServiceMatching(c"IOPMrootDomain".as_ptr());
-                if matching.is_null() {
-                    return None;
-                }
-                IOServiceGetMatchingService(MAIN_PORT_DEFAULT, matching)
-            };
-            (service != 0).then_some(service)
-        })
-    }
-
-    pub fn closed() -> bool {
-        let Some(root) = root_domain() else {
-            return false;
-        };
-        let key = CFString::from_str("AppleClamshellState");
-        let key: *const CFString = &*key;
-        // SAFETY: `root` is a live service and `key` a live CFString; the
-        // copied property is released after the comparison.
-        unsafe {
-            let value = IORegistryEntryCreateCFProperty(root, key.cast(), std::ptr::null(), 0);
-            if value.is_null() {
-                return false;
-            }
-            let closed = value == kCFBooleanTrue;
-            CFRelease(value);
-            closed
-        }
-    }
-
-    /// Calls `changed` on a dispatch queue whenever the lid opens or closes.
-    pub fn watch(changed: fn()) {
-        static CHANGED: OnceLock<fn()> = OnceLock::new();
-        unsafe extern "C" fn on_message(
-            _refcon: *mut c_void,
-            _service: u32,
-            message: u32,
-            _argument: *mut c_void,
-        ) {
-            if message == CLAMSHELL_STATE_CHANGE
-                && let Some(changed) = CHANGED.get()
-            {
-                changed();
-            }
-        }
-        let Some(root) = root_domain() else {
-            return;
-        };
-        if CHANGED.set(changed).is_err() {
-            return;
-        }
-        // SAFETY: the port and notification live for the process, and the
-        // callback only reads a static.
-        let status = unsafe {
-            let port = IONotificationPortCreate(MAIN_PORT_DEFAULT);
-            if port.is_null() {
-                -1
-            } else {
-                IONotificationPortSetDispatchQueue(port, dispatch_get_global_queue(0, 0));
-                let mut notification = 0;
-                IOServiceAddInterestNotification(
-                    port,
-                    root,
-                    c"IOGeneralInterest".as_ptr(),
-                    on_message,
-                    std::ptr::null_mut(),
-                    &mut notification,
-                )
-            }
-        };
-        if status != 0 {
-            tracing::warn!(status, "could not watch the lid for microphone changes");
-        }
-    }
-}
 
 /// The input devices whose names can be read, with those names. A device
 /// without a readable name, such as CoreAudio's placeholder when no input
@@ -1358,6 +1139,12 @@ fn open_configured_input(request: &OpenRequest) -> Result<Opened> {
         }
         let mut input = AudioInput::open_device(device, name, follows_default)?;
         input.selection = plan.selection;
+        // The ALSA default cannot name another PipeWire source, so Linux
+        // moves the opened stream off a Bluetooth default instead.
+        #[cfg(target_os = "linux")]
+        if follows_default && route.avoid_bluetooth {
+            crate::linux::input_route::move_streams_off_bluetooth();
+        }
         Ok(Opened::Input(Box::new(input)))
     };
     let plan = resolve(request.selected_device.as_deref())?;
@@ -1383,7 +1170,6 @@ fn open_configured_input(request: &OpenRequest) -> Result<Opened> {
 
 /// Opens the microphone a meeting records, resolved like dictation's, or
 /// keeps the open one named `keep` when it resolves to that again.
-#[cfg(target_os = "macos")]
 pub fn open_meeting_input(selected_device: Option<&str>, keep: Option<&str>) -> Result<Opened> {
     open_configured_input(&OpenRequest {
         device_override: None,
@@ -1431,7 +1217,8 @@ pub struct InputDevices {
     pub system_default: Option<String>,
     /// The OS default is Hex Microphone, so `system_default` stands in.
     pub default_is_hex_microphone: bool,
-    /// The built-in microphone, listed but off because the lid is closed.
+    /// The internal microphone, listed but off because the lid is closed. A
+    /// headphone-jack microphone stays usable and is never named here.
     pub off_with_lid_closed: Option<String>,
     /// The OS default is `off_with_lid_closed`, so `system_default` stands in.
     pub default_is_off_with_lid_closed: bool,
@@ -1448,7 +1235,7 @@ pub fn input_devices() -> Result<InputDevices> {
     let default = default_input_of(&host).map(|(_, name)| name);
     let default_is_hex_microphone = default
         .as_deref()
-        .is_some_and(crate::hex_microphone::is_hex_virtual_device_name);
+        .is_some_and(crate::audio::hex_microphone::is_hex_virtual_device_name);
     let transports = devices.iter().map(transport).collect::<Vec<_>>();
     let route = current_route();
     let off_with_lid_closed = (0..devices.len())
@@ -1480,9 +1267,20 @@ pub fn input_devices() -> Result<InputDevices> {
             InputTarget::Named(index) | InputTarget::StandIn(index) => Some(listed[index].clone()),
         })
         .filter(|_| cfg!(not(target_os = "linux")));
+    // Linux names the sound server's sources instead, and only when it
+    // passes over a Bluetooth default.
+    #[cfg(target_os = "linux")]
+    let (system_default, bluetooth_default_passed_over) = match route
+        .avoid_bluetooth
+        .then(crate::linux::input_route::bluetooth_stand_in)
+        .flatten()
+    {
+        Some(stand_in) => (Some(stand_in.input), Some(stand_in.bluetooth)),
+        None => (system_default, bluetooth_default_passed_over),
+    };
     let mut names = listed
         .into_iter()
-        .filter(|name| !crate::hex_microphone::is_hex_virtual_device_name(name))
+        .filter(|name| !crate::audio::hex_microphone::is_hex_virtual_device_name(name))
         .collect::<Vec<_>>();
     names.sort_by_key(|name| name.to_lowercase());
     names.dedup();
@@ -1501,14 +1299,58 @@ pub fn input_device_names() -> Result<Vec<String>> {
     input_devices().map(|devices| devices.names)
 }
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
-/// Linux and Windows don't tell built-in or Bluetooth inputs apart yet.
+/// ALSA devices carry no transport; Linux passes over a Bluetooth default
+/// through the sound server instead (`linux_input_route`).
+#[cfg(target_os = "linux")]
 fn transport(_device: &Device) -> Transport {
     Transport::Other
 }
 
+/// How WASAPI reports `device` connects, from its enumerator and form
+/// factor. cpal names only `BTHENUM` Bluetooth; a hands-free headset
+/// endpoint (`BTHHFENUM`) has no bus it knows, so a headset or handset of
+/// unknown bus counts as Bluetooth too.
+#[cfg(target_os = "windows")]
+fn transport(device: &Device) -> Transport {
+    use cpal::{DeviceType, InterfaceType};
+    let Ok(description) = device.description() else {
+        return Transport::Other;
+    };
+    match description.interface_type() {
+        InterfaceType::BuiltIn => Transport::BuiltIn,
+        InterfaceType::Bluetooth => Transport::Bluetooth,
+        InterfaceType::Virtual | InterfaceType::Aggregate => Transport::Virtual,
+        InterfaceType::Unknown
+            if matches!(
+                description.device_type(),
+                DeviceType::Headset | DeviceType::Handset
+            ) =>
+        {
+            Transport::Bluetooth
+        }
+        _ => Transport::Other,
+    }
+}
+
+/// Whether a built-in CoreAudio input is the internal microphone the lid
+/// switches off, from its UID and selected input data source. A microphone
+/// in the headphone jack is built in too, but stays on with the lid closed:
+/// Apple silicon lists it as its own device (`BuiltInHeadphoneInputDevice`),
+/// older Macs as the built-in input's external-microphone or line-in source.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn is_lid_switched_microphone(uid: &str, data_source: Option<u32>) -> bool {
+    const EXTERNAL_MICROPHONE: u32 = u32::from_be_bytes(*b"emic");
+    const LINE_IN: u32 = u32::from_be_bytes(*b"line");
+    if uid.contains("HeadphoneInput") {
+        return false;
+    }
+    !matches!(data_source, Some(EXTERNAL_MICROPHONE | LINE_IN))
+}
+
 /// How CoreAudio reports `device` connects: built in, such as a MacBook's
-/// microphone, or Bluetooth (classic or LE), such as AirPods.
+/// microphone, or Bluetooth (classic or LE), such as AirPods. A
+/// headphone-jack microphone counts as other, since closing the lid leaves
+/// it on.
 #[cfg(target_os = "macos")]
 fn transport(device: &Device) -> Transport {
     use std::ffi::c_void;
@@ -1525,15 +1367,20 @@ fn transport(device: &Device) -> Transport {
     };
     use objc2_core_foundation::CFString;
 
+    /// `kAudioDevicePropertyDataSource` and `kAudioObjectPropertyScopeInput`.
+    const DATA_SOURCE_SELECTOR: u32 = u32::from_be_bytes(*b"ssrc");
+    const INPUT_SCOPE: u32 = u32::from_be_bytes(*b"inpt");
+
     fn read_u32(
         object: AudioObjectID,
         selector: AudioObjectPropertySelector,
+        scope: u32,
         qualifier: Option<NonNull<c_void>>,
         qualifier_size: u32,
     ) -> Option<u32> {
         let mut address = AudioObjectPropertyAddress {
             mSelector: selector,
-            mScope: kAudioObjectPropertyScopeGlobal,
+            mScope: scope,
             mElement: kAudioObjectPropertyElementMain,
         };
         let mut value = 0_u32;
@@ -1559,14 +1406,28 @@ fn transport(device: &Device) -> Transport {
     let Some(device_id) = read_u32(
         kAudioObjectSystemObject as AudioObjectID,
         kAudioHardwarePropertyTranslateUIDToDevice,
+        kAudioObjectPropertyScopeGlobal,
         Some(NonNull::from(&uid_ref).cast()),
         std::mem::size_of::<*const CFString>() as u32,
     )
     .filter(|device_id| *device_id != 0) else {
         return Transport::Other;
     };
-    match read_u32(device_id, kAudioDevicePropertyTransportType, None, 0) {
-        Some(kind) if kind == kAudioDeviceTransportTypeBuiltIn => Transport::BuiltIn,
+    match read_u32(
+        device_id,
+        kAudioDevicePropertyTransportType,
+        kAudioObjectPropertyScopeGlobal,
+        None,
+        0,
+    ) {
+        Some(kind) if kind == kAudioDeviceTransportTypeBuiltIn => {
+            let data_source = read_u32(device_id, DATA_SOURCE_SELECTOR, INPUT_SCOPE, None, 0);
+            if is_lid_switched_microphone(id.id(), data_source) {
+                Transport::BuiltIn
+            } else {
+                Transport::Other
+            }
+        }
         Some(kind)
             if kind == kAudioDeviceTransportTypeBluetooth
                 || kind == kAudioDeviceTransportTypeBluetoothLE =>
@@ -1647,7 +1508,7 @@ fn build_stream<T: SizedSample>(
     channels: usize,
     sender: Sender<(Vec<f32>, CaptureInstant)>,
     reporter: StreamErrorReporter,
-    mut feed: crate::hex_microphone::CaptureFeed,
+    mut feed: crate::audio::hex_microphone::CaptureFeed,
     convert: impl Fn(T) -> f32 + Send + 'static,
 ) -> Result<Stream> {
     let sample_rate = config.sample_rate;
@@ -1705,6 +1566,70 @@ mod tests {
                 Transport::Other
             }
         }
+    }
+
+    #[test]
+    fn only_the_internal_microphone_is_switched_off_by_the_lid() {
+        let source = |code: &[u8; 4]| Some(u32::from_be_bytes(*code));
+        assert!(is_lid_switched_microphone("BuiltInMicrophoneDevice", None));
+        assert!(is_lid_switched_microphone(
+            "AppleHDAEngineInput:1B,0,1,0:1",
+            source(b"imic")
+        ));
+        assert!(!is_lid_switched_microphone(
+            "BuiltInHeadphoneInputDevice",
+            None
+        ));
+        assert!(!is_lid_switched_microphone(
+            "AppleHDAEngineInput:1B,0,1,0:1",
+            source(b"emic")
+        ));
+        assert!(!is_lid_switched_microphone(
+            "AppleHDAEngineInput:1B,0,1,0:1",
+            source(b"line")
+        ));
+    }
+
+    #[test]
+    fn a_headphone_jack_microphone_is_used_with_the_lid_closed() {
+        use InputTarget::{Named, StandIn, SystemDefault};
+        let names = listed(&["MacBook Pro Microphone", "External Microphone"]);
+        // The jack input reads as Other, so only the internal one is off.
+        let transport = built_in_at(0);
+        let found = |target, selection| Ok(InputPlan { target, selection });
+        assert_eq!(
+            resolve_input(
+                None,
+                None,
+                &names,
+                Some("External Microphone"),
+                &transport,
+                CLOSED
+            ),
+            found(SystemDefault, Selection::InUse)
+        );
+        assert_eq!(
+            resolve_input(
+                None,
+                Some("External Microphone"),
+                &names,
+                Some("MacBook Pro Microphone"),
+                &transport,
+                CLOSED
+            ),
+            found(Named(1), Selection::InUse)
+        );
+        assert_eq!(
+            resolve_input(
+                None,
+                None,
+                &names,
+                Some("MacBook Pro Microphone"),
+                &transport,
+                CLOSED
+            ),
+            found(StandIn(1), Selection::InUse)
+        );
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use super::settings::{desktop_shortcut, recorded_binding, validate};
 use super::*;
-use crate::transcription_models::TranscriptionSelection;
+use crate::transcription::models::TranscriptionSelection;
 use rune::render::Gpu;
 use rune::text::TextSystem;
 use rune::{Env, Key, KeyEvent, Mods, Runtime};
@@ -153,6 +153,7 @@ fn a_refused_portal_shortcut_says_how_to_free_it() {
         view.listener.shortcuts = DesktopShortcuts::Portal(vec![DesktopGrantedShortcut {
             name: "Dictation".into(),
             trigger: None,
+            unconfirmed: false,
         }]);
     }
     rt.invalidate();
@@ -170,6 +171,34 @@ fn a_refused_portal_shortcut_says_how_to_free_it() {
     assert!(rt.find("output/card/refused").is_none());
 }
 
+/// #635: Hyprland's portal names no trigger, since its config binds the
+/// keys, so the row says Hex can't confirm it and shows no refusal.
+#[test]
+fn an_unconfirmed_portal_shortcut_is_not_called_refused() {
+    let mut rt = runtime("portal", true, GOLDEN_SIZE);
+    if let Some(view) = &mut rt.state.view {
+        view.listener.shortcuts = DesktopShortcuts::Portal(vec![DesktopGrantedShortcut {
+            name: "Dictation".into(),
+            trigger: None,
+            unconfirmed: true,
+        }]);
+    }
+    rt.invalidate();
+    rt.frame(0.0);
+    let shown = texts(&rt);
+    assert!(
+        shown
+            .iter()
+            .any(|text| text == "Your desktop assigns this key itself, so Hex can't confirm it")
+    );
+    assert!(
+        !shown
+            .iter()
+            .any(|text| text == "Your desktop did not grant this shortcut")
+    );
+    assert!(rt.find("basics/refused").is_none());
+}
+
 #[test]
 fn a_refused_note_sits_with_the_shortcut_the_desktop_kept() {
     let mut rt = runtime("portal", true, GOLDEN_SIZE);
@@ -178,10 +207,12 @@ fn a_refused_note_sits_with_the_shortcut_the_desktop_kept() {
             DesktopGrantedShortcut {
                 name: "Dictation".into(),
                 trigger: Some("F12".into()),
+                unconfirmed: false,
             },
             DesktopGrantedShortcut {
                 name: "Paste last dictation".into(),
                 trigger: None,
+                unconfirmed: false,
             },
         ]);
     }
@@ -233,6 +264,53 @@ fn toggles_save_through_the_host() {
     assert!(!rt.state.settings.paste_with_shift);
     assert_eq!(saved(&rt), 1);
     assert!(sent(&rt).is_empty());
+}
+
+#[test]
+fn restore_default_brings_back_paste_last_only_with_its_lab_on() {
+    use crate::app_settings::HotkeyBinding;
+    let default = HotkeyBinding::paste_last_default();
+    let mut rt = runtime("portal", true, TALL_SIZE);
+    open_advanced(&mut rt, Pane::General);
+    rt.state.settings.paste_last_hotkey = None;
+    rt.invalidate();
+    settle(&mut rt);
+    assert!(
+        rt.find("restore-paste-last").is_none(),
+        "hidden while Labs › Restore shortcut default is off"
+    );
+
+    rt.state.settings.labs.restore_shortcut_default = true;
+    rt.invalidate();
+    settle(&mut rt);
+    let note = format!("Default shortcut: {}", default.keycaps().join("+"));
+    assert!(
+        texts(&rt).contains(&note),
+        "the empty row names its default"
+    );
+    tap(&mut rt, "restore-paste-last");
+    assert_eq!(rt.state.settings.paste_last_hotkey, Some(default.clone()));
+    assert_eq!(saved(&rt), 1);
+    assert!(
+        rt.find("restore-paste-last").is_none(),
+        "hidden once the shortcut is the default"
+    );
+
+    // A default another shortcut already uses is refused, as recording it would be.
+    rt.state.settings.paste_last_hotkey = None;
+    rt.state.settings.raw_dictation_hotkey = Some(default);
+    rt.invalidate();
+    settle(&mut rt);
+    tap(&mut rt, "restore-paste-last");
+    assert_eq!(rt.state.settings.paste_last_hotkey, None);
+    assert_eq!(saved(&rt), 1);
+    assert!(matches!(
+        rt.state.capture,
+        settings::Capture::Listening {
+            message: Some(_),
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -507,23 +585,24 @@ fn service_settings_are_adopted_only_when_the_service_changes_them() {
 #[test]
 fn a_draft_saves_over_what_another_writer_changed_meanwhile() {
     let mut ui = portal_fixture();
-    ui.settings.transcription.model = TranscriptionModelId::WhisperLargeV3Turbo;
     let service = ui.settings.clone();
     ui.adopt(service.clone());
-    ui.hints = TextEdit::new("OpenCode, Effect");
+    ui.vocabulary
+        .push(TextEdit::new("OpenCode"), TextEdit::default());
     let start = std::time::Instant::now();
     assert!(!ui.save_drafts(start), "waits for a pause");
     // `hex settings set` (or a capture's saved rule) saves while it waits.
     let mut elsewhere = service;
     elsewhere.enable_on_launch = !elsewhere.enable_on_launch;
     ui.adopt(elsewhere.clone());
-    assert_eq!(ui.hints.text, "OpenCode, Effect", "the typing stays");
+    assert_eq!(
+        ui.vocabulary.project()[0].term,
+        "OpenCode",
+        "the typing stays"
+    );
     assert!(ui.save_drafts(start + DRAFT_DELAY));
     assert_eq!(ui.settings.enable_on_launch, elsewhere.enable_on_launch);
-    assert_eq!(
-        ui.settings.transcription.recognition_hints,
-        "OpenCode, Effect"
-    );
+    assert_eq!(ui.settings.vocabulary[0].term, "OpenCode");
 }
 
 /// Typing in one editor keeps only that editor's text: the others take
@@ -531,10 +610,10 @@ fn a_draft_saves_over_what_another_writer_changed_meanwhile() {
 #[test]
 fn a_draft_keeps_only_its_own_editor() {
     let mut ui = portal_fixture();
-    ui.settings.transcription.model = TranscriptionModelId::WhisperLargeV3Turbo;
     let service = ui.settings.clone();
     ui.adopt(service.clone());
-    ui.hints = TextEdit::new("OpenCode, Effect");
+    ui.vocabulary
+        .push(TextEdit::new("OpenCode"), TextEdit::default());
     let start = std::time::Instant::now();
     assert!(!ui.save_drafts(start), "waits for a pause");
     let mut elsewhere = service;
@@ -545,10 +624,7 @@ fn a_draft_keeps_only_its_own_editor() {
         .prompt = "Keep it short.".into();
     ui.adopt(elsewhere);
     assert!(ui.save_drafts(start + DRAFT_DELAY));
-    assert_eq!(
-        ui.settings.transcription.recognition_hints,
-        "OpenCode, Effect"
-    );
+    assert_eq!(ui.settings.vocabulary[0].term, "OpenCode");
     assert_eq!(
         ui.settings
             .dictation_processing
@@ -683,9 +759,12 @@ fn switching_panes_is_instant() {
     }
 }
 
-/// A frame of Output's turning spark, which moves on its own.
+/// A frame of Output's turning spark or a word of its cycling examples,
+/// which move on their own.
 fn spark(e: &rune::ElementInfo) -> bool {
-    e.key.as_deref().is_some_and(|key| key.starts_with("spark"))
+    e.key
+        .as_deref()
+        .is_some_and(|key| key.starts_with("spark") || key.starts_with("example"))
 }
 
 fn element(rt: &Runtime<Ui>, key: &str) -> rune::ElementInfo {
@@ -711,7 +790,7 @@ fn nav_items(rt: &Runtime<Ui>) -> Vec<(Pane, [f32; 4])> {
 type NavRow = (Pane, [f32; 4]);
 
 /// Neighbouring sidebar items with nothing but a gap between them: the
-/// Labs row splits the main panes from the experiments.
+/// Labs row sits below the panes.
 fn nav_neighbours(rt: &Runtime<Ui>) -> Vec<(NavRow, NavRow)> {
     let labs = rt
         .elements()
@@ -745,16 +824,18 @@ fn hovered_items(rt: &mut Runtime<Ui>, x: f32, y: f32) -> Vec<Pane> {
         .collect()
 }
 
-/// A sidebar with the Experiments group, as a developer sees it.
+/// A sidebar with Labs features turned on, as a developer sees it.
 fn grouped_sidebar() -> Runtime<Ui> {
     let mut rt = runtime("mac-settings", true, PANE_SIZE);
     rt.state.platform.developer = true;
     rt.state.labs_open = true;
     rt.invalidate();
     settle(&mut rt);
-    let items = nav_items(&rt);
-    assert!(items.iter().any(|(pane, _)| pane.experimental()));
-    assert!(items.iter().any(|(pane, _)| !pane.experimental()));
+    assert!(
+        nav_items(&rt)
+            .iter()
+            .any(|(pane, _)| *pane == Pane::VoiceFilter)
+    );
     rt
 }
 
@@ -962,7 +1043,7 @@ fn arrow_keys_move_the_search_highlight_and_enter_picks_it() {
 #[test]
 fn opencode_missing_offers_setup_instead_of_models() {
     let mut rt = runtime("modes", true, PANE_SIZE);
-    rt.state.models = models::Models::fixture_missing();
+    rt.state.models = models::Models::fixture_not_running();
     rt.state.settings.dictation_processing.modes[0]
         .post_processing
         .enabled = false;
@@ -982,13 +1063,16 @@ fn unavailable_opencode_is_explained_beside_each_switch() {
             .filter_map(|e| e.text)
             .collect::<Vec<_>>()
     };
-    let rt = runtime("modes-opencode-v1", true, PANE_SIZE);
+    let rt = runtime("modes-opencode-not-running", true, PANE_SIZE);
     assert!(rt.find("processing-toggle").is_some());
-    assert_eq!(beside(&rt, "processing-enabled"), ["Requires OpenCode V2"]);
+    assert_eq!(
+        beside(&rt, "processing-enabled"),
+        ["OpenCode isn't running"]
+    );
     assert!(
         texts(&rt)
             .iter()
-            .any(|text| text == "Transformation requires OpenCode V2")
+            .any(|text| text == "Install or start OpenCode to transform dictated text.")
     );
 }
 
@@ -1356,7 +1440,7 @@ fn the_transcription_picker_asks_the_service_for_a_model() {
 
 /// The card index of `model` in the picker over `language`.
 fn picker_card(language: &str, model: TranscriptionModelId) -> String {
-    let index = crate::transcription_models::picker_models(language)
+    let index = crate::transcription::models::picker_models(language)
         .iter()
         .position(|(candidate, _)| candidate.id == model)
         .expect("every available model is listed");
@@ -1369,7 +1453,6 @@ fn a_model_without_the_saved_language_falls_back_to_its_own_visibly() {
     rt.state.settings.transcription = TranscriptionSelection {
         model: TranscriptionModelId::WhisperLargeV3Turbo,
         language: "ja".into(),
-        recognition_hints: String::new(),
     };
     rt.state.picker.installed = Some(Vec::new());
     rt.invalidate();
@@ -1393,7 +1476,6 @@ fn a_model_without_the_saved_language_falls_back_to_its_own_visibly() {
     rt.state.settings.transcription = TranscriptionSelection {
         model: TranscriptionModelId::ParakeetUnifiedEnglish,
         language: "en".into(),
-        recognition_hints: String::new(),
     };
     rt.invalidate();
     tap(&mut rt, "close-picker");
@@ -1447,7 +1529,7 @@ fn changing_only_the_language_prepares_the_same_model_again() {
     assert_eq!(rt.state.open, Some(Menu::Pick("transcription-language")));
     // Whisper lists every language in the catalog's order.
     let japanese =
-        crate::transcription_models::definition(TranscriptionModelId::WhisperLargeV3Turbo)
+        crate::transcription::models::definition(TranscriptionModelId::WhisperLargeV3Turbo)
             .language_choices()
             .iter()
             .position(|code| *code == "ja")
@@ -1486,7 +1568,7 @@ fn the_vocabulary_row_opens_its_sheet() {
 fn add_term_scrolls_the_new_row_into_view() {
     let mut rt = runtime("mac-settings-vocabulary", true, GOLDEN_SIZE);
     rt.state.settings.vocabulary = (0..14)
-        .map(|index| crate::vocabulary::VocabularyEntry {
+        .map(|index| crate::dictation::vocabulary::VocabularyEntry {
             term: format!("term {index}"),
             sounds_like: Vec::new(),
         })
@@ -1506,11 +1588,11 @@ fn add_term_scrolls_the_new_row_into_view() {
     );
 }
 
-/// A model transcription doesn't bias says so on the Vocabulary row and in
-/// its sheet; a Parakeet-based model shows no note.
+/// A model whose transcription takes no vocabulary says so on the Vocabulary
+/// row and in its sheet; Parakeet-based and prompt-reading models show none.
 #[test]
 fn the_vocabulary_row_says_when_the_model_ignores_the_list() {
-    let note = "Whisper large-v3-turbo doesn't use these terms; rewriting and search still do";
+    let note = "Cohere Transcribe doesn't use these terms; rewriting and search still do";
     let shows_note = |rt: &Runtime<Ui>| texts(rt).iter().any(|text| text == note);
     let sheet_note = |rt: &Runtime<Ui>| {
         rt.elements()
@@ -1519,7 +1601,7 @@ fn the_vocabulary_row_says_when_the_model_ignores_the_list() {
     };
     let mut rt = runtime("portal", true, GOLDEN_SIZE);
     assert!(!shows_note(&rt));
-    rt.state.settings.transcription.model = TranscriptionModelId::WhisperLargeV3Turbo;
+    rt.state.settings.transcription.model = TranscriptionModelId::CohereTranscribe;
     rt.invalidate();
     settle(&mut rt);
     assert!(shows_note(&rt), "{:?}", texts(&rt));
@@ -1528,14 +1610,20 @@ fn the_vocabulary_row_says_when_the_model_ignores_the_list() {
     assert!(sheet_note(&rt));
     key(&mut rt, Key::Escape, Mods::default());
     settle(&mut rt);
-    rt.state.settings.transcription.model = TranscriptionModelId::UnderdogBark3Pro;
-    rt.invalidate();
-    settle(&mut rt);
-    assert!(
-        !texts(&rt)
-            .iter()
-            .any(|text| text.contains("doesn't use these terms"))
-    );
+    for model in [
+        TranscriptionModelId::UnderdogBark3Pro,
+        TranscriptionModelId::WhisperLargeV3Turbo,
+        TranscriptionModelId::QwenCleoAsr17B,
+    ] {
+        rt.state.settings.transcription.model = model;
+        rt.invalidate();
+        settle(&mut rt);
+        assert!(
+            !texts(&rt)
+                .iter()
+                .any(|text| text.contains("doesn't use these terms"))
+        );
+    }
 
     let rt = runtime("vocabulary-unused", true, PANE_SIZE);
     assert!(rt.state.vocabulary.open);
@@ -1727,22 +1815,10 @@ fn onboarding_downloads_the_model_through_the_service() {
     settle(&mut rt);
     std::thread::sleep(std::time::Duration::from_millis(750));
     settle(&mut rt);
+    // Setup moves on to the practice dictation, which can be skipped.
+    tap(&mut rt, "tour-skip");
     tap(&mut rt, "tour-continue");
     assert!(rt.state.tour.is_none(), "Start using Hex closes setup");
-}
-
-#[test]
-fn recognition_hints_save_when_typing_pauses() {
-    let mut ui = portal_fixture();
-    ui.settings.transcription.model = TranscriptionModelId::WhisperLargeV3Turbo;
-    ui.hints = TextEdit::new("OpenCode, Effect");
-    let start = std::time::Instant::now();
-    assert!(!ui.save_drafts(start), "waits for a pause");
-    assert!(ui.save_drafts(start + DRAFT_DELAY));
-    assert_eq!(
-        ui.settings.transcription.recognition_hints,
-        "OpenCode, Effect"
-    );
 }
 
 #[test]
@@ -1914,11 +1990,21 @@ fn check_golden(scene: &str, dark: bool, size: (f32, f32)) {
     if !path.exists() {
         let actual = std::env::temp_dir().join(format!("rune-settings-{name}-actual.png"));
         rune::render::write_png(&actual, width, height, &pixels).unwrap();
-        panic!(
+        let miss = format!(
             "{} is missing; run with HEX_UPDATE_GOLDENS=1 (render at {})",
             path.display(),
             actual.display()
         );
+        if !GOLDEN_MISSES.with(|misses| {
+            misses
+                .borrow_mut()
+                .as_mut()
+                .map(|misses| misses.push(miss.clone()))
+                .is_some()
+        }) {
+            panic!("{miss}");
+        }
+        return;
     }
     let (golden_width, golden_height, golden) = read_png(&path);
     assert_eq!(
@@ -1988,6 +2074,7 @@ fn goldens() {
         check_golden("portal", dark, GOLDEN_SIZE);
         for scene in [
             "history",
+            "mac-labs-link",
             "output",
             "modes",
             "modes-picker",
@@ -1999,7 +2086,7 @@ fn goldens() {
     }
     check_golden("commands", true, GOLDEN_SIZE);
     check_golden("menus", false, GOLDEN_SIZE);
-    check_golden("modes-opencode-v1", false, PANE_SIZE);
+    check_golden("modes-opencode-not-running", false, PANE_SIZE);
     check_golden("onboarding", true, PANE_SIZE);
 }
 

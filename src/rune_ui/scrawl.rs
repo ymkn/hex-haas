@@ -11,13 +11,13 @@ use super::controls::{
     segmented, select, setting_row, toggle_row,
 };
 use super::general::keys_button;
-use super::lists::{PermissionControl, permission_control};
+use super::lists::permission_control;
 use super::platform::{PlatformRequest, ScrawlRequest, ScrawlView};
 use super::settings::cancel_capture;
 use super::{Menu, ShortcutTarget, Ui};
 use crate::app_settings::{AppSettings, CaptureTranscriber};
-use crate::desktop_i18n::{tr, tr_fill};
-use crate::onboarding::{PermissionAction, PermissionKind};
+use crate::desktop::i18n::{tr, tr_fill};
+use crate::desktop::onboarding::{PermissionAction, PermissionKind};
 
 fn description(enabled: bool) -> &'static str {
     if enabled {
@@ -112,7 +112,8 @@ fn folder_label(ui: &Ui) -> String {
 fn how_it_works(ui: &Ui, p: Paint) -> Vec<El> {
     let shortcut = ui.settings.capture.hotkey.keycaps();
     let keys = |key: &str, parts: &[String]| super::controls::keycaps(p, key, parts);
-    let draw_how = if cfg!(target_os = "macos") {
+    // Wayland tells Hex nothing of Shift outside its own windows.
+    let draw_how = if cfg!(not(target_os = "linux")) {
         tr(
             "While it records, hold the shortcut and move the pointer; no click needed. Shift draws too",
         )
@@ -228,30 +229,31 @@ fn shortcut_rows(ui: &Ui, p: Paint, view: &ScrawlView) -> Vec<El> {
         ));
         rows.push(recordings_row(ui, p));
     } else if enabled && cfg!(target_os = "macos") {
+        let stale = !view.screen_recording && ui.platform.stale(PermissionKind::ScreenRecording);
         rows.push(setting_row(
             p,
             "screen-recording",
             tr("Screen Recording"),
             Some(if view.screen_recording {
                 tr("Lets Annotate record your screen")
+            } else if stale {
+                tr("An older Hex entry can keep this off")
             } else {
                 tr("Required to record your screen. macOS asks the first time you annotate, or allow it here.")
             }),
             permission_control(
                 p,
                 "screen-recording-allow",
-                if view.screen_recording {
-                    PermissionControl::Allowed
-                } else if ui.platform.asked(PermissionKind::ScreenRecording) {
-                    PermissionControl::Waiting
-                } else {
-                    PermissionControl::Allow
-                },
+                ui.platform
+                    .control_for(PermissionKind::ScreenRecording, view.screen_recording),
                 ButtonKind::Secondary,
-                |ui: &mut Ui| {
-                    ui.ask(PlatformRequest::Permission(PermissionAction::ShowGuide(
-                        PermissionKind::ScreenRecording,
-                    )))
+                move |ui: &mut Ui| {
+                    let action = if stale {
+                        PermissionAction::ResetAndPrompt(PermissionKind::ScreenRecording)
+                    } else {
+                        PermissionAction::ShowGuide(PermissionKind::ScreenRecording)
+                    };
+                    ui.ask(PlatformRequest::Permission(action))
                 },
             ),
         ));
@@ -552,6 +554,30 @@ mod tests {
             asked(&rt),
             [PlatformRequest::Permission(PermissionAction::Restart)]
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn stale_screen_recording_offers_fix_it_and_resets_permission() {
+        let mut rt = pane("mac-scrawl-permission");
+        rt.state
+            .platform
+            .note_stale(PermissionKind::ScreenRecording);
+        rt.invalidate();
+        rt.settle_all();
+        rt.frame(0.0);
+        assert!(
+            rt.find(&format!("{ALLOW}-control/mark/dot")).is_some(),
+            "stale keeps the waiting dot"
+        );
+        tap(&mut rt, ALLOW);
+        assert_eq!(
+            asked(&rt),
+            [PlatformRequest::Permission(
+                PermissionAction::ResetAndPrompt(PermissionKind::ScreenRecording)
+            )]
+        );
+        assert!(!rt.state.platform.stale(PermissionKind::ScreenRecording));
     }
 
     #[test]

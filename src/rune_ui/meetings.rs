@@ -18,10 +18,10 @@ use super::controls::{
     ButtonKind, DESCRIPTION, Paint, button, card, page, pulsing_dot, segmented_tx,
 };
 use super::list_detail::{self as ld, Item};
-use super::lists::{Tone, error_panel, section_label, tone_tag};
-use super::platform::{MeetingRequest, PlatformRequest};
+use super::lists::{Tone, dismissible_error_panel, error_panel, section_label, tone_tag};
+use super::platform::MeetingRequest;
 use super::{Menu, Ui};
-use crate::desktop_i18n::{tr, tr_fill, tr_named};
+use crate::desktop::i18n::{tr, tr_fill, tr_named};
 
 static MORE_ICON: rune::Icon = rune::Icon {
     name: "hex-more",
@@ -57,7 +57,7 @@ pub(super) struct Turn {
     pub(super) pause_before_ms: Option<u64>,
 }
 
-/// One topic of a meeting (experiment `live-chapters`), from `start_ms` to
+/// One topic of a meeting (Labs), from `start_ms` to
 /// the next chapter's start.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Chapter {
@@ -98,6 +98,9 @@ pub(super) struct Meeting {
     pub(super) live_error: Option<String>,
     pub(super) transcript: Transcript,
     pub(super) chapters: Vec<Chapter>,
+    /// How long it is kept once finished, as `MeetingRetention::label`;
+    /// `None` when it is kept for good.
+    pub(super) kept_for: Option<&'static str>,
 }
 
 impl Meeting {
@@ -137,6 +140,13 @@ pub(super) fn available(ui: &Ui) -> bool {
     ui.settings.meetings.enabled || ui.platform.developer
 }
 
+/// Whether something can write a meeting's notes: Apple Intelligence on a
+/// Mac that has it, or OpenCode once turned on.
+fn notes_available(ui: &Ui) -> bool {
+    (ui.platform.caps.os == super::platform::Os::Macos && ui.platform.notes.is_available())
+        || ui.settings.meetings.summarize_with_opencode
+}
+
 #[derive(Default)]
 pub(super) struct MeetingsPane {
     pub(super) view: View,
@@ -155,6 +165,9 @@ pub(super) struct MeetingsPane {
     copied: Option<(String, String)>,
     pub(super) start_pending: bool,
     pub(super) stop_pending: bool,
+    /// Where Linux and Windows perform meeting requests.
+    #[cfg(not(target_os = "macos"))]
+    pub(super) local: super::meetings_host::LocalMeetings,
 }
 
 /// `42 min`, `1 h 05 min`, or `< 1 min`.
@@ -316,6 +329,7 @@ impl MeetingsPane {
                 live_error: None,
                 transcript: Transcript::Loaded(Vec::new()),
                 chapters: Vec::new(),
+                kept_for: Some("24 hours"),
             };
         let mut live = meeting(
             "preview-live",
@@ -368,7 +382,7 @@ impl MeetingsPane {
         }
     }
 
-    /// The fixture with live chapters (experiment `live-chapters`) on the
+    /// The fixture with live chapters (Labs) on the
     /// meeting with notes, its title extended by them.
     pub(super) fn chapters_fixture() -> Self {
         let mut pane = Self::fixture();
@@ -423,8 +437,10 @@ impl MeetingsPane {
     }
 }
 
+/// Sends `request` where it is carried out (on Linux and Windows, the
+/// window's own meetings, not the OS host, which ignores meeting requests).
 fn ask(ui: &mut Ui, request: MeetingRequest) -> bool {
-    match ui.host.send(PlatformRequest::Meeting(request)) {
+    match ui.send_meeting(request) {
         Ok(()) => true,
         Err(error) => {
             ui.meetings.action_error = Some(error);
@@ -683,11 +699,12 @@ fn recordings(ui: &Ui, p: Paint, layer: &mut Vec<El>, action: El) -> (Vec<El>, E
         ));
     }
     if let Some(error) = &pane.runtime_error {
-        notices.push(error_panel(
+        notices.push(dismissible_error_panel(
             p,
             "meeting-runtime-error",
             tr("Meeting could not be recorded."),
             error,
+            |ui: &mut Ui| ui.meetings.runtime_error = None,
         ));
     }
     let body = if pane.meetings.is_empty() {
@@ -867,6 +884,11 @@ fn detail(ui: &Ui, p: Paint, meeting: &Meeting, layer: &mut Vec<El>) -> El {
         clock_offset(meeting.duration_ms),
     ];
     meta_line.extend(meeting.app.clone());
+    if !meeting.status.is_active()
+        && let Some(kept_for) = meeting.kept_for
+    {
+        meta_line.push(tr_fill("Deleted after {}", tr(kept_for)));
+    }
     let mut meta: Vec<El> = status_tag(p, meeting.status, pane.stop_pending)
         .into_iter()
         .collect();
@@ -1068,7 +1090,7 @@ fn overflow(ui: &Ui, p: Paint, meeting: &Meeting, layer: &mut Vec<El>) -> Option
         );
         items += 1;
     }
-    if meeting.status == Status::Complete && ui.platform.notes.is_available() {
+    if meeting.status == Status::Complete && notes_available(ui) {
         if meeting.notes_running {
             menu = menu.item(MenuItem::new(tr("Summarizing…")).disabled(true));
         } else {
@@ -1195,4 +1217,29 @@ pub(super) fn turn_line(p: Paint, index: usize, turn: &Turn) -> Vec<El> {
             ),
     );
     els
+}
+
+#[cfg(all(test, not(target_os = "macos")))]
+mod tests {
+    use super::*;
+    use crate::rune_ui::Service;
+    use crate::rune_ui::platform::PlatformHost;
+
+    /// Linux and Windows carry meeting requests out in the window's own
+    /// process; the OS host ignored them, so Stop, Rename, and Trash from
+    /// the pane did nothing and reported nothing (#566).
+    #[test]
+    fn pane_requests_reach_the_window_s_own_meetings() {
+        let mut ui = Ui::with(
+            crate::app_settings::AppSettings::default(),
+            Service::Fixture(Vec::new()),
+        );
+        assert!(matches!(ui.host, PlatformHost::Local(_)));
+        ui.meetings = MeetingsPane::fixture();
+        // No meeting controller runs in tests, so the request is refused
+        // rather than silently accepted.
+        stop(&mut ui);
+        assert!(!ui.meetings.stop_pending);
+        assert!(ui.meetings.action_error.is_some());
+    }
 }

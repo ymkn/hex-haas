@@ -1,21 +1,27 @@
-//! A throwaway proposal: the practice step as a mini game. Notifications
-//! drift in, one is targeted at a time, the player holds the shortcut and
-//! answers it, the words fly into it, and it explodes like the site's cards
-//! (`explode` in `site/src/shout/main.js`). Three scripted messages end on a
-//! certificate the player signs by voice; signing it shows a shareable score
-//! card, and Keep playing carries on for as long as they like.
+//! The practice step as a mini game (`t1121`). Messages drift in, one is
+//! lit at a time, the player holds the shortcut and answers it, the words
+//! fly into it, and a bolt of lightning strikes it and burns it away
+//! (`game_fx`, after Psychopomp's lightning and dissolve). Three messages
+//! end on a certificate the player signs by saying their name; signing it
+//! shows a score card, and Keep playing carries on for as long as they like.
+//! Done is always there, and the game never ends by itself.
 //!
-//! Scripted fixture answers only. Nothing here touches the real first run.
+//! [`Play`] is the game, driven by dictation: the live words a streaming
+//! model sends while the shortcut is held, then the paste, which is the
+//! answer. The first run's `"Your turn"` feeds it Hex's own dictation; the
+//! playground story feeds it scripted answers.
 
 use std::cell::Cell;
+use std::rc::Rc;
 use std::time::Duration;
 
 use rune::{
-    Anim, Color, Cx, El, LineCap, Playground, Shape, Story, TextStyle, Transition, Tx, canvas, col,
-    el, row, text,
+    Anim, Color, Cx, El, Playground, Story, TextEdit, TextStyle, Transition, Tx, col, effect, el,
+    row, text,
 };
-use rune_kit::{Button, ButtonVariant};
+use rune_kit::{Button, ButtonVariant, TextInput};
 
+use super::super::Ui;
 use super::super::controls::{Paint, PushSize};
 use super::cards::{
     ADAM, App, CARD_W, DAX, FRANK, Notice, Reply, field_text_origin, floating, lines_card_height,
@@ -24,29 +30,63 @@ use super::cards::{
 use super::field_text::{CARD, Field};
 use super::fixture::Take;
 use super::flight::{Flight, ember_tone, flicker, flying, typeset};
+use super::game_fx::{self, BURN, BURN_MARK, Bolt, Burn, Fx, Mote, STRIKE_MARK, Tones};
 use super::landing::{LEAD, keys, title_font};
+use super::live;
 use super::mic::mic_level;
 use super::sparks::impacts;
+use super::stories::{Onboard, physical_shortcut_held};
+use crate::desktop::onboarding::Practice;
 
 const STAGE_W: f32 = 880.0;
 const STAGE_H: f32 = 620.0;
 const HUD_AT: [f32; 2] = [STAGE_W * 0.5, STAGE_H - 34.0];
 const FRAME: Duration = Duration::from_millis(16);
 
+/// When the first card shows, and when it lights.
+const FIRST_ARRIVES: f64 = 0.3;
+const FIRST_LIGHTS: f64 = 1.0;
 /// How long a card takes to drift in from off screen.
 const DRIFT: f64 = 1.7;
-/// The site's hit-stop: the card freezes, flashed, before it shatters.
+/// The site's hit-stop: the card freezes while the leader climbs to it.
 const HITSTOP: f64 = 0.07;
-/// After the last word lands, the card holds for a beat, then blows.
-const AFTER_LAND: f64 = 0.28;
+/// After the last word lands, the card swells into the hit-stop: one beat,
+/// not two.
+const AFTER_LAND: f64 = 0.12;
+/// Seconds between live words leaving the HUD, and between pasted ones.
+const STAGGER: f64 = 0.04;
+const BURST: f64 = 0.06;
+/// How long live words wait for their paste once the dictation ends.
+const WAIT: f64 = 8.0;
+/// The most lines an answer takes; the rest of a long one is left out.
+const LINES: usize = 3;
+/// Burning cards take turns at this many compositor slots.
+const SLOTS: usize = 200;
+/// The story's Keep playing variant presses it after this long.
 const SHARE_HOLD: f64 = 2.8;
-/// The score pill's top-left, level with Done.
+/// Keep playing folds the share card into the score pill.
+const FOLD: f32 = 0.45;
+/// The score pill's top-left, level with Done, and its size.
 const SCORE_AT: [f32; 2] = [24.0, 18.0];
+const PILL: [f32; 2] = [112.0, 30.0];
 const SHARE_W: f32 = 432.0;
 const SHARE_PAD: f32 = 24.0;
-/// Roughly the share card's height, for centring its flights.
-const SHARE_H: f32 = 360.0;
+const SHARE_GAP: f32 = 16.0;
+/// The share card's rows, top to bottom, each a fixed height so the card's
+/// own height is known: brand, score, rule, stats, rule, signature, actions.
+const SHARE_ROWS: [f32; 7] = [20.0, 78.0, 1.0, 42.0, 1.0, 32.0, 28.0];
+const SHARE_H: f32 = 2.0 * SHARE_PAD
+    + SHARE_ROWS[0]
+    + SHARE_ROWS[1]
+    + SHARE_ROWS[2]
+    + SHARE_ROWS[3]
+    + SHARE_ROWS[4]
+    + SHARE_ROWS[5]
+    + SHARE_ROWS[6]
+    + 6.0 * SHARE_GAP;
 const SHARE_Y: f32 = 128.0;
+const BIG_SIZE: f32 = 76.0;
+const BIG_LINE: f32 = 78.0;
 
 const NAME: &str = "Kit Langton";
 const CERT_H: f32 = 150.0;
@@ -125,7 +165,8 @@ enum Card {
 #[derive(Clone, Copy)]
 struct Spec {
     card: Card,
-    take: &'static Take,
+    /// The story's answer.
+    demo: &'static Take,
     /// How hard the words fly (`Flight` intensity): one shouted word hits hardest.
     heat: f32,
     home: [f32; 2],
@@ -141,85 +182,197 @@ const GUTTER: f32 = 12.0;
 const SCRIPT: [Spec; 3] = [
     Spec {
         card: Card::Chat(MILK),
-        take: &SAY_MILK,
+        demo: &SAY_MILK,
         heat: 0.5,
         home: [LEFT, 128.0],
         from: [-520.0, 40.0],
     },
     Spec {
         card: Card::Chat(GREG),
-        take: &SAY_GREG,
+        demo: &SAY_GREG,
         heat: 0.92,
         home: [RIGHT, 218.0],
         from: [520.0, -30.0],
     },
     Spec {
         card: Card::Certificate,
-        take: &SAY_NAME,
+        demo: &SAY_NAME,
         heat: 0.62,
         home: [LEFT, 318.0],
         from: [-80.0, 420.0],
     },
 ];
+const CERTIFICATE: usize = SCRIPT.len() - 1;
 
-const ENDLESS: [Spec; 3] = [
+/// Keep playing's messages, round and round, each in the other column
+/// from the one before.
+const ENDLESS: [Spec; 4] = [
     Spec {
         card: Card::Chat(FRANK),
-        take: &SAY_FRANK,
+        demo: &SAY_FRANK,
         heat: 0.55,
         home: [RIGHT, 140.0],
         from: [500.0, -60.0],
     },
     Spec {
         card: Card::Chat(DAX),
-        take: &SAY_DAX,
+        demo: &SAY_DAX,
         heat: 0.6,
         home: [LEFT, 260.0],
         from: [-520.0, 0.0],
     },
     Spec {
         card: Card::Chat(ADAM),
-        take: &SAY_ADAM,
+        demo: &SAY_ADAM,
         heat: 0.75,
         home: [RIGHT, 330.0],
         from: [480.0, 300.0],
     },
+    Spec {
+        card: Card::Chat(GREG),
+        demo: &SAY_GREG,
+        heat: 0.92,
+        home: [LEFT, 128.0],
+        from: [-520.0, -30.0],
+    },
 ];
 
+fn spec(n: usize) -> Spec {
+    SCRIPT
+        .get(n)
+        .copied()
+        .unwrap_or_else(|| ENDLESS[(n - SCRIPT.len()) % ENDLESS.len()])
+}
+
+/// One card, from drifting in to burning away.
 struct Round {
+    /// Which card this is, counting from the first.
+    n: usize,
     spec: Spec,
     arrive: f64,
-    target: f64,
-    hold: f64,
-    flights: Vec<(Flight, &'static str, [f32; 2])>,
+    /// When it lights, once that's known.
+    target: Option<f64>,
+    /// The answer as heard so far, then as pasted.
+    text: String,
+    /// When each word of `text` leaves the HUD.
+    launch: Vec<f64>,
+    answered: bool,
+    /// When the strike's leader sets off: never, until it's answered.
     explode: f64,
-    size: [f32; 2],
 }
 
 impl Round {
+    fn new(n: usize, arrive: f64) -> Self {
+        Self {
+            n,
+            spec: spec(n),
+            arrive,
+            target: None,
+            text: String::new(),
+            launch: Vec::new(),
+            answered: false,
+            explode: f64::INFINITY,
+        }
+    }
+
+    fn lit_at(&self) -> f64 {
+        self.target.unwrap_or(f64::INFINITY)
+    }
+
     fn shatter(&self) -> f64 {
         self.explode + HITSTOP
     }
 
+    fn size(&self) -> [f32; 2] {
+        field_of(self).2
+    }
+
     fn centre(&self) -> [f32; 2] {
+        let size = self.size();
         [
-            self.spec.home[0] + self.size[0] * 0.5,
-            self.spec.home[1] + self.size[1] * 0.5,
+            self.spec.home[0] + size[0] * 0.5,
+            self.spec.home[1] + size[1] * 0.5,
         ]
     }
 
+    /// The compositor slot it burns in.
+    fn slot(&self) -> usize {
+        self.n % SLOTS
+    }
+
+    /// Takes `text` as the answer so far. Words already on their way keep
+    /// going; new ones leave the HUD `gap` apart.
+    fn set(&mut self, text: &str, now: f64, gap: f64) {
+        self.text = fit(self.spec.card, text);
+        let count = self.text.split_whitespace().count();
+        self.launch.truncate(count);
+        while self.launch.len() < count {
+            let at = self.launch.last().map_or(now, |last| (last + gap).max(now));
+            self.launch.push(at);
+        }
+    }
+
+    fn flights(&self) -> Vec<(Flight, &str, [f32; 2])> {
+        let (field, origin, _) = field_of(self);
+        field
+            .slots(&self.text)
+            .into_iter()
+            .zip(&self.launch)
+            .enumerate()
+            .map(|(i, (slot, &at))| {
+                let to = [origin[0] + slot.centre[0], origin[1] + slot.centre[1]];
+                let flight = Flight::new(HUD_AT, to, at, self.spec.heat, field.font.size, i);
+                (flight, slot.word, slot.centre)
+            })
+            .collect()
+    }
+
     fn heading(&self) -> [f32; 2] {
-        self.flights
+        self.flights()
             .last()
             .map_or([0.0, -1.0], |(f, _, _)| f.heading())
     }
+
+    /// When the last word lands and the card swells.
+    fn charge(&self) -> f64 {
+        self.explode - AFTER_LAND
+    }
+
+    /// Where the last word hits, in card coordinates: the strike lands here.
+    fn impact(&self) -> [f32; 2] {
+        let (_, origin, size) = field_of(self);
+        self.flights()
+            .last()
+            .map_or([size[0] * 0.5, size[1] * 0.5], |(_, _, c)| {
+                [
+                    origin[0] + c[0] - self.spec.home[0],
+                    origin[1] + c[1] - self.spec.home[1],
+                ]
+            })
+    }
 }
 
-fn field_of(spec: &Spec) -> (Field, [f32; 2], [f32; 2]) {
-    let [x, y] = spec.home;
-    match spec.card {
+/// `text` on one line of single spaces, cut to the words its field shows.
+fn fit(card: Card, text: &str) -> String {
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let (field, lines) = match card {
+        Card::Chat(_) => (CARD, LINES),
+        Card::Certificate => (SIGN, 1),
+    };
+    field
+        .slots(&text)
+        .iter()
+        .take_while(|slot| slot.line < lines)
+        .map(|slot| slot.word)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn field_of(r: &Round) -> (Field, [f32; 2], [f32; 2]) {
+    let [x, y] = r.spec.home;
+    match r.spec.card {
         Card::Chat(n) => {
-            let lines = CARD.wrap(spec.take.text()).len();
+            let lines = CARD.wrap(&r.text).len().max(1);
             let h = lines_card_height(&n, lines);
             (CARD, field_text_origin([x, y + h], lines), [CARD_W, h])
         }
@@ -227,87 +380,479 @@ fn field_of(spec: &Spec) -> (Field, [f32; 2], [f32; 2]) {
     }
 }
 
-/// When each word is heard: as its partial arrives on a streaming model,
-/// or all at once on release otherwise (the first run's rule).
-fn heard_at(take: &Take, streams: bool) -> Vec<f64> {
-    let count = take.text().split_whitespace().count();
-    (0..count)
-        .map(|i| {
-            if streams {
-                take.updates
-                    .iter()
-                    .find(|(_, partial)| partial.split_whitespace().count() > i)
-                    .map_or(take.release, |(at, _)| *at)
-            } else {
-                take.release + i as f64 * 0.06
-            }
-        })
-        .collect()
-}
-
-fn round(spec: Spec, arrive: f64, target: f64, streams: bool) -> Round {
-    let hold = target + 0.55;
-    let (field, origin, size) = field_of(&spec);
-    let flights: Vec<_> = field
-        .slots(spec.take.text())
-        .into_iter()
-        .zip(heard_at(spec.take, streams))
-        .enumerate()
-        .map(|(i, (slot, at))| {
-            let to = [origin[0] + slot.centre[0], origin[1] + slot.centre[1]];
-            let flight = Flight::new(HUD_AT, to, hold + at, spec.heat, field.font.size, i);
-            (flight, slot.word, [slot.centre[0], slot.centre[1]])
-        })
-        .collect();
-    let landed = flights
-        .iter()
-        .map(|(f, _, _)| f.arrives())
-        .fold(hold + spec.take.release, f64::max);
-    Round {
-        spec,
-        arrive,
-        target,
-        hold,
-        flights,
-        explode: landed + AFTER_LAND,
-        size,
-    }
-}
-
-struct Schedule {
+/// The game, on the caller's clock.
+pub(crate) struct Play {
     rounds: Vec<Round>,
-    share: f64,
+    /// Cards shown so far, including burnt ones dropped from `rounds`.
+    spawned: usize,
+    dropped: usize,
+    holding: bool,
+    /// When the first answer started.
+    first_hold: Option<f64>,
+    /// When the dictation that sent the live words ended, until its paste.
+    ended: Option<f64>,
+    /// When the score card shows.
+    share: Option<f64>,
+    /// When Keep playing was pressed.
+    kept: Option<f64>,
+    /// Keys typed into the answer field.
+    keys: usize,
 }
 
-fn schedule(streams: bool, keep: bool) -> Schedule {
-    let mut rounds: Vec<Round> = Vec::new();
-    for spec in SCRIPT {
-        let arrive = rounds.last().map_or(0.3, |r| r.hold);
-        let target = rounds
-            .last()
-            .map_or(arrive + 1.0, |r| (arrive + 1.1).max(r.shatter() + 0.45));
-        rounds.push(round(spec, arrive, target, streams));
+impl Play {
+    pub(crate) fn new(now: f64) -> Self {
+        let mut play = Self {
+            rounds: Vec::new(),
+            spawned: 0,
+            dropped: 0,
+            holding: false,
+            first_hold: None,
+            ended: None,
+            share: None,
+            kept: None,
+            keys: 0,
+        };
+        play.spawn(now + FIRST_ARRIVES);
+        play.rounds[0].target = Some(now + FIRST_ARRIVES + FIRST_LIGHTS);
+        play
     }
-    let share = rounds[2].shatter() + 0.3;
-    if keep {
-        let mut arrive = share + SHARE_HOLD;
-        let mut target = arrive + 1.0;
-        for spec in ENDLESS {
-            let r = round(spec, arrive, target, streams);
-            arrive = r.hold;
-            target = (arrive + 1.1).max(r.shatter() + 0.45);
-            rounds.push(r);
+
+    /// The next card drifts in; after the certificate, only on Keep playing.
+    fn spawn(&mut self, at: f64) {
+        if self.spawned >= SCRIPT.len() && self.kept.is_none() {
+            return;
+        }
+        self.rounds.push(Round::new(self.spawned, at));
+        self.spawned += 1;
+    }
+
+    /// The score card waits for Keep playing or Continue.
+    fn playing(&self) -> bool {
+        self.share.is_none() || self.kept.is_some()
+    }
+
+    fn waiting(&self) -> usize {
+        self.rounds.iter().filter(|r| !r.answered).count()
+    }
+
+    /// The card the next answer goes to, lit now if it wasn't yet.
+    fn answering(&mut self, now: f64) -> Option<&mut Round> {
+        if !self.playing() {
+            return None;
+        }
+        self.first_hold.get_or_insert(now);
+        let round = self.rounds.iter_mut().find(|r| !r.answered)?;
+        if round.target.is_none_or(|at| at > now) {
+            round.target = Some(now);
+        }
+        Some(round)
+    }
+
+    /// This frame's dictation: whether it records, and the words a model
+    /// that streams has heard so far (`None` once it ends, or for one that
+    /// doesn't stream).
+    pub(crate) fn hear(&mut self, held: bool, words: Option<&str>, now: f64) {
+        if held && !self.holding && self.playing() {
+            // The next card comes in while this one is answered.
+            if self.answering(now).is_some() && self.waiting() == 1 {
+                self.spawn(now);
+            }
+        }
+        self.holding = held;
+        match words.filter(|words| !words.trim().is_empty()) {
+            Some(words) => {
+                self.ended = None;
+                if let Some(round) = self.answering(now) {
+                    round.set(words, now, STAGGER);
+                }
+            }
+            None if !held
+                && self
+                    .rounds
+                    .iter()
+                    .any(|r| !r.answered && !r.text.is_empty()) =>
+            {
+                let ended = *self.ended.get_or_insert(now);
+                if now - ended > WAIT {
+                    self.forget();
+                }
+            }
+            None => {}
+        }
+        // Keep playing goes on for good; cards long burnt stop counting.
+        let before = self.rounds.len();
+        self.rounds
+            .retain(|r| r.n < SCRIPT.len() || now < r.shatter() + 3.0);
+        self.dropped += before - self.rounds.len();
+    }
+
+    /// The dictation's paste: the lit card's answer, which it burns for.
+    pub(crate) fn paste(&mut self, text: &str, now: f64) {
+        self.ended = None;
+        let Some(round) = self.answering(now) else {
+            return;
+        };
+        round.set(text, now, BURST);
+        if round.text.is_empty() {
+            return;
+        }
+        round.answered = true;
+        let landed = round
+            .flights()
+            .iter()
+            .map(|(f, _, _)| f.arrives())
+            .fold(now, f64::max);
+        round.explode = landed + AFTER_LAND;
+        let (n, shatter) = (round.n, round.shatter());
+        if n == CERTIFICATE {
+            // The certificate all but burns away before the score card takes its place.
+            self.share = Some(shatter + 0.85);
+            return;
+        }
+        if self.waiting() == 0 {
+            self.spawn(now);
+        }
+        if let Some(next) = self.rounds.iter_mut().find(|r| !r.answered)
+            && next.target.is_none()
+        {
+            next.target = Some((next.arrive + 1.1).max(shatter + 0.6));
         }
     }
-    Schedule { rounds, share }
+
+    /// Drops the live words of a dictation that never pasted.
+    pub(crate) fn forget(&mut self) {
+        self.ended = None;
+        for round in self.rounds.iter_mut().filter(|r| !r.answered) {
+            round.text.clear();
+            round.launch.clear();
+        }
+    }
+
+    /// Folds the score card away and brings more messages.
+    pub(crate) fn keep(&mut self, now: f64) {
+        if self.share.is_none() || self.kept.is_some() {
+            return;
+        }
+        self.kept = Some(now);
+        self.spawn(now);
+        if let Some(round) = self.rounds.last_mut() {
+            round.target = Some(now + FIRST_LIGHTS);
+        }
+    }
+
+    fn destroyed(&self, t: f64) -> usize {
+        self.dropped + self.rounds.iter().filter(|r| t >= r.shatter()).count()
+    }
+
+    fn certificate(&self) -> Option<&Round> {
+        self.rounds.iter().find(|r| r.n == CERTIFICATE)
+    }
+
+    /// The score card's numbers: words said up to the certificate, keys
+    /// typed, and seconds from the first press to the certificate's burn.
+    fn stats(&self) -> (usize, usize, f64) {
+        let words = self
+            .rounds
+            .iter()
+            .filter(|r| r.answered && r.n <= CERTIFICATE)
+            .map(|r| r.text.split_whitespace().count())
+            .sum();
+        let secs = match (self.first_hold, self.certificate()) {
+            (Some(from), Some(cert)) => (cert.shatter() - from).max(0.0),
+            _ => 0.0,
+        };
+        (words, self.keys, secs)
+    }
 }
 
-pub(crate) struct Game {
-    now: f64,
-    from: Option<f64>,
-    started: bool,
+/// What the game shows around [`Play`], and what its buttons do.
+struct Look<'a, S> {
+    caps: &'a [String],
+    /// The microphone's level while dictation records.
+    meter: Option<(f32, f32)>,
+    /// What the last try needs said.
+    hint: Option<&'static str>,
+    done: Rc<dyn Fn(&mut S)>,
+    keep: Rc<dyn Fn(&mut S)>,
+}
+
+fn act<S: 'static>(f: &Rc<dyn Fn(&mut S)>) -> impl Fn(&mut S) + 'static {
+    let f = f.clone();
+    move |s: &mut S| f(s)
+}
+
+/// The script's dictation: it answers each card soon after it lights, as a
+/// player would, with the card's own answer.
+#[derive(Default)]
+struct Script {
+    /// Whether the model sends live words while the shortcut is held.
     streams: bool,
+    /// Presses Keep playing once the score card has shown a while.
     keep: bool,
+    /// Which card, and when its shortcut went down.
+    held: Option<(usize, f64)>,
+    meter: Option<(f32, f32)>,
+}
+
+impl Script {
+    fn new(streams: bool) -> Self {
+        Self {
+            streams,
+            ..Self::default()
+        }
+    }
+
+    fn run(&mut self, play: &mut Play, now: f64) {
+        if self.keep && play.share.is_some_and(|at| now >= at + SHARE_HOLD) {
+            play.keep(now);
+        }
+        self.meter = None;
+        let next = play
+            .rounds
+            .iter()
+            .find(|r| !r.answered)
+            .map(|r| (r.n, r.lit_at(), r.spec.demo));
+        let Some((n, lit, take)) = next.filter(|_| play.playing()) else {
+            play.hear(false, None, now);
+            return;
+        };
+        match self.held.filter(|(held, _)| *held == n) {
+            None if now >= lit + 0.55 => {
+                self.held = Some((n, now));
+                play.hear(true, None, now);
+            }
+            None => play.hear(false, None, now),
+            Some((_, from)) if now - from < take.release => {
+                self.meter = Some(take.meter(now - from));
+                let words = self.streams.then(|| take.partial(now - from));
+                play.hear(true, words, now);
+            }
+            Some(_) => {
+                play.hear(false, None, now);
+                play.paste(take.text(), now);
+            }
+        }
+    }
+}
+
+/// The game on the first run's `"Your turn"`.
+pub(crate) struct Session {
+    play: Play,
+    /// A story's stand-in for Hex's dictation.
+    script: Option<Script>,
+    /// What's typed into the answer field so far, which it shows as live
+    /// words; Return or a paste sends it.
+    typed: String,
+    practice: Option<Practice>,
+}
+
+impl Session {
+    fn new(s: &Onboard, now: f64) -> Self {
+        Self {
+            play: Play::new(now),
+            script: s.rehearsal.map(|r| Script::new(r.streams)),
+            typed: String::new(),
+            practice: None,
+        }
+    }
+}
+
+/// Whether `"Your turn"` is the game rather than the plain practice field.
+fn plays(s: &Onboard) -> bool {
+    s.interactive_try() && !s.practice_field
+}
+
+/// Moves the game on `"Your turn"` to `now`: Hex's dictation, or a story's
+/// script, answers the lit card. False when the step is the plain practice
+/// field instead.
+pub(super) fn step(s: &mut Onboard, now: f64) -> bool {
+    if !plays(s) {
+        s.game = None;
+        return false;
+    }
+    let mut session = s.game.take().unwrap_or_else(|| Session::new(s, now));
+    if let Some(script) = session.script.as_mut() {
+        script.run(&mut session.play, now);
+        s.game = Some(session);
+        return true;
+    }
+    // Hex's own dictation sounds its own tones; without it, the story
+    // follows the physical shortcut and sounds them itself.
+    let real = s.live.as_ref().map(|live| live.listening);
+    let held = real.unwrap_or_else(|| physical_shortcut_held(&s.caps));
+    match (s.live_hold_from, held) {
+        (None, true) => {
+            s.live_hold_from = Some(now);
+            // Hex pastes where the focus is when the dictation ends.
+            s.practice.focused = true;
+            if real.is_none() {
+                s.sfx.on_live_shortcut_down(now);
+            }
+        }
+        (Some(_), false) => {
+            s.live_hold_from = None;
+            if real.is_none() {
+                s.sfx.on_live_shortcut_up(now);
+            }
+        }
+        _ => {}
+    }
+    // A try Hex couldn't use drops the words it sent.
+    let practice = s.live.as_ref().map(|live| live.practice);
+    if practice != session.practice
+        && matches!(
+            practice,
+            Some(Practice::TooShort | Practice::NothingHeard | Practice::Failed)
+        )
+    {
+        session.play.forget();
+    }
+    session.practice = practice;
+    let partial = crate::dictation::live_text::current().filter(|_| held);
+    let words = match &partial {
+        Some(partial) if !partial.stable.trim().is_empty() => Some(partial.stable.as_str()),
+        _ => Some(session.typed.as_str()).filter(|typed| !typed.trim().is_empty()),
+    };
+    session.play.hear(held, words, now);
+    s.game = Some(session);
+    true
+}
+
+/// The answer field changed: a paste answers the lit card, typing shows
+/// as live words until Return. False without the game.
+pub(super) fn changed(s: &mut Onboard) -> bool {
+    let Some(session) = s.game.as_mut() else {
+        return false;
+    };
+    // A story's script is the player; keys meant for the story don't count.
+    if session.script.is_some() {
+        s.practice = TextEdit::default();
+        s.practice.focused = true;
+        return true;
+    }
+    let count = s.practice.text.chars().count();
+    let before = session.typed.chars().count();
+    // A paste lands all at once; typing one key at a time.
+    if count > before + 1 {
+        answer(s);
+    } else {
+        session.play.keys += count.saturating_sub(before);
+        session.typed.clone_from(&s.practice.text);
+    }
+    true
+}
+
+/// Return in the answer field sends what's typed.
+pub(super) fn answer(s: &mut Onboard) {
+    let now = s.now;
+    let Some(session) = s.game.as_mut() else {
+        return;
+    };
+    let text = std::mem::take(&mut s.practice.text);
+    session.typed.clear();
+    s.practice = TextEdit::default();
+    s.practice.focused = true;
+    if text.trim().is_empty() {
+        return;
+    }
+    session.play.paste(&text, now);
+    s.sfx.on_live_dictation_landed(now);
+}
+
+fn keep(s: &mut Onboard) {
+    let now = s.now;
+    if let Some(session) = s.game.as_mut() {
+        session.play.keep(now);
+    }
+    s.practice.focused = true;
+}
+
+/// The first run's `"Your turn"` as the game, or `None` for the plain
+/// practice field.
+pub(super) fn page(p: Paint, s: &Onboard) -> Option<El> {
+    if !plays(s) {
+        return None;
+    }
+    // The game starts on the step's first poll; until then, as it will.
+    let fresh;
+    let session = match &s.game {
+        Some(session) => session,
+        None => {
+            fresh = Session::new(s, s.now);
+            &fresh
+        }
+    };
+    let meter = match &session.script {
+        Some(script) => script.meter,
+        None => s.live_hold_from.is_some().then(|| {
+            let level = crate::audio::input_level::recent().unwrap_or(0.0);
+            (level * 0.6, level)
+        }),
+    };
+    let hint = s.live.as_ref().and_then(live::hint_copy);
+    let (stage, field) = if s.live.is_some() {
+        let look = Look::<Ui> {
+            caps: &s.caps,
+            meter,
+            hint,
+            done: Rc::new(live::on_ui(Onboard::jump_to_ready)),
+            keep: Rc::new(live::on_ui(keep)),
+        };
+        let field = TextInput::new(&s.practice)
+            .on_edit(live::practice)
+            .on_change(live::practice_changed)
+            .on_submit(|ui: &mut Ui, _: &mut Tx| live::on_ui(answer)(ui));
+        (
+            render(p, &session.play, s.now, s.reduced.get(), &look),
+            field,
+        )
+    } else {
+        let look = Look::<Onboard> {
+            caps: &s.caps,
+            meter,
+            hint,
+            done: Rc::new(Onboard::jump_to_ready),
+            keep: Rc::new(keep),
+        };
+        let field = TextInput::new(&s.practice)
+            .on_edit(|s: &mut Onboard| &mut s.practice)
+            .on_change(Onboard::on_practice_change)
+            .on_submit(|s: &mut Onboard, _: &mut Tx| answer(s));
+        (
+            render(p, &session.play, s.now, s.reduced.get(), &look),
+            field,
+        )
+    };
+    // The answer field takes Hex's paste (and typing) out of sight: it
+    // keeps its size, so it can hold the focus, in a clip too small to
+    // show any of it.
+    let field = el()
+        .key("answer")
+        .absolute(0.0, 0.0)
+        .size(1.0, 1.0)
+        .clip_rounded(0.0)
+        .child(
+            field
+                .placeholder("Answer")
+                .build(p.k)
+                .key("answer-field")
+                .w(240.0)
+                .offset(2.0, 2.0),
+        );
+    Some(
+        el().key("game-page")
+            .size(STAGE_W, STAGE_H)
+            .child(field)
+            .child(stage),
+    )
+}
+
+/// The playground's game, answered by a script.
+pub(crate) struct Game {
+    play: Play,
+    script: Script,
+    now: f64,
+    started: bool,
     force_reduced: bool,
     reduced: Cell<bool>,
 }
@@ -315,22 +860,21 @@ pub(crate) struct Game {
 impl Game {
     fn new() -> Self {
         Self {
+            play: Play::new(0.0),
+            script: Script::new(true),
             now: 0.0,
-            from: None,
             started: false,
-            streams: true,
-            keep: false,
             force_reduced: false,
             reduced: Cell::new(false),
         }
     }
 
-    fn t(&self) -> f64 {
-        self.from.map_or(0.0, |from| self.now - from)
-    }
-
-    fn reduced(&self) -> bool {
-        self.reduced.get()
+    fn restart(&mut self) {
+        self.play = Play::new(self.now);
+        self.script = Script {
+            keep: self.script.keep,
+            ..Script::new(self.script.streams)
+        };
     }
 }
 
@@ -339,13 +883,13 @@ pub(crate) fn add<S: 'static>(playground: Playground<S>) -> Playground<S> {
         Story::new("Prototypes/Onboarding/Practice game", Game::new, view)
             .poll(poll)
             .trigger('r', "Play", |g, play| {
-                g.from = Some(play.now());
                 g.now = play.now();
+                g.restart();
                 play.wake_after(Duration::ZERO);
             })
             .variant("Streaming model", |_| {})
-            .variant("Model that doesn't stream", |g| g.streams = false)
-            .variant("Keep playing", |g| g.keep = true)
+            .variant("Model that doesn't stream", |g| g.script.streams = false)
+            .variant("Keep playing", |g| g.script.keep = true)
             .variant("Reduce Motion", |g| g.force_reduced = true),
     )
 }
@@ -355,11 +899,10 @@ fn poll(g: &mut Game, now: f64, tx: &mut Tx) -> bool {
     // Plays on open, so headless renders and recordings start at once.
     if !g.started {
         g.started = true;
-        g.from = Some(now);
+        g.restart();
     }
-    if g.from.is_some() {
-        tx.wake_after(FRAME);
-    }
+    g.script.run(&mut g.play, now);
+    tx.wake_after(FRAME);
     true
 }
 
@@ -372,30 +915,34 @@ fn smooth(a: f32, b: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-fn rnd(seed: usize, a: f32, b: f32) -> f32 {
-    let x = ((seed as f32 * 12.9898 + 78.233).sin() * 43_758.545)
-        .fract()
-        .abs();
-    lerp(a, b, x)
-}
-
 fn view(g: &Game, cx: &mut Cx<Game>) -> El {
     let p = Paint::new(cx.system_dark(), cx.env().scale);
     g.reduced.set(cx.is_reduced_motion() || g.force_reduced);
-    let s = schedule(g.streams, g.keep);
-    let t = g.t();
-    let reduced = g.reduced();
+    let caps = ["⌥".to_string()];
+    let stage = render(
+        p,
+        &g.play,
+        g.now,
+        g.reduced.get(),
+        &Look::<Game> {
+            caps: &caps,
+            meter: g.script.meter,
+            hint: None,
+            done: Rc::new(Game::restart),
+            keep: Rc::new(|g: &mut Game| g.play.keep(g.now)),
+        },
+    );
+    el().key("game").w_full().h_full().center().child(stage)
+}
 
-    let destroyed = s.rounds.iter().filter(|r| t >= r.shatter()).count();
+/// The game at `t`, on its stage.
+fn render<S: 'static>(p: Paint, g: &Play, t: f64, reduced: bool, look: &Look<'_, S>) -> El {
+    let destroyed = g.destroyed(t);
     let (shake, tilt) = if reduced {
         ([0.0, 0.0], 0.0)
     } else {
-        shake(&s, t)
+        shake(g, t)
     };
-    let holding = s
-        .rounds
-        .iter()
-        .any(|r| t >= r.hold && t < r.hold + r.spec.take.release);
 
     let mut world = el()
         .key("world")
@@ -404,37 +951,41 @@ fn view(g: &Game, cx: &mut Cx<Game>) -> El {
         .rotate(tilt)
         .offset_motion(Anim::INSTANT)
         .rotate_motion(Anim::INSTANT)
-        .child(header(p, destroyed, holding, t, &s, g.keep))
-        .child(hud(p, &s, t));
+        .child(header(p, g, destroyed, t, reduced, look))
+        .child(hud(p, g, t, look.meter))
+        .children(look.hint.map(|copy| hint(p, copy)));
 
-    // Glows sit under the cards they light; shards, sparks and rings over them.
-    for (i, r) in s.rounds.iter().enumerate() {
-        world = world.children(glows(p, i, r, t, reduced));
-    }
-    for (i, r) in s.rounds.iter().enumerate() {
-        if let Some(card) = card(p, i, r, t, reduced) {
+    for r in &g.rounds {
+        if let Some(card) = card(p, r, t, reduced, reward_fade(g, r, t)) {
             world = world.child(card);
         }
     }
-    world = world.children(fragments(p, &s, t, reduced));
-    world = world.child(words(p, &s, t, reduced));
-    world = world.child(debris(p, &s, t, reduced));
-    world = world.children(share(p, &s, t, destroyed, g.keep, reduced));
+    world = world.child(words(p, g, t, reduced));
+    // Bolts, sparks and ash, over the cards and under the share card.
+    let fx = fx(p, g, t, reduced);
+    if !fx.bolts.is_empty() || !fx.motes.is_empty() {
+        world = world.child(
+            effect(STRIKE_MARK)
+                .key("strike")
+                .absolute(0.0, 0.0)
+                .size(STAGE_W, STAGE_H),
+        );
+    }
+    game_fx::publish(fx);
+    world = world.children(share(p, g, t, destroyed, reduced, look));
 
-    el().key("game")
-        .w_full()
-        .h_full()
-        .center()
+    el().key("stage")
+        .size(STAGE_W, STAGE_H)
         .instant_changes()
-        .child(el().key("stage").size(STAGE_W, STAGE_H).child(world))
+        .child(world)
 }
 
 /// Screen shake: the site's camera trauma (`cam.trauma += 0.32 · I`),
 /// squared into a noisy offset, plus a kick along the last word's heading.
-fn shake(s: &Schedule, t: f64) -> ([f32; 2], f32) {
+fn shake(g: &Play, t: f64) -> ([f32; 2], f32) {
     let mut trauma = 0.0f32;
     let mut kick = [0.0f32, 0.0];
-    for r in &s.rounds {
+    for r in &g.rounds {
         let te = (t - r.shatter()) as f32;
         if !(0.0..1.6).contains(&te) {
             continue;
@@ -461,53 +1012,103 @@ fn shake(s: &Schedule, t: f64) -> ([f32; 2], f32) {
     )
 }
 
-fn header(p: Paint, destroyed: usize, holding: bool, t: f64, s: &Schedule, keep: bool) -> El {
+/// How much of the game's chrome (title, HUD, Done) shows: it steps aside
+/// for the share card and comes back on Keep playing.
+fn chrome(g: &Play, t: f64) -> f32 {
+    let Some(share) = g.share else {
+        return 1.0;
+    };
+    let back = g
+        .kept
+        .map_or(0.0, |kept| smooth(0.0, 0.18, (t - kept) as f32));
+    1.0 - smooth(0.0, 0.18, (t - share) as f32) + back
+}
+
+/// Keep playing's fold, `0..1` from the share card to the score pill.
+fn fold(g: &Play, t: f64) -> f32 {
+    g.kept
+        .map_or(0.0, |kept| ((t - kept) as f32 / FOLD).clamp(0.0, 1.0))
+}
+
+/// The pill takes over in the fold's last 80 ms (Reduce Motion: a crossfade).
+fn pill_in(fold: f32, reduced: bool) -> f32 {
+    if reduced {
+        smooth(0.0, 0.3 / FOLD, fold)
+    } else {
+        smooth(1.0 - 0.08 / FOLD, 1.0, fold)
+    }
+}
+
+fn header<S: 'static>(
+    p: Paint,
+    g: &Play,
+    destroyed: usize,
+    t: f64,
+    reduced: bool,
+    look: &Look<'_, S>,
+) -> El {
     let k = p.k;
-    let caps = vec!["⌥".to_string()];
+    let chrome = chrome(g, t);
     // The count kicks up as each card goes.
-    let pop = s
-        .rounds
-        .iter()
-        .map(|r| (t - r.shatter()) as f32)
-        .filter(|te| *te >= 0.0)
-        .fold(0.0f32, |_, te| {
-            (-te * 7.0).exp() * (te * 22.0).cos().max(0.0)
+    let pop = if reduced {
+        0.0
+    } else {
+        g.rounds
+            .iter()
+            .map(|r| (t - r.shatter()) as f32)
+            .filter(|te| *te >= 0.0)
+            .fold(0.0f32, |_, te| {
+                (-te * 7.0).exp() * (te * 22.0).cos().max(0.0)
+            })
+    };
+    let fold = fold(g, t);
+    // The pill steps aside for the share card, and the share card folds back into it.
+    let pill = match g.share {
+        Some(share) if t >= share && fold > 0.0 => pill_in(fold, reduced),
+        Some(share) if t >= share => 1.0 - smooth(0.0, 0.18, (t - share) as f32),
+        _ => 1.0,
+    };
+    let number = text(destroyed.to_string())
+        .key(format!("n{destroyed}"))
+        .font(TextStyle::new(14.0, 640.0).lh(18.0).features("'tnum' 1"))
+        .color(if destroyed > 0 {
+            ember_tone(p, 0.7)
+        } else {
+            p.muted()
+        })
+        .transition(if reduced {
+            Transition::opacity()
+        } else {
+            Transition::offset(0.0, -8.0).combined(Transition::opacity())
         });
     let score = row()
         .key("score")
         .absolute(SCORE_AT[0], SCORE_AT[1])
         .scale(1.0 + 0.12 * pop)
+        .opacity(pill)
         .scale_motion(Anim::INSTANT)
-        .h(30.0)
+        .opacity_motion(Anim::INSTANT)
+        .size(PILL[0], PILL[1])
         .px(12.0)
         .gap(8.0)
         .center_y()
         .radius(15.0)
         .fill(k.c.surface_raised)
         .border(p.hair, k.c.border_weak)
-        .child(
-            text(destroyed.to_string())
-                .key(format!("n{destroyed}"))
-                .font(TextStyle::new(14.0, 640.0).lh(18.0).features("'tnum' 1"))
-                .color(if destroyed > 0 {
-                    ember_tone(p, 0.7)
-                } else {
-                    p.muted()
-                })
-                .transition(Transition::offset(0.0, -8.0).combined(Transition::opacity())),
-        )
+        .child(number)
         .child(
             text("destroyed")
                 .key("label")
                 .font(k.ty.small)
                 .color(p.muted()),
         );
-    // The score pill shows once there's a score, or the share card folds into it.
-    let show_score = destroyed > 0 && (t < s.share || (keep && t > s.share + SHARE_HOLD));
+    let show_score = destroyed > 0 && pill > 0.005;
     let title = col()
         .key("title")
         .absolute(0.0, 6.0)
         .w(STAGE_W)
+        .opacity(chrome)
+        .opacity_motion(Anim::INSTANT)
         .gap(6.0)
         .items_center()
         .child(
@@ -522,7 +1123,7 @@ fn header(p: Paint, destroyed: usize, holding: bool, t: f64, s: &Schedule, keep:
                 .gap(8.0)
                 .center_y()
                 .child(text("Hold").key("hold").font(LEAD).color(p.muted()))
-                .child(keys(p, "keys", &caps, holding))
+                .child(keys(p, "keys", look.caps, g.holding))
                 .child(
                     text("and answer the one that's lit")
                         .key("rest")
@@ -530,62 +1131,81 @@ fn header(p: Paint, destroyed: usize, holding: bool, t: f64, s: &Schedule, keep:
                         .color(p.muted()),
                 ),
         );
-    let done = row()
-        .key("done-at")
-        .absolute(0.0, SCORE_AT[1])
-        .w(STAGE_W)
-        .pr(SCORE_AT[0])
-        .justify_end()
-        .child(
-            Button::new("Done")
-                .variant(ButtonVariant::Neutral)
-                .on_press(|g: &mut Game| g.from = None)
-                .build_push(k)
-                .key("done"),
-        );
+    // The share card's Continue stands in for Done while it shows.
+    let done = (chrome > 0.005).then(|| {
+        row()
+            .key("done-at")
+            .absolute(0.0, SCORE_AT[1])
+            .w(STAGE_W)
+            .pr(SCORE_AT[0])
+            .justify_end()
+            .opacity(chrome)
+            .opacity_motion(Anim::INSTANT)
+            .child(
+                Button::new("Done")
+                    .variant(ButtonVariant::Neutral)
+                    .on_press(act(&look.done))
+                    .build_push(k)
+                    .key("done"),
+            )
+    });
     el().key("header")
         .absolute(0.0, 0.0)
         .size(STAGE_W, 84.0)
         .child(title)
         .children(show_score.then_some(score))
-        .child(done)
+        .children(done)
 }
 
-/// A stand-in for the Dot scope HUD the words fly out of.
-fn hud(p: Paint, s: &Schedule, t: f64) -> El {
-    let live = s
-        .rounds
-        .iter()
-        .find(|r| t >= r.hold && t < r.hold + r.spec.take.release + 0.1);
-    let (avg, peak) = live.map_or((0.04, 0.06), |r| r.spec.take.meter(t - r.hold));
+/// A stand-in for the Dot scope HUD the words fly out of, on the
+/// microphone's level while dictation records.
+fn hud(p: Paint, g: &Play, t: f64, meter: Option<(f32, f32)>) -> El {
+    let (avg, peak) = meter.unwrap_or((0.04, 0.06));
     let k = p.k;
     row()
         .key("hud")
         .absolute(HUD_AT[0] - 46.0, HUD_AT[1] - 15.0)
         .size(92.0, 30.0)
+        .opacity(chrome(g, t))
+        .opacity_motion(Anim::INSTANT)
         .center()
         .radius(15.0)
         .fill(if k.dark { k.c.bg_deep } else { k.c.text_strong })
         .border(p.hair, k.c.border_weak)
-        .child(mic_level(p, "level", 16.0, avg, peak, live.is_some()))
+        .child(mic_level(p, "level", 16.0, avg, peak, meter.is_some()))
+}
+
+/// What the last try needs said, over the HUD.
+fn hint(p: Paint, copy: &'static str) -> El {
+    row()
+        .key("hint")
+        .absolute(0.0, HUD_AT[1] - 48.0)
+        .w(STAGE_W)
+        .justify_center()
+        .child(
+            text(copy)
+                .key(copy)
+                .font(p.k.ty.small)
+                .color(p.muted())
+                .transition(Transition::opacity()),
+        )
 }
 
 /// The notice or certificate as it looks at `t`.
-fn body(p: Paint, r: &Round, t: f64, reduced: bool) -> El {
-    let spec = r.spec;
-    let targeted = t >= r.target;
+fn body(p: Paint, r: &Round, flights: &[(Flight, &str, [f32; 2])], t: f64, reduced: bool) -> El {
+    let targeted = t >= r.lit_at();
     // The placeholder clears just before the first word lands, not under it.
-    let speaking = r.flights.iter().any(|(f, _, _)| {
+    let speaking = flights.iter().any(|(f, _, _)| {
         if reduced {
             f.landed(t, true).is_some()
         } else {
             t >= f.arrives() - 0.2
         }
     });
-    let done = r.flights.iter().all(|(f, _, _)| t >= f.arrives());
-    match spec.card {
+    let done = r.answered && flights.iter().all(|(f, _, _)| t >= f.arrives());
+    match r.spec.card {
         Card::Chat(n) => {
-            let lines = CARD.wrap(spec.take.text()).len();
+            let lines = CARD.wrap(&r.text).len().max(1);
             let reply = Reply::Lines {
                 sent_bubbles: &[],
                 text: "",
@@ -601,22 +1221,20 @@ fn body(p: Paint, r: &Round, t: f64, reduced: bool) -> El {
     }
 }
 
-/// The card frozen at `t` with its answer typeset in, in card coordinates:
-/// what each fragment of the explosion carries.
-fn face(p: Paint, ri: usize, r: &Round, t: f64, at: [f32; 2]) -> El {
-    el().key(format!("face{ri}"))
-        .absolute(at[0], at[1])
-        .size(r.size[0], r.size[1])
-        .child(body(p, r, t, false))
-        .children(landed_words(p, ri, r, t, false, r.spec.home))
-}
-
 /// The words already in the field, in coordinates relative to `at`.
-fn landed_words(p: Paint, ri: usize, r: &Round, t: f64, reduced: bool, at: [f32; 2]) -> Vec<El> {
-    let (field, origin, _) = field_of(&r.spec);
+fn landed_words(
+    p: Paint,
+    r: &Round,
+    flights: &[(Flight, &str, [f32; 2])],
+    t: f64,
+    reduced: bool,
+) -> Vec<El> {
+    let (field, origin, _) = field_of(r);
+    let at = r.spec.home;
+    let ri = r.n;
     let font = field.font.lh(field.line);
     let mut out = Vec::new();
-    for (wi, (flight, word, centre)) in r.flights.iter().enumerate() {
+    for (wi, (flight, word, centre)) in flights.iter().enumerate() {
         if let Some(landed) = flight.landed(t, reduced) {
             let xy = [origin[0] + centre[0] - at[0], origin[1] + centre[1] - at[1]];
             out.extend(typeset(
@@ -633,11 +1251,14 @@ fn landed_words(p: Paint, ri: usize, r: &Round, t: f64, reduced: bool, at: [f32;
     out
 }
 
-fn card(p: Paint, i: usize, r: &Round, t: f64, reduced: bool) -> Option<El> {
-    if t < r.arrive || t >= r.shatter() + if reduced { 0.3 } else { 0.0 } {
+fn card(p: Paint, r: &Round, t: f64, reduced: bool, clear: f32) -> Option<El> {
+    if t < r.arrive || t >= r.shatter() + if reduced { 0.3 } else { f64::from(BURN) + 0.05 } {
         return None;
     }
     let spec = r.spec;
+    let i = r.n;
+    let size = r.size();
+    let flights = r.flights();
     let age = (t - r.arrive) as f32;
     let u = (age / DRIFT as f32).clamp(0.0, 1.0);
     let (drift, mut opacity) = if reduced {
@@ -649,131 +1270,124 @@ fn card(p: Paint, i: usize, r: &Round, t: f64, reduced: bool) -> Option<El> {
             smooth(0.0, 0.4, u),
         )
     };
-    let targeted = t >= r.target;
+    let targeted = t >= r.lit_at();
     // Waiting cards sit back, dimmed and a touch smaller; the lit one comes forward.
-    let lit = if reduced {
-        if targeted { 1.0 } else { 0.0 }
-    } else {
-        smooth(0.0, 0.32, (t - r.target) as f32)
-    };
+    let lit = smooth(
+        0.0,
+        if reduced { 0.18 } else { 0.32 },
+        (t - r.lit_at()) as f32,
+    );
     opacity *= lerp(0.55, 1.0, lit);
-    if reduced && t >= r.shatter() {
-        opacity *= 1.0 - ((t - r.shatter()) / 0.3) as f32;
-    }
+    let gone = if reduced && t >= r.shatter() {
+        1.0 - ((t - r.shatter()) / 0.3) as f32
+    } else {
+        1.0
+    };
+    opacity *= gone * clear;
     let knock = if reduced {
         [0.0, 0.0]
     } else {
-        r.flights.iter().fold([0.0, 0.0], |[x, y], (f, _, _)| {
+        flights.iter().fold([0.0, 0.0], |[x, y], (f, _, _)| {
             let [dx, dy] = f.hit(t);
             [x + dx, y + dy]
         })
     }
     .map(|v| v.clamp(-10.0, 10.0));
-    let hitstop = t >= r.explode && !reduced;
-    let flash = if hitstop {
-        1.0 - ((t - r.explode) / HITSTOP) as f32 * 0.5
+    // One beat: the card swells and holds that pose through the hit-stop
+    // while the leader climbs to it, then the bolt hits and it burns.
+    let charge = if reduced {
+        0.0
     } else {
-        r.flights
+        smooth(0.0, AFTER_LAND as f32, (t - r.charge()) as f32)
+    };
+    let flash = if reduced {
+        0.0
+    } else {
+        flights
             .iter()
             .map(|(f, _, _)| f.flash(t))
-            .fold(0.0, f32::max)
+            .fold(charge, f32::max)
+            // Once the bolt hits, its strokes do the flashing.
+            * (1.0 - smooth(0.0, 0.12, (t - r.shatter()) as f32))
     };
-    let done = r.flights.iter().all(|(f, _, _)| t >= f.arrives());
-    let body = body(p, r, t, reduced);
+    let strike = if reduced {
+        0.0
+    } else {
+        strike_light(seed_of(i), (t - r.explode) as f32)
+    };
+    let done = r.answered && flights.iter().all(|(f, _, _)| t >= f.arrives());
+    let body = body(p, r, &flights, t, reduced);
     let body = floating(body, (!reduced && !targeted).then_some(t), i as f64 * 0.37);
     // The lit card breathes while it waits for an answer, and burns steady once answered.
     let breathe = if reduced || done {
         1.0
     } else {
-        0.78 + 0.22 * (((t - r.target) * 3.4).sin() as f32)
+        0.78 + 0.22 * (((t - r.lit_at()) * 3.4).sin() as f32)
     };
     let ember = ember_tone(p, 0.6);
     let ring = targeted.then(|| {
         el().key("lit")
             .absolute(-2.0, -2.0)
-            .size(r.size[0] + 4.0, r.size[1] + 4.0)
+            .size(size[0] + 4.0, size[1] + 4.0)
             .radius(18.0)
             .continuous_corners()
             .border(1.0, ember.alpha(lerp(0.0, 0.75, lit) * breathe))
             .shadow(0.0, 30.0, ember.alpha(lerp(0.0, 0.2, lit) * breathe))
     });
-    let flash_el = (flash > 0.02).then(|| {
+    // Each stroke flashes the card white-hot (on a light page, a tint).
+    let strike = strike * if p.k.dark { 1.0 } else { 0.45 };
+    let flash_el = (flash.max(strike) > 0.02).then(|| {
         el().key("flash")
             .absolute(0.0, 0.0)
-            .size(r.size[0], r.size[1])
+            .size(size[0], size[1])
             .radius(16.0)
             .continuous_corners()
-            .fill(ember_tone(p, 0.75).alpha((flash * 0.35).min(0.45)))
+            .fill(
+                ember_tone(p, lerp(0.75, 1.0, strike.min(1.0)))
+                    .alpha((flash * 0.35).max(strike * 0.55).min(0.6)),
+            )
     });
-    let cracks = hitstop.then(|| cracks(p, r, slabs(r, i * 7919 + 13), t));
+    // The burn, last in the card so it can eat through everything drawn in
+    // it, the shadow included (the bleed).
+    let burn = (!reduced && burning(r, t).is_some()).then(|| {
+        effect(BURN_MARK + r.slot() as u32)
+            .key("burn")
+            .absolute(0.0, 0.0)
+            .size(size[0], size[1])
+            .effect_bleed(40.0)
+    });
+    // The burn erases the card's own pixels, so the card draws in its own
+    // layer while it burns (an opacity short of 1 isolates it).
+    if burn.is_some() {
+        opacity = opacity.min(0.999);
+    }
+    // The answer rides in the card: it knocks and swells with it, and under
+    // Reduce Motion fades out with it.
+    let answer = landed_words(p, r, &flights, t, reduced);
     Some(
         el().key(format!("card{i}"))
             .absolute(spec.home[0], spec.home[1])
-            .size(r.size[0], r.size[1])
+            .size(size[0], size[1])
             .offset(drift[0] + knock[0], drift[1] + knock[1])
-            .scale(if hitstop { 1.035 } else { lerp(0.97, 1.0, lit) })
+            .scale(if reduced {
+                1.0
+            } else {
+                lerp(lerp(0.97, 1.0, lit), SWELL, charge)
+            })
             .opacity(opacity)
             .offset_motion(Anim::INSTANT)
             .opacity_motion(Anim::INSTANT)
             .scale_motion(Anim::INSTANT)
             .children(ring)
             .child(body)
+            .children(answer)
             .children(flash_el)
-            .children(cracks),
+            .children(burn),
     )
 }
 
-/// The inner edges between slabs, in card coordinates.
-fn seams(slabs: &[Slab], [w, h]: [f32; 2]) -> Vec<([f32; 2], [f32; 2])> {
-    let mut out = Vec::new();
-    for s in slabs {
-        let [x, y, sw, sh] = s.rect;
-        if x + sw < w - 0.5 {
-            out.push(([x + sw, y], [x + sw, y + sh]));
-        }
-        if y + sh < h - 0.5 {
-            out.push(([x, y + sh], [x + sw, y + sh]));
-        }
-    }
-    out
-}
-
-/// The fracture lines the card splits along, drawn hot during the hit-stop.
-fn cracks(p: Paint, r: &Round, slabs: Vec<Slab>, t: f64) -> El {
-    let u = ((t - r.explode) / HITSTOP).clamp(0.0, 1.0) as f32;
-    let [w, h] = r.size;
-    let hot = ember_tone(p, 0.95);
-    let mut shape = Shape::new();
-    let seams = seams(&slabs, r.size);
-    for (n, (a, b)) in seams.into_iter().enumerate() {
-        // Jagged, like a real crack, and racing out from the middle.
-        let steps = 7;
-        let reach = smooth(0.0, 0.6, u);
-        let mut pts = Vec::with_capacity(steps + 1);
-        for k in 0..=steps {
-            let f = k as f32 / steps as f32;
-            let j = if k == 0 || k == steps {
-                0.0
-            } else {
-                rnd(n * 37 + k, -2.6, 2.6)
-            };
-            let (nx, ny) = if (a[0] - b[0]).abs() < 0.5 {
-                (j, 0.0)
-            } else {
-                (0.0, j)
-            };
-            pts.push([lerp(a[0], b[0], f) + nx, lerp(a[1], b[1], f) + ny]);
-        }
-        let mid = steps / 2;
-        let keep = ((steps as f32 * 0.5) * reach).ceil() as usize;
-        let lo = mid.saturating_sub(keep);
-        let hi = (mid + keep).min(steps);
-        if hi > lo {
-            shape = shape.stroke_with(pts[lo..=hi].to_vec(), false, 1.6, LineCap::Round, hot);
-        }
-    }
-    canvas(shape).key("cracks").absolute(0.0, 0.0).size(w, h)
-}
+/// How far the card swells into the hit-stop.
+const SWELL: f32 = 1.035;
 
 fn certificate(p: Paint, targeted: bool, signed: bool) -> El {
     let k = p.k;
@@ -829,163 +1443,31 @@ fn certificate(p: Paint, targeted: bool, signed: bool) -> El {
     k.elevate(card, &k.elevation.floating)
 }
 
-fn words(p: Paint, s: &Schedule, t: f64, reduced: bool) -> El {
+fn words(p: Paint, g: &Play, t: f64, reduced: bool) -> El {
     let mut out = el().key("words").absolute(0.0, 0.0).size(STAGE_W, STAGE_H);
     let mut all: Vec<Flight> = Vec::new();
-    for (ri, r) in s.rounds.iter().enumerate() {
+    for r in &g.rounds {
         if t >= r.shatter() {
             continue;
         }
-        out = out.children(landed_words(p, ri, r, t, reduced, [0.0, 0.0]));
         let weight = 500.0 + 220.0 * r.spec.heat;
-        for (wi, (flight, word, _)) in r.flights.iter().enumerate() {
+        for (wi, (flight, word, _)) in r.flights().iter().enumerate() {
             all.push(*flight);
             if let Some(pose) = flight.pose(t, reduced) {
-                out = out.child(flying(p, &format!("r{ri}f{wi}"), word, weight, pose));
+                out = out.child(flying(p, &format!("r{}f{wi}", r.n), word, weight, pose));
             }
         }
     }
     out.child(impacts(p, "impacts", [STAGE_W, STAGE_H], &all, t, reduced).absolute(0.0, 0.0))
 }
 
-/// The card's big pieces: two staggered rows of slabs, each carrying its
-/// part of the card, words and all, the way the site clips the card's own
-/// image into every shard.
-struct Slab {
-    /// `[x, y, w, h]` in card coordinates.
-    rect: [f32; 4],
-    /// The card's rounded corners this slab keeps: `[tl, tr, br, bl]`.
-    corners: [f32; 4],
-    v: [f32; 2],
-    spin: f32,
-    life: f32,
-}
-
-const SLAB_DRAG: f32 = 2.2;
-const SLAB_GRAVITY: f32 = 900.0;
-const CARD_RADIUS: f32 = 16.0;
-
-fn slabs(r: &Round, seed: usize) -> Vec<Slab> {
-    let [w, h] = r.size;
-    let i = r.spec.heat;
-    let split = h * rnd(seed, 0.4, 0.6);
-    let [dx, dy] = r.heading();
-    let speed = lerp(300.0, 680.0, i);
-    let mut out = Vec::new();
-    for (row, (y, sh, cols)) in [(0.0, split, 3usize), (split, h - split, 4)]
-        .into_iter()
-        .enumerate()
-    {
-        let mut cuts = vec![0.0];
-        for c in 1..cols {
-            let jitter = rnd(seed + row * 19 + c * 5, -0.26, 0.26);
-            cuts.push(w * (c as f32 + jitter) / cols as f32);
-        }
-        cuts.push(w);
-        for c in 0..cols {
-            let (x, sw) = (cuts[c], cuts[c + 1] - cuts[c]);
-            let s = seed + 401 + row * 53 + c * 11;
-            let rx = (x + sw * 0.5 - w * 0.5) / (w * 0.5);
-            let ry = (y + sh * 0.5 - h * 0.5) / (h * 0.5);
-            let rl = rx.hypot(ry) + 0.3;
-            let sp = speed * rnd(s, 0.7, 1.15);
-            let ox = rx / rl + dx * 0.6 + rnd(s + 1, -0.15, 0.15);
-            let oy = ry / rl * 1.2 + dy * 0.6 - 0.35 + rnd(s + 2, -0.15, 0.15);
-            let round = |on: bool| if on { CARD_RADIUS } else { 0.0 };
-            let (first, last, top) = (c == 0, c == cols - 1, row == 0);
-            out.push(Slab {
-                rect: [x, y, sw, sh],
-                corners: [
-                    round(first && top),
-                    round(last && top),
-                    round(last && !top),
-                    round(first && !top),
-                ],
-                v: [ox * sp, oy * sp],
-                spin: rnd(s + 3, 1.5, 5.5) * if ox < 0.0 { -1.0 } else { 1.0 },
-                life: rnd(s + 4, 0.7, 1.0),
-            });
-        }
+/// What's left of the certificate clears fast once the share card shows.
+fn reward_fade(g: &Play, r: &Round, t: f64) -> f32 {
+    match g.share {
+        Some(share) if r.n == CERTIFICATE => 1.0 - smooth(0.0, 0.14, (t - share) as f32),
+        _ => 1.0,
     }
-    out
 }
-
-fn fragments(p: Paint, s: &Schedule, t: f64, reduced: bool) -> Vec<El> {
-    let mut out = Vec::new();
-    if reduced {
-        return out;
-    }
-    let hot = ember_tone(p, 0.9);
-    // A hot tint over a light card reads as pink paint, so it's a rim there.
-    let glow = if p.k.dark { 0.3 } else { 0.08 };
-    for (ri, r) in s.rounds.iter().enumerate() {
-        let te = (t - r.shatter()) as f32;
-        if !(0.0..1.1).contains(&te) {
-            continue;
-        }
-        let [hx, hy] = r.spec.home;
-        let [w, h] = r.size;
-        for (n, sl) in slabs(r, ri * 7919 + 13).into_iter().enumerate() {
-            if te >= sl.life {
-                continue;
-            }
-            let [x, y, sw, sh] = sl.rect;
-            let ([px, py], _) = ballistic([0.0, 0.0], sl.v, SLAB_DRAG, SLAB_GRAVITY, te);
-            let ang = sl.spin * (1.0 - (-1.4 * te).exp()) / 1.4;
-            // Falls away from the camera: starts at the hit-stop's swell, then shrinks.
-            let depth = lerp(1.035, 0.84, 1.0 - (-2.4 * te).exp());
-            let grow = depth - 1.0;
-            let fade = ((sl.life - te) / (sl.life * 0.45)).min(1.0);
-            let heat = (-te / 0.2).exp();
-            out.push(
-                el().key(format!("slab{ri}-{n}"))
-                    .absolute(hx + x, hy + y)
-                    .size(sw, sh)
-                    .offset(
-                        px + (x + sw * 0.5 - w * 0.5) * grow,
-                        py + (y + sh * 0.5 - h * 0.5) * grow,
-                    )
-                    .rotate(ang)
-                    .scale(depth)
-                    .opacity(fade)
-                    .continuous_corners()
-                    .clip_corners(sl.corners)
-                    .offset_motion(Anim::INSTANT)
-                    .rotate_motion(Anim::INSTANT)
-                    .scale_motion(Anim::INSTANT)
-                    .opacity_motion(Anim::INSTANT)
-                    .child(face(p, ri, r, r.shatter(), [-x, -y]))
-                    .children((heat > 0.03).then(|| {
-                        el().key("heat")
-                            .absolute(0.0, 0.0)
-                            .size(sw, sh)
-                            .corners(sl.corners)
-                            .continuous_corners()
-                            .fill(hot.alpha(glow * heat))
-                            .border(1.5, hot.alpha(heat))
-                    })),
-            );
-        }
-    }
-    out
-}
-
-/// Small chips spraying out of the cracks: splinters that fly faster than
-/// the slabs, tumbling under drag and gravity and catching the light as
-/// they turn.
-struct Shard {
-    at: [f32; 2],
-    v: [f32; 2],
-    spin: f32,
-    life: f32,
-    verts: [[f32; 2]; 3],
-    tint: f32,
-}
-
-const SHARD_DRAG: f32 = 2.6;
-const SHARD_GRAVITY: f32 = 620.0;
-const SPARK_DRAG: f32 = 4.2;
-const SPARK_GRAVITY: f32 = 380.0;
 
 fn ballistic(at: [f32; 2], v: [f32; 2], drag: f32, gravity: f32, t: f32) -> ([f32; 2], [f32; 2]) {
     let decay = (-drag * t).exp();
@@ -1000,347 +1482,412 @@ fn ballistic(at: [f32; 2], v: [f32; 2], drag: f32, gravity: f32, t: f32) -> ([f3
     )
 }
 
-fn shards(r: &Round, seed: usize) -> Vec<Shard> {
-    let [w, h] = r.size;
-    let i = r.spec.heat;
-    let seams = seams(&slabs(r, seed), r.size);
-    let [dx, dy] = r.heading();
-    let [hx, hy] = r.spec.home;
-    let speed = lerp(480.0, 1100.0, i);
-    let count = lerp(36.0, 72.0, i).round() as usize;
-    (0..count)
-        .map(|n| {
-            let s = seed + 3001 + n * 23;
-            let (a, b) = seams[n % seams.len()];
-            let f = rnd(s, 0.05, 0.95);
-            let at = [lerp(a[0], b[0], f), lerp(a[1], b[1], f)];
-            let (rx, ry) = ((at[0] - w * 0.5) / (w * 0.5), (at[1] - h * 0.5) / (h * 0.5));
-            let rl = rx.hypot(ry) + 0.35;
-            let sp = speed * rnd(s + 1, 0.45, 1.25);
-            let ox = rx / rl * 0.85 + dx * 0.8 + rnd(s + 2, -0.45, 0.45);
-            let oy = ry / rl * 0.85 + dy * 0.8 + rnd(s + 3, -0.45, 0.45) - 0.1;
-            let size = rnd(s + 4, 3.0, 9.0);
-            let verts = [0.0, 2.2, 4.1].map(|turn: f32| {
-                let ang = turn + rnd(s + 5 + (turn * 3.0) as usize, -0.5, 0.5);
-                let reach = size * rnd(s + 9 + (turn * 3.0) as usize, 0.6, 1.2);
-                [ang.cos() * reach, ang.sin() * reach]
-            });
-            Shard {
-                at: [hx + at[0], hy + at[1]],
-                v: [ox * sp, oy * sp],
-                spin: rnd(s + 6, -14.0, 14.0),
-                life: rnd(s + 7, 0.45, 0.95),
-                verts,
-                tint: rnd(s + 8, 0.0, 1.0),
-            }
+/// The strike, after Psychopomp's lightning: through the hit-stop a stepped
+/// leader feels its way up from the HUD to where the last word hit, then
+/// return strokes light the channel white-hot and flash the card, each
+/// cooling to an afterglow.
+const STROKES: u32 = 3;
+const LEADER_STEP: f32 = 1.0 / 60.0;
+const STROKE_HOLD: f32 = 0.014;
+const CORE_DECAY: f32 = 0.03;
+const AFTERGLOW_DECAY: f32 = 0.065;
+const AFTERGLOW: f32 = 0.6;
+/// How far a bolt's midpoints wander, against each segment's length, by
+/// subdivision level: coarse bends, then finer and finer kinks.
+const ROUGHNESS: [f32; 6] = [0.55, 0.8, 1.0, 1.1, 1.2, 1.25];
+/// How much of each coarse level a re-strike redraws: the channel keeps
+/// its big bends and gets new fine detail.
+const SWAY: [f32; 3] = [0.25, 0.4, 0.6];
+/// Ash flakes shed at each card's rim, and sparks at the strike.
+const ASH: usize = 150;
+const SPARKS: usize = 26;
+
+fn hash(seed: u32, salt: u32) -> f32 {
+    let mut h = seed.wrapping_mul(0x9E37_79B1) ^ salt.wrapping_mul(0x85EB_CA77);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x2C1B_3C6D);
+    h ^= h >> 12;
+    h = h.wrapping_mul(0x297A_2D39);
+    h ^= h >> 15;
+    (h >> 8) as f32 / 16_777_216.0
+}
+
+/// When stroke `k` lands, in seconds after the shatter.
+fn stroke_at(seed: u32, k: u32) -> f32 {
+    (0..k).map(|i| 0.045 + 0.065 * hash(seed, 101 + i)).sum()
+}
+
+fn strength(seed: u32, k: u32) -> f32 {
+    if k == 0 {
+        1.0
+    } else {
+        0.55 + 0.4 * hash(seed, 211 + k)
+    }
+}
+
+/// A stroke `since` seconds old fades out over the second half of its glow.
+fn rest(since: f32) -> f32 {
+    1.0 - smooth(AFTERGLOW * 0.5, AFTERGLOW, since)
+}
+
+/// A stroke's white-hot core and its cooling afterglow, `since` seconds in.
+fn stroke_light(seed: u32, k: u32, since: f32) -> (f32, f32) {
+    if !(0.0..AFTERGLOW).contains(&since) {
+        return (0.0, 0.0);
+    }
+    let decay = if since < STROKE_HOLD {
+        1.0
+    } else {
+        (-(since - STROKE_HOLD) / CORE_DECAY).exp()
+    };
+    let s = strength(seed, k) * rest(since);
+    (s * decay, 0.45 * s * (-since / AFTERGLOW_DECAY).exp())
+}
+
+/// How far up the channel the leader has stepped, `0..1`, while it's out.
+fn leader(te: f32) -> Option<f32> {
+    let length = HITSTOP as f32;
+    (0.0..length).contains(&te).then(|| {
+        let steps = (length / LEADER_STEP).ceil();
+        (((te / LEADER_STEP).floor() + 1.0) / (steps + 1.0)).min(0.95)
+    })
+}
+
+/// How brightly the strike lights the card at `te` seconds after the
+/// hit-stop starts: faint under the leader, flashing on each stroke.
+fn strike_light(seed: u32, te: f32) -> f32 {
+    if let Some(progress) = leader(te) {
+        return 0.25 + 0.2 * progress;
+    }
+    let since = te - HITSTOP as f32;
+    (0..STROKES)
+        .map(|k| {
+            let (core, glow) = stroke_light(seed, k, since - stroke_at(seed, k));
+            core + 0.6 * glow
+        })
+        .fold(0.0, f32::max)
+}
+
+/// A jagged channel along `base` by midpoint displacement. `shape` holds
+/// its coarse bends across re-strikes; `strike` redraws its fine detail.
+fn jag(
+    base: impl Fn(f32) -> [f32; 2],
+    levels: u32,
+    shape: u32,
+    strike: u32,
+    amplitude: f32,
+) -> Vec<[f32; 2]> {
+    let n = 1usize << levels;
+    let points: Vec<[f32; 2]> = (0..=n).map(|i| base(i as f32 / n as f32)).collect();
+    let deviate = |level: u32, index: u32, salt: u32| {
+        let key = index.wrapping_mul(0x9E37_79B1) ^ level.wrapping_mul(0x85EB_CA77) ^ salt;
+        let fine = hash(strike ^ key, 0x51ED) * 2.0 - 1.0;
+        let fine = fine.signum() * fine.abs().powf(0.7);
+        match SWAY.get(level as usize) {
+            Some(&sway) => lerp(hash(shape ^ key, 0x2C1B) * 2.0 - 1.0, fine, sway),
+            None => fine,
+        }
+    };
+    let mut across = vec![0.0f32; n + 1];
+    let mut along = vec![0.0f32; n + 1];
+    for level in 0..levels {
+        let stride = n >> level;
+        let half = stride / 2;
+        for segment in 0..n / stride {
+            let (start, end) = (segment * stride, segment * stride + stride);
+            let reach = amplitude * dist(points[start], points[end]) * ROUGHNESS[level as usize];
+            let mid = start + half;
+            across[mid] =
+                (across[start] + across[end]) * 0.5 + deviate(level, segment as u32, 1) * reach;
+            along[mid] = (along[start] + along[end]) * 0.5
+                + deviate(level, segment as u32, 2) * reach * 0.22;
+        }
+    }
+    (0..=n)
+        .map(|i| {
+            let a = points[i.saturating_sub(1)];
+            let b = points[(i + 1).min(n)];
+            let l = dist(a, b).max(1e-4);
+            let t = [(b[0] - a[0]) / l, (b[1] - a[1]) / l];
+            [
+                points[i][0] - t[1] * across[i] + t[0] * along[i],
+                points[i][1] + t[0] * across[i] + t[1] * along[i],
+            ]
         })
         .collect()
 }
 
-struct Spark {
-    at: [f32; 2],
-    v: [f32; 2],
-    life: f32,
-    heat: f32,
-    size: f32,
-    gravity: f32,
+fn dist(a: [f32; 2], b: [f32; 2]) -> f32 {
+    (a[0] - b[0]).hypot(a[1] - b[1])
 }
 
-fn sparks(r: &Round, seed: usize) -> Vec<Spark> {
-    let i = r.spec.heat;
-    let [dx, dy] = r.heading();
-    let [cx, cy] = r.centre();
-    let [hw, hh] = [r.size[0] * 0.5, r.size[1] * 0.5];
-    let mut out = Vec::new();
-    for n in 0..(lerp(18.0, 60.0, i).round() as usize) {
-        let s = seed + n * 11;
-        let a = rnd(s, 0.0, std::f32::consts::TAU);
-        let sp = rnd(s + 1, 500.0, 1800.0);
-        out.push(Spark {
-            at: [cx, cy],
-            v: [a.cos() * sp + dx * 400.0, a.sin() * sp + dy * 400.0],
-            life: rnd(s + 2, 0.18, 0.5),
-            heat: 1.0,
-            size: rnd(s + 3, 1.4, 2.6),
-            gravity: SPARK_GRAVITY,
-        });
-    }
-    for n in 0..10 {
-        let s = seed + 997 + n * 13;
-        let a = rnd(s, 0.0, std::f32::consts::TAU);
-        let sp = rnd(s + 1, 40.0, 200.0);
-        out.push(Spark {
-            at: [cx + rnd(s + 2, -40.0, 40.0), cy + rnd(s + 3, -14.0, 14.0)],
-            v: [a.cos() * sp, a.sin() * sp - 40.0],
-            life: rnd(s + 4, 0.8, 1.5),
-            heat: 0.0,
-            size: rnd(s + 5, 1.2, 2.0),
-            gravity: SPARK_GRAVITY,
-        });
-    }
-    // Buoyant embers rising off a big blast.
-    let pyro = smooth(0.32, 0.92, i);
-    for n in 0..(lerp(8.0, 28.0, pyro).round() as usize) {
-        let s = seed + 1999 + n * 17;
-        let a = rnd(s, 0.0, std::f32::consts::TAU);
-        let sp = rnd(s + 1, 60.0, 260.0);
-        out.push(Spark {
-            at: [
-                cx + rnd(s + 2, -hw * 0.65, hw * 0.65),
-                cy + rnd(s + 3, -hh * 0.45, hh * 0.45),
-            ],
-            v: [
-                a.cos() * sp + dx * 110.0,
-                -rnd(s + 4, 120.0, 360.0) + a.sin() * 60.0,
-            ],
-            life: rnd(s + 5, 0.65, 1.45),
-            heat: rnd(s + 6, 0.75, 1.0),
-            size: rnd(s + 7, 1.6, 3.0),
-            gravity: -SPARK_GRAVITY * 0.25,
-        });
-    }
-    out
+fn length(points: &[[f32; 2]]) -> f32 {
+    points.windows(2).map(|w| dist(w[0], w[1])).sum()
 }
 
-fn ring(shape: Shape, centre: [f32; 2], r: f32, width: f32, color: Color) -> Shape {
-    let points: Vec<[f32; 2]> = (0..48)
-        .map(|n| {
-            let a = n as f32 / 48.0 * std::f32::consts::TAU;
-            [centre[0] + r * a.cos(), centre[1] + r * a.sin()]
-        })
-        .collect();
-    shape.stroke_with(points, true, width, LineCap::Round, color)
+/// The point `f` of the way along a path.
+fn along(points: &[[f32; 2]], f: f32) -> [f32; 2] {
+    let mut left = length(points) * f.clamp(0.0, 1.0);
+    for w in points.windows(2) {
+        let d = dist(w[0], w[1]);
+        if left <= d && d > 0.0 {
+            let u = left / d;
+            return [lerp(w[0][0], w[1][0], u), lerp(w[0][1], w[1][1], u)];
+        }
+        left -= d;
+    }
+    *points.last().unwrap_or(&[0.0, 0.0])
 }
 
-fn debris(p: Paint, s: &Schedule, t: f64, reduced: bool) -> El {
-    let k = p.k;
-    let mut shape = Shape::new();
-    if !reduced {
-        let fill = if k.dark {
-            k.c.surface_raised
+/// A channel and its forks: each fork as its path, where it leaves the
+/// channel (a fraction of the channel's length), and its brightness.
+struct Channel {
+    main: Vec<[f32; 2]>,
+    forks: Vec<(Vec<[f32; 2]>, f32, f32)>,
+}
+
+fn channel(from: [f32; 2], to: [f32; 2], shape: u32, strike: u32) -> Channel {
+    let main = jag(
+        |u| [lerp(from[0], to[0], u), lerp(from[1], to[1], u)],
+        6,
+        shape,
+        strike,
+        0.3,
+    );
+    let total = length(&main).max(1.0);
+    let heading = [(to[0] - from[0]) / total, (to[1] - from[1]) / total];
+    let mut forks = Vec::new();
+    for b in 0..(3 + (hash(strike, 301) * 3.0) as u32) {
+        let salt = 310 + b * 13;
+        let fork = 0.1 + 0.7 * hash(strike, salt).powf(1.3);
+        let side = if hash(strike, salt + 1) < 0.5 {
+            -1.0
         } else {
-            k.c.bg_base
+            1.0
         };
-        let shade = fill.mix(k.c.text_base, if k.dark { 0.06 } else { 0.1 });
-        let shine = if k.dark { k.c.text_strong } else { k.c.white };
-        for (ri, r) in s.rounds.iter().enumerate() {
-            let te = (t - r.shatter()) as f32;
-            if !(0.0..1.6).contains(&te) {
+        let turn = side * (0.35 + 0.5 * hash(strike, salt + 2));
+        let (s, c) = turn.sin_cos();
+        let d = [
+            c * heading[0] - s * heading[1],
+            s * heading[0] + c * heading[1],
+        ];
+        let reach = total * (0.12 + 0.22 * hash(strike, salt + 3)) * (1.0 - 0.5 * fork);
+        let start = along(&main, fork);
+        let twig = jag(
+            |u| [start[0] + d[0] * reach * u, start[1] + d[1] * reach * u],
+            4,
+            shape ^ salt,
+            strike ^ salt,
+            0.34,
+        );
+        forks.push((twig, fork, 0.4 + 0.25 * hash(strike, salt + 5)));
+    }
+    Channel { main, forks }
+}
+
+/// A card point on the stage: cards swell about their centre.
+fn on_stage(r: &Round, local: [f32; 2], scale: f32) -> [f32; 2] {
+    let size = r.size();
+    let c = [size[0] * 0.5, size[1] * 0.5];
+    [
+        r.spec.home[0] + c[0] + (local[0] - c[0]) * scale,
+        r.spec.home[1] + c[1] + (local[1] - c[1]) * scale,
+    ]
+}
+
+fn seed_of(ri: usize) -> u32 {
+    (ri * 7919 + 13) as u32
+}
+
+/// Whether a card is still burning at `t`, and how far in (seconds).
+fn burning(r: &Round, t: f64) -> Option<f32> {
+    let age = (t - r.shatter()) as f32;
+    (0.0..BURN + 0.05).contains(&age).then_some(age)
+}
+
+/// The strike and burn's colours: a white-hot core and an ember corona on a
+/// dark page; on a light one, deep ember paint and a brown char.
+fn tones(p: Paint) -> Tones {
+    let k = p.k;
+    if k.dark {
+        Tones {
+            core: k.c.text_strong,
+            corona: ember_tone(p, 0.55),
+            scorch: k.c.black.mix(ember_tone(p, 0.2), 0.15),
+            ash: k.c.text_weak.alpha(0.85),
+        }
+    } else {
+        Tones {
+            core: ember_tone(p, 1.0),
+            corona: ember_tone(p, 0.6),
+            scorch: k.c.black.mix(ember_tone(p, 0.9), 0.3),
+            ash: k.c.text_muted.alpha(0.8),
+        }
+    }
+}
+
+/// This frame's strike and burn for the compositor (`game_fx`).
+fn fx(p: Paint, g: &Play, t: f64, reduced: bool) -> Fx {
+    let mut fx = Fx {
+        dark: p.k.dark,
+        tones: tones(p),
+        ..Fx::default()
+    };
+    if reduced {
+        return fx;
+    }
+    let source = [HUD_AT[0], HUD_AT[1] - 15.0];
+    for r in &g.rounds {
+        if !r.answered {
+            continue;
+        }
+        let seed = seed_of(r.n);
+        let clear = reward_fade(g, r, t);
+        let impact = on_stage(r, r.impact(), SWELL);
+        let te = (t - r.explode) as f32;
+        if (0.0..HITSTOP as f32 + 1.0).contains(&te) && clear > 0.0 {
+            bolts(&mut fx, seed, source, impact, te, clear);
+        }
+        if let Some(age) = burning(r, t) {
+            fx.burns.push(Burn {
+                card: r.slot(),
+                size: r.size(),
+                impact: r.impact(),
+                age,
+                seed,
+            });
+        }
+        let age = (t - r.shatter()) as f32;
+        if (0.0..BURN + 1.6).contains(&age) && clear > 0.0 {
+            ash(&mut fx, r, seed, age, clear);
+            sparks(&mut fx, seed, impact, source, age, clear);
+        }
+    }
+    fx
+}
+
+fn bolts(fx: &mut Fx, seed: u32, from: [f32; 2], to: [f32; 2], te: f32, clear: f32) {
+    let mut push = |c: &Channel, core: f32, glow: f32, reach: f32| {
+        if core + glow < 0.01 {
+            return;
+        }
+        let total = length(&c.main);
+        fx.bolts.push(Bolt {
+            points: c.main.clone(),
+            width: 1.3,
+            core: core * clear,
+            glow: glow * clear,
+            drawn: total * reach,
+        });
+        for (twig, fork, energy) in &c.forks {
+            if reach <= *fork {
                 continue;
             }
-            let seed = ri * 7919 + 13;
-            let size = r.size[0].max(r.size[1]);
-            let i = r.spec.heat;
-            let centre = r.centre();
-            let pyro = smooth(0.32, 0.92, i);
-            // Shockwave: kind 0, cubic ease-out, hot white cooling to ember.
-            let u = te / 0.36;
-            if u < 1.0 {
-                let rad = (size * 0.42 + 36.0) * lerp(0.9, 1.25, i) * (1.0 - (1.0 - u).powi(3));
-                let width = lerp(2.4, 3.4, pyro) * (1.0 - u * 0.8);
-                let fade = (1.0 - u) * (1.0 - u);
-                let color = ember_tone(p, 1.0 - u * 0.5).alpha(0.9 * fade);
-                shape = ring(shape, centre, rad, width, color);
-            }
-            // The slower pressure ring behind it: kind 10.
-            let u = (te - 0.04) / lerp(0.4, 0.6, i);
-            if (0.0..1.0).contains(&u) {
-                let rad = (size * 0.55 + 50.0) * (0.3 + 0.7 * (1.0 - (1.0 - u).powf(2.2)));
-                let color = ember_tone(p, 0.7).alpha(0.35 * (1.0 - u));
-                shape = ring(shape, centre, rad, 1.2, color);
-            }
-            for sh in shards(r, seed) {
-                if te >= sh.life {
-                    continue;
-                }
-                let ([x, y], _) = ballistic(sh.at, sh.v, SHARD_DRAG, SHARD_GRAVITY, te);
-                let ang = sh.spin * (1.0 - (-0.95 * te).exp()) / 0.95;
-                let tumble = 1.0 + (sh.spin.abs() * 0.65 + 2.5) * te + sh.tint * 6.0;
-                let tilt = 0.25 + 0.75 * tumble.cos().abs();
-                let (sin, cos) = ang.sin_cos();
-                let pts: Vec<[f32; 2]> = sh
-                    .verts
-                    .iter()
-                    .map(|&[vx, vy]| {
-                        let vx = vx * tilt;
-                        [x + vx * cos - vy * sin, y + vx * sin + vy * cos]
-                    })
-                    .collect();
-                let left = sh.life - te;
-                let fade = (left / (sh.life * 0.35)).min(1.0);
-                let heat = (-te / 0.25).exp();
-                // A chip flashes as its face turns to the light.
-                let glint = tumble.cos().max(0.0).powi(8);
-                let face = if sh.tint > 0.6 { shade } else { fill }
-                    .mix(shine, 0.35 * glint)
-                    .mix(ember_tone(p, 0.8), 0.6 * heat);
-                shape = shape.fill(pts.clone(), face.alpha(fade));
-                let edge = k.c.border_base.mix(ember_tone(p, 0.85), heat);
-                shape = shape.stroke_with(pts, true, 0.8, LineCap::Round, edge.alpha(fade));
-            }
-            for sp in sparks(r, seed) {
-                if te >= sp.life {
-                    continue;
-                }
-                let left = 1.0 - te / sp.life;
-                let ([x, y], [vx, vy]) = ballistic(sp.at, sp.v, SPARK_DRAG, sp.gravity, te);
-                let streak = 1.6 / 60.0 * 0.5;
-                let color = if sp.heat > 0.0 {
-                    k.c.bg_base
-                        .mix(ember_tone(p, sp.heat * left), (left * 0.9).clamp(0.0, 1.0))
-                } else {
-                    k.c.bg_base.mix(k.c.text_weak, left * 0.6)
-                };
-                shape = shape.line(
-                    [x - vx * streak, y - vy * streak],
-                    [x + vx * streak + 0.1, y + vy * streak],
-                    sp.size,
-                    LineCap::Round,
-                    color,
-                );
-            }
+            fx.bolts.push(Bolt {
+                points: twig.clone(),
+                width: 0.75,
+                core: core * energy * clear,
+                glow: glow * energy * clear,
+                drawn: (reach - fork) * total,
+            });
         }
-    }
-    canvas(shape)
-        .key("debris")
-        .absolute(0.0, 0.0)
-        .size(STAGE_W, STAGE_H)
-}
-
-fn blob(key: String, centre: [f32; 2], r: f32, color: Color, blur: f32) -> El {
-    el().key(key)
-        .absolute(centre[0] - r, centre[1] - r)
-        .size(2.0 * r, 2.0 * r)
-        .radius(r)
-        .fill(color)
-        .blur(blur)
-}
-
-/// The site's volumetric pieces as blurred discs: the flash (kind 1), the
-/// blast light on its neighbours, fireball lobes cooling to smoke (kind 8),
-/// and smoke plumes rising after them (kind 9).
-fn glows(p: Paint, ri: usize, r: &Round, t: f64, reduced: bool) -> Vec<El> {
-    let te = (t - r.shatter()) as f32;
-    if reduced || !(0.0..2.0).contains(&te) {
-        return Vec::new();
-    }
-    let k = p.k;
-    let i = r.spec.heat;
-    let pyro = smooth(0.32, 0.92, i).max(0.35);
-    let size = r.size[0].max(r.size[1]);
-    let [cx, cy] = r.centre();
-    let [dx, dy] = r.heading();
-    let seed = ri * 4513 + 7;
-    let smoke = if k.dark {
-        k.c.text_weak
-    } else {
-        k.c.text_muted
     };
-    // Light on a light page reads as paint, so it's thinner there.
-    let thin = if k.dark { 1.0 } else { 0.55 };
-    let mut out = Vec::new();
-
-    let u = te / 0.38;
-    if u < 1.0 {
-        let rad = (size * 0.45 + 50.0) * lerp(0.9, 1.3, pyro);
-        let a = 0.18 * thin * (1.0 - u).powf(1.85);
-        out.push(blob(
-            format!("light{ri}"),
-            [cx, cy],
-            rad,
-            ember_tone(p, 0.6).alpha(a),
-            rad * 0.35,
-        ));
+    if let Some(progress) = leader(te) {
+        let c = channel(from, to, seed, hash(seed, 400).to_bits());
+        push(&c, 0.0, 0.3 + 0.25 * progress, progress);
+        return;
     }
-    let lobes = if pyro > 0.55 { 3 } else { 2 };
-    for li in 0..lobes {
-        let s = seed + li * 19;
-        let age = te + li as f32 * 0.025;
-        let life = lerp(0.58, 0.92, pyro);
-        let u = age / life;
-        if !(0.0..1.0).contains(&u) {
-            continue;
-        }
-        let (ox, oy) = if li == 0 {
-            (0.0, 0.0)
-        } else {
-            (
-                rnd(s, -r.size[0] * 0.22, r.size[0] * 0.22),
-                rnd(s + 1, -r.size[1] * 0.17, r.size[1] * 0.17),
-            )
-        };
-        let r0 = if li == 0 { size * 0.13 } else { size * 0.1 } * lerp(0.85, 1.3, pyro);
-        let rad = lerp(r0, r0 * lerp(1.6, 2.0, pyro), 1.0 - (1.0 - u).powf(2.2));
-        let vx = dx * rnd(s + 2, 25.0, 70.0) + ox * 0.6;
-        let vy = -rnd(s + 3, 28.0, 65.0) + dy * 25.0;
-        let at = [cx + ox + vx * age, cy + oy + vy * age];
-        let hot = ember_tone(p, 1.0 - u * 0.7);
-        let color = hot.mix(smoke, smooth(0.45, 0.95, u));
-        let a = 0.42 * thin * (1.0 - u).powf(1.8) * lerp(0.85, 1.0, pyro);
-        out.push(blob(
-            format!("fire{ri}-{li}"),
-            at,
-            rad,
-            color.alpha(a),
-            rad * 0.45,
-        ));
+    let since = te - HITSTOP as f32;
+    for k in 0..STROKES {
+        let (core, glow) = stroke_light(seed, k, since - stroke_at(seed, k));
+        let c = channel(from, to, seed, hash(seed, 401 + k).to_bits());
+        push(&c, core, glow, 1.0);
     }
-    let u = te / 0.1;
-    if u < 1.0 {
-        let rad = size * 0.2 + 24.0;
-        let white = if k.dark { k.c.text_strong } else { k.c.white };
-        out.push(blob(
-            format!("flash{ri}"),
-            [cx, cy],
-            rad,
-            white
-                .mix(ember_tone(p, 1.0), 0.25)
-                .alpha(0.7 * (1.0 - u) * (1.0 - u)),
-            rad * 0.3,
-        ));
-    }
-    for si in 0..2 {
-        let s = seed + 300 + si * 23;
-        let age = te - 0.05 - si as f32 * 0.04;
-        let life = rnd(s, 1.15, 1.85);
-        let u = age / life;
-        if !(0.0..1.0).contains(&u) {
-            continue;
-        }
-        let r0 = size * rnd(s + 1, 0.14, 0.2);
-        let rad = lerp(r0, r0 * 2.0, 1.0 - (1.0 - u).powf(2.2));
-        let at = [
-            cx + rnd(s + 2, -r.size[0] * 0.25, r.size[0] * 0.25) + rnd(s + 3, -28.0, 28.0) * age,
-            cy - rnd(s + 4, 52.0, 98.0) * age,
-        ];
-        let a = 0.12 * thin * (u * std::f32::consts::PI).sin();
-        out.push(blob(
-            format!("smoke{ri}-{si}"),
-            at,
-            rad,
-            smoke.alpha(a),
-            rad * 0.55,
-        ));
-    }
-    out
 }
 
-/// The shareable moment: the certificate's blast becomes a score card.
-fn share(
+/// Flakes leave the rim as the front passes their spot, glowing, and drift
+/// up as grey ash.
+fn ash(fx: &mut Fx, r: &Round, seed: u32, age: f32, clear: f32) {
+    let impact = r.impact();
+    let size = r.size();
+    for n in 0..ASH as u32 {
+        let local = [
+            hash(seed ^ 0xA5, n * 3) * size[0],
+            hash(seed ^ 0xA5, n * 3 + 1) * size[1],
+        ];
+        let born = game_fx::passes(game_fx::field(local, size, impact, seed));
+        let life = lerp(0.6, 1.3, hash(seed, n * 7 + 2));
+        let a = age - born;
+        if !(0.0..life).contains(&a) {
+            continue;
+        }
+        let out = [local[0] - impact[0], local[1] - impact[1]];
+        let l = (out[0].hypot(out[1])).max(1.0);
+        let push = lerp(15.0, 60.0, hash(seed, n * 7 + 3));
+        let v = [
+            out[0] / l * push + lerp(-25.0, 25.0, hash(seed, n * 7 + 4)),
+            out[1] / l * push - lerp(30.0, 110.0, hash(seed, n * 7 + 5)),
+        ];
+        let (at, _) = ballistic(on_stage(r, local, SWELL), v, 1.4, -50.0, a);
+        let size = lerp(0.8, 2.2, hash(seed, n * 7 + 6).powi(2));
+        fx.motes.push(Mote {
+            at,
+            radius: size * (1.0 - 0.3 * a / life),
+            heat: (-a / 0.16).exp(),
+            opacity: (1.0 - smooth(life * 0.45, life, a)) * clear,
+        });
+    }
+}
+
+/// The strike spits sparks from where it hit, away from the channel.
+fn sparks(fx: &mut Fx, seed: u32, at: [f32; 2], from: [f32; 2], age: f32, clear: f32) {
+    let back = [from[0] - at[0], from[1] - at[1]];
+    let away = (-back[1]).atan2(-back[0]);
+    for n in 0..SPARKS as u32 {
+        let life = lerp(0.2, 0.55, hash(seed ^ 0x5A, n * 5));
+        if age >= life {
+            continue;
+        }
+        let angle = away + lerp(-1.7, 1.7, hash(seed ^ 0x5A, n * 5 + 1));
+        let speed = lerp(260.0, 900.0, hash(seed ^ 0x5A, n * 5 + 2));
+        let v = [angle.cos() * speed, angle.sin() * speed];
+        let (p, _) = ballistic(at, v, 4.2, 380.0, age);
+        fx.motes.push(Mote {
+            at: p,
+            radius: lerp(0.8, 1.5, hash(seed ^ 0x5A, n * 5 + 3)),
+            heat: 1.0 - smooth(life * 0.4, life, age),
+            opacity: (1.0 - smooth(life * 0.6, life, age)) * clear,
+        });
+    }
+}
+
+fn ease_in_out(x: f32) -> f32 {
+    if x < 0.5 {
+        4.0 * x * x * x
+    } else {
+        1.0 - (2.0 - 2.0 * x).powi(3) * 0.5
+    }
+}
+
+/// The shareable moment: the certificate's blast becomes a score card. Its
+/// surface goes opaque at once, then its content shows; Keep playing folds
+/// the surface and the number into the score pill.
+fn share<S: 'static>(
     p: Paint,
-    s: &Schedule,
+    g: &Play,
     t: f64,
     destroyed: usize,
-    keep: bool,
     reduced: bool,
+    look: &Look<'_, S>,
 ) -> Option<El> {
-    let age = (t - s.share) as f32;
-    if age < 0.0 || (keep && age > SHARE_HOLD as f32 + 0.5) {
+    let age = (t - g.share?) as f32;
+    let fold = fold(g, t);
+    let cert = g.certificate()?;
+    if age < 0.0 || fold >= 1.0 {
         return None;
     }
     let k = p.k;
     let w = SHARE_W;
-    let cert = &s.rounds[2];
     let [cx, cy] = cert.centre();
     let x = (age / 0.6).clamp(0.0, 1.0);
     let rise = if reduced {
@@ -1355,36 +1902,21 @@ fn share(
         let c = 1.4;
         1.0 + (c + 1.0) * (x - 1.0).powi(3) + c * (x - 1.0).powi(2)
     };
-    let fold = if keep && !reduced {
-        smooth(SHARE_HOLD as f32, SHARE_HOLD as f32 + 0.45, age)
-    } else {
-        0.0
-    };
     let home = [(STAGE_W - w) * 0.5, SHARE_Y];
-    let centre = [home[0] + w * 0.5, home[1] + SHARE_H * 0.5];
-    let from = [cx - centre[0], cy - centre[1]];
-    let pill = [SCORE_AT[0] + 52.0, SCORE_AT[1] + 15.0];
-    let to_pill = [pill[0] - centre[0], pill[1] - centre[1]];
-    let offset = [
-        from[0] * (1.0 - rise) + to_pill[0] * fold,
-        from[1] * (1.0 - rise) + to_pill[1] * fold,
-    ];
-    let scale = if reduced {
-        1.0
+    let from = [cx - (home[0] + w * 0.5), cy - (home[1] + SHARE_H * 0.5)];
+    let surface_in = smooth(0.0, 0.11, age);
+    let content_in = smooth(0.11, 0.23, age);
+    let pill = pill_in(fold, reduced);
+    // The fold: everything but the number goes in its first 100 ms, the
+    // surface and number become the pill, and the pill takes over at the end.
+    let (morph, rest) = if reduced {
+        (0.0, 1.0 - pill)
     } else {
-        lerp(0.86, 1.0, settle) * lerp(1.0, 0.12, fold)
+        (ease_in_out(fold), 1.0 - smooth(0.0, 0.1 / FOLD, fold))
     };
-    let fade_out = if keep && reduced {
-        1.0 - smooth(SHARE_HOLD as f32, SHARE_HOLD as f32 + 0.3, age)
-    } else {
-        1.0 - fold
-    };
-    let opacity = smooth(0.0, 0.25, age) * fade_out;
-    let words: usize = s.rounds[..3]
-        .iter()
-        .map(|r| r.spec.take.text().split_whitespace().count())
-        .sum();
-    let secs = s.rounds[2].shatter() - s.rounds[0].hold;
+    // Still warm from the blast, cooling.
+    let warm = (-age / 0.45).exp();
+    let (words, keys, secs) = g.stats();
     // The number counts up, each tick landing with a small kick.
     let count = if reduced {
         destroyed as f32
@@ -1426,53 +1958,41 @@ fn share(
     };
     let rule = |key: &str| {
         el().key(key.to_string())
-            .size(w - 2.0 * SHARE_PAD, p.hair.max(1.0))
+            .size(w - 2.0 * SHARE_PAD, SHARE_ROWS[2])
             .fill(k.c.border_weak)
     };
-    let big = TextStyle::new(76.0, 720.0)
-        .lh(78.0)
+    let big = TextStyle::new(BIG_SIZE, 720.0)
+        .lh(BIG_LINE)
         .tracking(-2.0)
         .features("'tnum' 1");
-    let number = el()
-        .key("number")
-        .scale(1.0 + 0.1 * kick)
-        .origin(0.5, 0.8)
-        .scale_motion(Anim::INSTANT)
-        .child(
-            text(shown.to_string())
-                .key("glow")
-                .font(big)
-                .color(ember.alpha(0.45 + 0.35 * kick))
-                .absolute(0.0, 0.0)
-                .blur(12.0),
-        )
-        .child(
-            text(shown.to_string())
-                .key("n")
-                .font(big)
-                .color(ember_tone(p, 0.85 + 0.15 * kick)),
-        );
-    let card = col()
-        .key("share-card")
+    let number = |key: &str, color: Color| {
+        el().key(key.to_string())
+            .scale(1.0 + 0.1 * kick)
+            .origin(0.5, 0.8)
+            .scale_motion(Anim::INSTANT)
+            .child(
+                text(shown.to_string())
+                    .key("glow")
+                    .font(big)
+                    .color(ember.alpha((0.45 + 0.35 * kick) * warm))
+                    .absolute(0.0, 0.0)
+                    .blur(12.0),
+            )
+            .child(text(shown.to_string()).key("n").font(big).color(color))
+    };
+    let folding = fold > 0.0 && !reduced;
+    let content = col()
+        .key("content")
+        .absolute(0.0, 0.0)
         .w(w)
         .padding(SHARE_PAD)
-        .gap(16.0)
-        .radius(20.0)
-        .continuous_corners()
-        .fill(if k.dark {
-            k.c.surface_raised
-        } else {
-            k.c.bg_base
-        })
-        .radial_gradient(
-            [0.14, 0.28],
-            [240.0, 160.0],
-            [(0.0, ember.alpha(0.12)), (1.0, ember.alpha(0.0))],
-        )
-        .border(p.hair, k.c.border_weak)
+        .gap(SHARE_GAP)
+        .opacity(content_in * rest)
+        .opacity_motion(Anim::INSTANT)
         .child(
             row()
                 .key("top")
+                .h(SHARE_ROWS[0])
                 .center_y()
                 .child(
                     text("Hex")
@@ -1491,9 +2011,14 @@ fn share(
         .child(
             row()
                 .key("score")
+                .h(SHARE_ROWS[1])
                 .gap(16.0)
                 .items_end()
-                .child(number)
+                .child(
+                    number("number", ember_tone(p, 0.85 + 0.15 * kick))
+                        .opacity(if folding { 0.0 } else { 1.0 })
+                        .opacity_motion(Anim::INSTANT),
+                )
                 .child(
                     col()
                         .key("what")
@@ -1517,15 +2042,17 @@ fn share(
         .child(
             row()
                 .key("stats")
+                .h(SHARE_ROWS[3])
                 .gap(12.0)
                 .child(stat("words", words.to_string(), "words said"))
-                .child(stat("keys", "0".into(), "keys typed"))
+                .child(stat("keys", keys.to_string(), "keys typed"))
                 .child(stat("time", format!("{secs:.1} s"), "start to finish")),
         )
         .child(rule("rule-2"))
         .child(
             row()
                 .key("signed")
+                .h(SHARE_ROWS[5])
                 .gap(10.0)
                 .items_end()
                 .child(
@@ -1540,7 +2067,7 @@ fn share(
                         .key("sig")
                         .gap(2.0)
                         .child(
-                            text(NAME)
+                            text(cert.text.clone())
                                 .key("name")
                                 .font(SIGN.font.lh(28.0))
                                 .color(p.text()),
@@ -1555,78 +2082,288 @@ fn share(
         .child(
             row()
                 .key("actions")
+                .h(SHARE_ROWS[6])
                 .gap(8.0)
                 .center_y()
-                .child(
-                    Button::new("Copy image")
-                        .variant(ButtonVariant::Neutral)
-                        .on_press(|_: &mut Game| {})
-                        .build_push(k)
-                        .key("copy"),
-                )
                 .child(el().key("space").grow(1.0))
                 .child(
                     Button::new("Keep playing")
                         .variant(ButtonVariant::Ghost)
-                        .on_press(|g: &mut Game| g.keep = true)
+                        .on_press(act(&look.keep))
                         .build_push(k)
                         .key("keep"),
                 )
                 .child(
                     Button::new("Continue")
                         .variant(ButtonVariant::Contrast)
-                        .on_press(|g: &mut Game| g.from = None)
+                        .on_press(act(&look.done))
                         .build_push(k)
                         .key("continue"),
                 ),
         );
-    // Still warm from the blast.
-    let card = k
-        .elevate(card, &k.elevation.floating)
-        .shadow(0.0, 96.0, ember.alpha(0.16));
+    // The surface, from the card's rect to the pill's.
+    let pill_rect = [
+        SCORE_AT[0] - home[0],
+        SCORE_AT[1] - home[1],
+        PILL[0],
+        PILL[1],
+    ];
+    let card_rect = [0.0, 0.0, w, SHARE_H];
+    let [sx, sy, sw, sh]: [f32; 4] =
+        std::array::from_fn(|n| lerp(card_rect[n], pill_rect[n], morph));
+    let fill = if k.dark {
+        k.c.surface_raised
+    } else {
+        k.c.bg_base.mix(k.c.surface_raised, morph)
+    };
+    let surface = el()
+        .key("surface")
+        .absolute(sx, sy)
+        .size(sw, sh)
+        .radius(lerp(20.0, PILL[1] * 0.5, morph))
+        .continuous_corners()
+        .fill(fill)
+        .radial_gradient(
+            [0.14, 0.28],
+            [240.0, 160.0],
+            [(0.0, ember.alpha(0.12 * warm)), (1.0, ember.alpha(0.0))],
+        )
+        .border(p.hair, k.c.border_weak);
+    let surface = k.elevate(surface, &k.elevation.floating);
+    let surface = if warm > 0.02 {
+        surface.shadow(0.0, 96.0, ember.alpha(0.16 * warm))
+    } else {
+        surface
+    }
+    .opacity(surface_in * (1.0 - pill))
+    .opacity_motion(Anim::INSTANT);
+    // The number flies to the pill's, shrinking to its size.
+    let tiny = 14.0 / BIG_SIZE;
+    let num_from = [SHARE_PAD, SHARE_PAD + SHARE_ROWS[0] + SHARE_GAP];
+    let num_to = [
+        SCORE_AT[0] + 12.0 - home[0],
+        SCORE_AT[1] + (PILL[1] - BIG_LINE * tiny) * 0.5 - home[1],
+    ];
+    let flying_number = folding.then(|| {
+        number("number-fold", ember_tone(p, lerp(0.85, 0.7, morph)))
+            .absolute(
+                lerp(num_from[0], num_to[0], morph),
+                lerp(num_from[1], num_to[1], morph),
+            )
+            .scale(lerp(1.0, tiny, morph))
+            .origin(0.0, 0.0)
+            .opacity(1.0 - pill)
+            .opacity_motion(Anim::INSTANT)
+    });
     Some(
         el().key("share")
             .absolute(home[0], home[1])
-            .w(w)
-            .offset(offset[0], offset[1])
-            .scale(scale)
-            .opacity(opacity)
-            .blur(if reduced { 0.0 } else { 5.0 * (1.0 - rise) })
+            .size(w, SHARE_H)
+            .offset(from[0] * (1.0 - rise), from[1] * (1.0 - rise))
+            .scale(if reduced {
+                1.0
+            } else {
+                lerp(0.86, 1.0, settle)
+            })
             .offset_motion(Anim::INSTANT)
-            .opacity_motion(Anim::INSTANT)
             .scale_motion(Anim::INSTANT)
-            .blur_motion(Anim::INSTANT)
-            .child(card),
+            .child(surface)
+            .child(content)
+            .children(flying_number),
     )
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::stories::{Flow, Rehearsal, Step};
     use super::*;
+
+    /// The script plays the game to `until`.
+    fn played(streams: bool, keep: bool, until: f64) -> Play {
+        let mut play = Play::new(0.0);
+        let mut script = Script {
+            keep,
+            ..Script::new(streams)
+        };
+        let mut t = 0.0;
+        while t < until {
+            script.run(&mut play, t);
+            t += 1.0 / 60.0;
+        }
+        play
+    }
 
     #[test]
     fn three_messages_take_about_ten_seconds() {
-        let s = schedule(true, false);
-        assert_eq!(s.rounds.len(), 3);
-        assert!(s.share > 8.0 && s.share < 12.0, "{}", s.share);
-        let batch = schedule(false, false);
-        assert!(batch.share >= s.share, "words wait for release");
+        let play = played(true, false, 20.0);
+        let share = play.share.expect("the certificate is signed");
+        assert!(share > 7.0 && share < 12.0, "{share}");
+        assert_eq!(play.rounds.len(), 3, "no more cards until Keep playing");
+        let batch = played(false, false, 20.0).share.unwrap();
+        assert!(batch >= share, "words wait for the paste");
     }
 
     #[test]
     fn one_card_is_lit_at_a_time() {
-        let s = schedule(true, true);
-        for pair in s.rounds.windows(2) {
-            assert!(pair[1].target > pair[0].shatter());
+        let play = played(true, true, 30.0);
+        assert!(play.kept.is_some() && play.destroyed(30.0) > 4);
+        let answered: Vec<&Round> = play.rounds.iter().filter(|r| r.answered).collect();
+        for pair in answered.windows(2) {
+            assert!(pair[1].lit_at() > pair[0].shatter());
         }
     }
 
     #[test]
-    fn every_card_breaks_into_pieces() {
-        let s = schedule(true, false);
-        for r in &s.rounds {
-            assert!(shards(r, 1).len() >= 24);
-            assert!(sparks(r, 1).len() >= 28);
+    fn a_paste_answers_the_lit_card_and_lights_the_next() {
+        let mut play = Play::new(0.0);
+        play.hear(true, None, 1.5);
+        assert_eq!(play.rounds.len(), 2, "the next card comes in");
+        play.hear(true, Some("sure oat"), 2.0);
+        assert_eq!(play.rounds[0].text, "sure oat");
+        play.hear(false, None, 2.4);
+        play.paste("Sure, oat or normal?", 2.8);
+        let (first, next) = (&play.rounds[0], &play.rounds[1]);
+        assert!(first.answered && first.text == "Sure, oat or normal?");
+        assert_eq!(first.launch.len(), 4);
+        assert!(first.shatter() > 2.8 && first.shatter() < 4.0);
+        assert!(next.lit_at() > first.shatter() && next.text.is_empty());
+    }
+
+    #[test]
+    fn live_words_that_never_paste_are_dropped() {
+        let mut play = Play::new(0.0);
+        play.hear(true, Some("hello"), 1.5);
+        play.hear(false, None, 2.0);
+        play.hear(false, None, 2.0 + WAIT - 0.1);
+        assert_eq!(play.rounds[0].text, "hello");
+        play.hear(false, None, 2.0 + WAIT + 0.1);
+        assert!(play.rounds[0].text.is_empty() && !play.rounds[0].answered);
+    }
+
+    #[test]
+    fn the_certificate_is_signed_with_the_answer() {
+        let mut play = Play::new(0.0);
+        play.paste("On my way.", 1.5);
+        play.paste("Nope.", 4.0);
+        play.paste("Alex Rivera", 7.0);
+        let cert = play.certificate().unwrap();
+        assert_eq!(cert.text, "Alex Rivera");
+        assert!(play.share.is_some_and(|at| at > cert.shatter()));
+        let (words, keys, secs) = play.stats();
+        assert_eq!((words, keys), (6, 0));
+        assert!(secs > 5.5, "{secs}");
+        play.paste("ignored", 9.0);
+        assert_eq!(play.rounds.len(), 3, "the score card waits");
+        play.keep(12.0);
+        play.paste("More.", 13.5);
+        assert!(play.rounds.iter().any(|r| r.n == 3 && r.answered));
+    }
+
+    #[test]
+    fn typing_shows_live_and_a_paste_or_return_sends_it() {
+        let mut s = Onboard::new(Flow::FirstRun);
+        s.rehearsal = Some(Rehearsal::new(true));
+        s.step = Step::Try;
+        s.now = 1.5;
+        assert!(step(&mut s, 1.5));
+        s.game.as_mut().unwrap().script = None;
+        for typed in ["o", "ok"] {
+            s.practice.text = typed.into();
+            assert!(changed(&mut s));
         }
+        let session = s.game.as_ref().unwrap();
+        assert_eq!((session.typed.as_str(), session.play.keys), ("ok", 2));
+        answer(&mut s);
+        let session = s.game.as_ref().unwrap();
+        assert!(session.play.rounds[0].answered && s.practice.text.is_empty());
+        s.now = 4.0;
+        s.practice.text = "Not today.".into();
+        assert!(changed(&mut s), "a paste lands all at once");
+        let session = s.game.as_ref().unwrap();
+        assert_eq!(session.play.rounds[1].text, "Not today.");
+        assert!(session.play.rounds[1].answered);
+    }
+
+    #[test]
+    fn a_scripted_game_ignores_the_storys_keys() {
+        let mut s = Onboard::new(Flow::FirstRun);
+        s.rehearsal = Some(Rehearsal::new(true));
+        s.step = Step::Try;
+        assert!(step(&mut s, 1.0));
+        s.practice.text = "t".into();
+        assert!(changed(&mut s) && s.practice.text.is_empty());
+        assert_eq!(s.game.as_ref().unwrap().play.keys, 0);
+    }
+
+    #[test]
+    fn the_practice_field_variant_skips_the_game() {
+        let mut s = Onboard::new(Flow::FirstRun);
+        s.rehearsal = Some(Rehearsal::new(true));
+        s.practice_field = true;
+        s.step = Step::Try;
+        assert!(!step(&mut s, 1.0) && s.game.is_none());
+        assert!(page(paint(), &s).is_none());
+    }
+
+    #[test]
+    fn the_leader_climbs_then_strokes_flash_and_fade() {
+        let seed = seed_of(1);
+        let climb: Vec<f32> = (0..4).map(|i| leader(i as f32 * 0.017).unwrap()).collect();
+        assert!(climb.windows(2).all(|w| w[1] >= w[0]), "{climb:?}");
+        assert!(leader(HITSTOP as f32).is_none());
+        let hit = HITSTOP as f32;
+        assert!(
+            strike_light(seed, hit) > 0.95,
+            "the first stroke is full strength"
+        );
+        for k in 1..STROKES {
+            let at = hit + stroke_at(seed, k);
+            assert!(at > hit + stroke_at(seed, k - 1) + 0.04);
+            assert!(strike_light(seed, at) > 0.5, "stroke {k} flashes");
+        }
+        assert!(strike_light(seed, hit + stroke_at(seed, STROKES - 1) + AFTERGLOW) < 1e-3);
+    }
+
+    #[test]
+    fn a_bolt_runs_from_the_hud_to_the_card() {
+        let (from, to) = ([440.0, 571.0], [300.0, 220.0]);
+        for k in 0..STROKES {
+            let c = channel(from, to, 7, hash(7, 401 + k).to_bits());
+            assert_eq!(c.main.len(), 65);
+            assert!(dist(c.main[0], from) < 1e-3 && dist(c.main[64], to) < 1e-3);
+            assert!(length(&c.main) < dist(from, to) * 2.5);
+            assert!(c.forks.len() >= 3);
+        }
+    }
+
+    #[test]
+    fn every_card_burns_away_and_sheds_ash() {
+        let play = played(true, false, 20.0);
+        for r in &play.rounds {
+            let born = |t: f64| {
+                let mut fx = Fx::default();
+                ash(&mut fx, r, seed_of(r.n), (t - r.shatter()) as f32, 1.0);
+                fx.motes.len()
+            };
+            assert!(born(r.shatter() + 0.4) > 10, "ash leaves the rim");
+            assert!(burning(r, r.shatter() + f64::from(BURN)).is_some());
+            assert!(burning(r, r.shatter() + f64::from(BURN) + 0.1).is_none());
+            assert!(card(paint(), r, r.shatter() + 0.5, false, 1.0).is_some());
+            assert!(card(paint(), r, r.shatter() + 1.1, false, 1.0).is_none());
+        }
+    }
+
+    #[test]
+    fn reduce_motion_has_no_strike() {
+        let play = played(true, false, 20.0);
+        let t = play.rounds[0].shatter() + 0.2;
+        let fx = fx(paint(), &play, t, true);
+        assert!(fx.bolts.is_empty() && fx.motes.is_empty() && fx.burns.is_empty());
+        let fx = super::fx(paint(), &play, t, false);
+        assert!(!fx.motes.is_empty() && fx.burns.len() == 1);
+    }
+
+    fn paint() -> Paint {
+        Paint::new(true, 2.0)
     }
 }

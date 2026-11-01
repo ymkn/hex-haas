@@ -1,23 +1,29 @@
-use std::collections::HashMap;
-use std::fs::{self, File, OpenOptions};
+use std::fs;
 use std::io::{Cursor, Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TryRecvError, TrySendError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use color_eyre::eyre::{Result, WrapErr, bail, eyre};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
-use crate::events::{EventLog, VoiceEvent, now_ms};
-use crate::recognition::RecognitionControl;
+use crate::desktop::events::{EventLog, VoiceEvent, now_ms};
 
+mod dictation;
+mod discovery;
+mod http;
 mod streams;
 
+#[cfg(debug_assertions)]
+#[cfg_attr(not(target_os = "macos"), allow(unused_imports))]
+pub use discovery::call_developer;
+use discovery::*;
+pub use discovery::{call_control, running_pid};
+use http::*;
 const API_VERSION: &str = "2";
 const LIVE_PROBE_TIMEOUT: Duration = Duration::from_millis(150);
 const ACCEPT_INTERVAL: Duration = Duration::from_millis(10);
@@ -35,7 +41,6 @@ const MAX_AUDIO_BYTES: usize = 64 * 1024 * 1024;
 const MAX_DEVELOPER_CONTROL_BYTES: usize = 16 * 1024;
 const DEVELOPER_CONTROL_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_CONTROL_BYTES: usize = 64 * 1024;
-const DICTATION_CONTROL_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_DICTATION_SOURCE_BYTES: usize = 128;
 
 type HealthProvider = Arc<dyn Fn() -> HealthResponse + Send + Sync>;
@@ -49,17 +54,8 @@ pub struct LocalApi {
     document: DiscoveryDocument,
     events: EventLog,
     stop_observed: Arc<AtomicBool>,
-    transcription_service: Option<crate::transcription_service::TranscriptionService>,
-    _instance: Option<crate::instance::InstanceLock>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DiscoveryDocument {
-    port: u16,
-    token: String,
-    api_version: String,
-    pid: u32,
+    transcription_service: Option<crate::transcription::service::TranscriptionService>,
+    _instance: Option<crate::desktop::instance::InstanceLock>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -71,34 +67,6 @@ pub struct EmbeddedEndpoint {
     pub token: String,
     pub api_version: String,
     pub pid: u32,
-}
-
-struct DiscoveryLease {
-    path: PathBuf,
-    document: DiscoveryDocument,
-}
-
-struct HttpRequest {
-    method: String,
-    path: String,
-    authorization: Option<String>,
-    dictation_token: Option<String>,
-    stream_token: Option<String>,
-    content_type: Option<String>,
-    content_length: Option<usize>,
-    body_prefix: Vec<u8>,
-}
-
-struct DictationLevels {
-    owner_token: String,
-    receiver: Receiver<crate::recognition::DictationLevel>,
-}
-
-struct HttpResponse {
-    status: u16,
-    reason: &'static str,
-    content_type: Option<&'static str>,
-    body: Vec<u8>,
 }
 
 #[derive(Default)]
@@ -113,13 +81,12 @@ struct HttpContext {
     auth_limiter: AuthObservationLimiter,
     model_preparing: Arc<AtomicBool>,
     shutdown: Arc<AtomicBool>,
-    transcription: crate::transcription_service::TranscriptionServiceHandle,
-    developer_control: Option<SyncSender<crate::developer_control::DeveloperCall>>,
+    transcription: crate::transcription::service::TranscriptionServiceHandle,
+    developer_control: Option<SyncSender<crate::control::developer_control::DeveloperCall>>,
     control: Option<SyncSender<crate::control::ControlCall>>,
-    dictation_control: Option<SyncSender<RecognitionControl>>,
-    dictation_levels: Arc<Mutex<HashMap<u64, DictationLevels>>>,
-    streams: Arc<crate::transcription_stream::Streams>,
-    stream_engine: crate::transcription_stream::EngineSource,
+    dictations: dictation::Dictations,
+    streams: Arc<crate::transcription::stream::Streams>,
+    stream_engine: crate::transcription::stream::EngineSource,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -144,19 +111,21 @@ struct CapabilitiesResponse {
 /// Optional control channels the running app exposes through its local API.
 #[derive(Default)]
 pub struct LocalApiOptions {
-    pub developer_control: Option<SyncSender<crate::developer_control::DeveloperCall>>,
+    pub developer_control: Option<SyncSender<crate::control::developer_control::DeveloperCall>>,
     /// The `hex` control commands (`POST /control`).
     pub control: Option<SyncSender<crate::control::ControlCall>>,
-    pub dictation_control: Option<SyncSender<RecognitionControl>>,
+    /// Running-app dictation (`/dictations`), which only the macOS
+    /// recognition loop drives so far.
+    pub dictation_control: Option<dictation::Control>,
     /// Where `/streams` finds its engine; the running app's shared engine
     /// when unset.
-    pub(crate) stream_engine: Option<crate::transcription_stream::EngineSource>,
+    pub(crate) stream_engine: Option<crate::transcription::stream::EngineSource>,
 }
 
 impl LocalApi {
     /// Start the one app-owned local API and publish its discovery document.
     pub fn start(events: EventLog, options: LocalApiOptions) -> Result<Self> {
-        let instance = crate::instance::acquire("local-api")?;
+        let instance = crate::desktop::instance::acquire("local-api")?;
         Self::start_bound(
             Some(crate::app_paths::local_api_discovery_file()?),
             Arc::new(current_health),
@@ -164,6 +133,31 @@ impl LocalApi {
             options,
             Some(instance),
         )
+    }
+
+    /// Start the running Linux or Windows app's local API. Hex runs on
+    /// without it, so a failure is only logged.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    pub fn start_for_app(
+        event_path: &Path,
+        control: SyncSender<crate::control::ControlCall>,
+    ) -> Option<Self> {
+        let started = EventLog::create(event_path)
+            .map_err(Into::into)
+            .and_then(|events| {
+                Self::start(
+                    events,
+                    LocalApiOptions {
+                        control: Some(control),
+                        ..Default::default()
+                    },
+                )
+            });
+        started
+            .inspect_err(
+                |error| tracing::warn!(error = %format!("{error:#}"), "local API is unavailable"),
+            )
+            .ok()
     }
 
     /// Start an unpublished API whose endpoint is handed directly to one host.
@@ -182,13 +176,13 @@ impl LocalApi {
         health: HealthProvider,
         events: EventLog,
         options: LocalApiOptions,
-        instance: Option<crate::instance::InstanceLock>,
+        instance: Option<crate::desktop::instance::InstanceLock>,
     ) -> Result<Self> {
         if let Some(path) = &discovery_path {
             prepare_discovery_path(path)?;
         }
         let (transcription_service, transcription) =
-            crate::transcription_service::TranscriptionService::start()?;
+            crate::transcription::service::TranscriptionService::start()?;
         let listener = TcpListener::bind("127.0.0.1:0").wrap_err("could not bind the local API")?;
         listener.set_nonblocking(true)?;
         let address = listener.local_addr()?;
@@ -227,12 +221,11 @@ impl LocalApi {
             transcription,
             developer_control: options.developer_control,
             control: options.control,
-            dictation_control: options.dictation_control,
-            dictation_levels: Arc::new(Mutex::new(HashMap::new())),
+            dictations: dictation::Dictations::new(options.dictation_control),
             streams: Arc::default(),
             stream_engine: options
                 .stream_engine
-                .unwrap_or_else(|| Arc::new(crate::transcription_stream::shared_engine)),
+                .unwrap_or_else(|| Arc::new(crate::transcription::stream::shared_engine)),
         };
         let (ready, readiness) = mpsc::sync_channel(1);
         let worker = thread::Builder::new()
@@ -306,28 +299,74 @@ impl LocalApi {
     }
 }
 
+/// Runs `hex service`: the local API without the app, until `shutdown`.
+/// Published, it is the one discoverable service. Embedded (`--embedded`,
+/// the TypeScript SDK's direct child), it prints its endpoint as one JSON line
+/// on stdout instead and exits when its host closes stdin.
+pub fn run_service(
+    log_dir: &Path,
+    event_path: PathBuf,
+    embedded: bool,
+    shutdown: &'static AtomicBool,
+) -> Result<()> {
+    let service_event_path = if embedded {
+        log_dir.join(format!("embedded-{}.ndjson", std::process::id()))
+    } else {
+        event_path
+    };
+    let events = EventLog::create(&service_event_path)?;
+    let local_api = if embedded {
+        let api = LocalApi::start_embedded(events)?;
+        thread::Builder::new()
+            .name("embedded-host-lease".into())
+            .spawn(move || {
+                let mut stdin = std::io::stdin().lock();
+                let mut buffer = [0_u8; 1];
+                loop {
+                    match stdin.read(&mut buffer) {
+                        Ok(0) => {
+                            shutdown.store(true, Ordering::Release);
+                            thread::sleep(Duration::from_secs(5));
+                            tracing::warn!(
+                                "forcing embedded service shutdown after host lease closed"
+                            );
+                            std::process::exit(0);
+                        }
+                        Ok(_) => {}
+                        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                        Err(error) => {
+                            tracing::warn!(%error, "embedded host lease failed");
+                            shutdown.store(true, Ordering::Release);
+                            break;
+                        }
+                    }
+                }
+            })?;
+        let mut stdout = std::io::stdout().lock();
+        serde_json::to_writer(&mut stdout, &api.embedded_endpoint())?;
+        stdout.write_all(b"\n")?;
+        stdout.flush()?;
+        drop(stdout);
+        api
+    } else {
+        LocalApi::start(events, LocalApiOptions::default())?
+    };
+    while !shutdown.load(Ordering::Relaxed) {
+        thread::sleep(Duration::from_millis(100));
+    }
+    drop(local_api);
+    if embedded
+        && let Err(error) = fs::remove_file(&service_event_path)
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!(%error, "could not remove embedded service event log");
+    }
+    Ok(())
+}
+
 impl Drop for LocalApi {
     fn drop(&mut self) {
         self.shutdown();
-    }
-}
-
-impl DiscoveryLease {
-    fn remove_if_owned(&self) {
-        remove_discovery_if_owned(&self.path, &self.document);
-    }
-}
-
-fn remove_discovery_if_owned(path: &Path, expected: &DiscoveryDocument) {
-    let owned = fs::read(path)
-        .ok()
-        .and_then(|data| serde_json::from_slice::<DiscoveryDocument>(&data).ok())
-        .is_some_and(|document| document == *expected);
-    if owned
-        && let Err(error) = fs::remove_file(path)
-        && error.kind() != std::io::ErrorKind::NotFound
-    {
-        tracing::error!(%error, path = %path.display(), "could not remove local API discovery file");
     }
 }
 
@@ -342,12 +381,6 @@ fn observe_stopped(events: &EventLog, observed: &AtomicBool) {
         .and_then(|()| events.flush())
     {
         tracing::error!(%error, "could not record local API shutdown");
-    }
-}
-
-impl Drop for DiscoveryLease {
-    fn drop(&mut self) {
-        self.remove_if_owned();
     }
 }
 
@@ -521,7 +554,7 @@ fn http_worker(pending: Arc<Mutex<Receiver<TcpStream>>>, context: Arc<HttpContex
                 content_length,
                 body_prefix,
             } => {
-                let response = dictation_start(&mut stream, content_length, body_prefix, &context);
+                let response = dictation::start(&mut stream, content_length, body_prefix, &context);
                 if let Err(error) = write_response(&mut stream, response) {
                     tracing::debug!(%error, "dictation client disconnected");
                 }
@@ -531,7 +564,7 @@ fn http_worker(pending: Arc<Mutex<Receiver<TcpStream>>>, context: Arc<HttpContex
                 owner_token,
                 action,
             } => {
-                handle_dictation(&mut stream, id, owner_token, action, &context);
+                dictation::handle(&mut stream, id, owner_token, action, &context);
             }
             RequestAction::Stream(action) => streams::handle(&mut stream, action, &context),
         }
@@ -573,7 +606,7 @@ fn handle_request(request: HttpRequest, context: &HttpContext) -> RequestAction 
         return streams::route(request, id, &action, context);
     }
     if request.method == "POST" && path == "/dictations" {
-        return dictation_start_action(request, context.dictation_control.is_some());
+        return dictation_start_action(request, context.dictations.available());
     }
     if let Some((id, action)) = dictation_path(path) {
         let Some(owner_token) = request.dictation_token else {
@@ -588,7 +621,7 @@ fn handle_request(request: HttpRequest, context: &HttpContext) -> RequestAction 
             _ => None,
         };
         return match action {
-            Some(action) if context.dictation_control.is_some() => RequestAction::Dictation {
+            Some(action) if context.dictations.available() => RequestAction::Dictation {
                 id,
                 owner_token,
                 action,
@@ -604,7 +637,7 @@ fn handle_request(request: HttpRequest, context: &HttpContext) -> RequestAction 
             &CapabilitiesResponse {
                 audio_formats: ["audio/wav"],
                 partial_transcripts: false,
-                service_capture: context.dictation_control.is_some(),
+                service_capture: context.dictations.available(),
                 streams: true,
                 developer_control: context.developer_control.is_some(),
                 control: context.control.is_some(),
@@ -627,10 +660,10 @@ fn handle_request(request: HttpRequest, context: &HttpContext) -> RequestAction 
             let Some(id) = model_prepare_path(path) else {
                 return RequestAction::Respond(HttpResponse::code(404, "not_found"));
             };
-            let Ok(id) = id.parse::<crate::transcription_models::TranscriptionModelId>() else {
+            let Ok(id) = id.parse::<crate::transcription::models::TranscriptionModelId>() else {
                 return RequestAction::Respond(HttpResponse::code(404, "unknown-model"));
             };
-            let model = crate::transcription_models::definition(id);
+            let model = crate::transcription::models::definition(id);
             if !model.available() {
                 return RequestAction::Respond(HttpResponse::code(404, "unknown-model"));
             }
@@ -653,7 +686,7 @@ fn handle_request(request: HttpRequest, context: &HttpContext) -> RequestAction 
 
 fn transcription_action(
     request: HttpRequest,
-    transcription: &crate::transcription_service::TranscriptionServiceHandle,
+    transcription: &crate::transcription::service::TranscriptionServiceHandle,
 ) -> RequestAction {
     if !request.has_content_type("audio/wav") {
         return RequestAction::Respond(HttpResponse::code(415, "unsupported-audio"));
@@ -670,13 +703,13 @@ fn transcription_action(
             return RequestAction::Respond(HttpResponse::code(400, code));
         }
     };
-    let model = crate::transcription_models::definition(selection.model);
+    let model = crate::transcription::models::definition(selection.model);
     let prepared = match model.runtime {
-        crate::transcription_models::ModelRuntime::Gguf(_) => {
-            crate::transcription_models::is_verified(model)
+        crate::transcription::models::ModelRuntime::Gguf(_) => {
+            crate::transcription::models::is_verified(model)
         }
-        crate::transcription_models::ModelRuntime::AppleSpeech => {
-            crate::transcription_models::is_installed(model, &selection.language)
+        crate::transcription::models::ModelRuntime::AppleSpeech => {
+            crate::transcription::models::is_installed(model, &selection.language)
         }
     };
     if !prepared {
@@ -744,296 +777,6 @@ fn json_post_action(
     build(content_length, request.body_prefix)
 }
 
-#[derive(Deserialize)]
-struct DictationStartRequest {
-    source: String,
-}
-
-fn dictation_start(
-    stream: &mut TcpStream,
-    content_length: usize,
-    mut body: Vec<u8>,
-    context: &HttpContext,
-) -> HttpResponse {
-    if let Err(error) = read_body_bounded(
-        stream,
-        content_length,
-        &mut body,
-        &context.shutdown,
-        MAX_DICTATION_SOURCE_BYTES + 32,
-        DEVELOPER_CONTROL_TIMEOUT,
-    ) {
-        return body_read_response(error);
-    }
-    let Ok(request) = serde_json::from_slice::<DictationStartRequest>(&body) else {
-        return HttpResponse::code(400, "invalid-request");
-    };
-    if request.source.trim().is_empty() || request.source.len() > MAX_DICTATION_SOURCE_BYTES {
-        return HttpResponse::code(400, "invalid-source");
-    }
-    let Some(controls) = &context.dictation_control else {
-        return HttpResponse::code(404, "service-capture-unavailable");
-    };
-    context
-        .dictation_levels
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .retain(|_, levels| !matches!(levels.receiver.try_recv(), Err(TryRecvError::Disconnected)));
-    let owner_token = match generate_token() {
-        Ok(token) => token,
-        Err(error) => {
-            tracing::error!(%error, "could not generate dictation owner token");
-            return HttpResponse::code(500, "token-generation-failed");
-        }
-    };
-    let (level_sender, levels) = mpsc::sync_channel(8);
-    let started = match call_recognition(
-        controls,
-        DEVELOPER_CONTROL_TIMEOUT,
-        HttpResponse::code(503, "service-capture-unavailable"),
-        |reply| RecognitionControl::StartDictation {
-            source: request.source,
-            owner_token: owner_token.clone(),
-            levels: level_sender,
-            reply,
-        },
-    ) {
-        Ok(started) => started,
-        Err(response) => return response,
-    };
-    context
-        .dictation_levels
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .insert(
-            started.id,
-            DictationLevels {
-                owner_token: owner_token.clone(),
-                receiver: levels,
-            },
-        );
-    HttpResponse::json(
-        201,
-        &serde_json::json!({
-            "id": started.id,
-            "ownerToken": owner_token,
-            "sampleRate": started.sample_rate,
-        }),
-    )
-}
-
-/// Sends one control to the recognition loop and waits for its typed reply.
-/// A full control queue is `503 service-capture-busy`; a rejected control is
-/// `409` with the recognizer's code; `on_timeout` covers a silent recognizer.
-fn call_recognition<T>(
-    controls: &SyncSender<RecognitionControl>,
-    timeout: Duration,
-    on_timeout: HttpResponse,
-    build: impl FnOnce(SyncSender<std::result::Result<T, String>>) -> RecognitionControl,
-) -> std::result::Result<T, HttpResponse> {
-    let (reply, response) = mpsc::sync_channel(1);
-    if controls.try_send(build(reply)).is_err() {
-        return Err(HttpResponse::code(503, "service-capture-busy"));
-    }
-    match response.recv_timeout(timeout) {
-        Ok(Ok(value)) => Ok(value),
-        Ok(Err(code)) => Err(HttpResponse::code(409, &code)),
-        Err(_) => Err(on_timeout),
-    }
-}
-
-fn handle_dictation(
-    stream: &mut TcpStream,
-    id: u64,
-    owner_token: String,
-    action: DictationAction,
-    context: &HttpContext,
-) {
-    let Some(controls) = &context.dictation_control else {
-        let _ = write_response(
-            stream,
-            HttpResponse::code(404, "service-capture-unavailable"),
-        );
-        return;
-    };
-    let response = match action {
-        DictationAction::Levels => {
-            return stream_dictation_levels(stream, id, &owner_token, context);
-        }
-        DictationAction::Audio => {
-            return stream_dictation_audio(stream, id, owner_token, controls, context);
-        }
-        DictationAction::Finish => dictation_finish(id, owner_token, controls),
-        DictationAction::Cancel => dictation_cancel(id, owner_token, controls, context),
-        DictationAction::Heartbeat => dictation_heartbeat(id, owner_token, controls),
-    };
-    if let Err(error) = write_response(stream, response) {
-        tracing::debug!(%error, "dictation client disconnected");
-    }
-}
-
-fn dictation_finish(
-    id: u64,
-    owner_token: String,
-    controls: &SyncSender<RecognitionControl>,
-) -> HttpResponse {
-    match call_recognition(
-        controls,
-        DICTATION_CONTROL_TIMEOUT,
-        HttpResponse::code(504, "dictation-timeout"),
-        |reply| RecognitionControl::FinishDictation {
-            id,
-            owner_token,
-            reply,
-        },
-    ) {
-        Ok(result) => HttpResponse::json(
-            200,
-            &serde_json::json!({
-                "transcript": result.transcript,
-                "durationMs": result.duration_ms,
-            }),
-        ),
-        Err(response) => response,
-    }
-}
-
-fn dictation_cancel(
-    id: u64,
-    owner_token: String,
-    controls: &SyncSender<RecognitionControl>,
-    context: &HttpContext,
-) -> HttpResponse {
-    match call_recognition(
-        controls,
-        DEVELOPER_CONTROL_TIMEOUT,
-        HttpResponse::code(503, "service-capture-unavailable"),
-        |reply| RecognitionControl::CancelDictation {
-            id,
-            owner_token,
-            reply,
-        },
-    ) {
-        Ok(()) => {
-            context
-                .dictation_levels
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .remove(&id);
-            HttpResponse::empty(204)
-        }
-        Err(response) => response,
-    }
-}
-
-fn dictation_heartbeat(
-    id: u64,
-    owner_token: String,
-    controls: &SyncSender<RecognitionControl>,
-) -> HttpResponse {
-    match call_recognition(
-        controls,
-        DEVELOPER_CONTROL_TIMEOUT,
-        HttpResponse::code(503, "service-capture-unavailable"),
-        |reply| RecognitionControl::HeartbeatDictation {
-            id,
-            owner_token,
-            reply,
-        },
-    ) {
-        Ok(()) => HttpResponse::empty(204),
-        Err(response) => response,
-    }
-}
-
-fn stream_dictation_levels(
-    stream: &mut TcpStream,
-    id: u64,
-    owner_token: &str,
-    context: &HttpContext,
-) {
-    let levels = {
-        let mut levels = context
-            .dictation_levels
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        levels
-            .get(&id)
-            .is_some_and(|levels| levels.owner_token == owner_token)
-            .then(|| {
-                levels
-                    .remove(&id)
-                    .expect("dictation levels were checked")
-                    .receiver
-            })
-    };
-    let Some(levels) = levels else {
-        let _ = write_response(stream, HttpResponse::code(404, "dictation-not-found"));
-        return;
-    };
-    if write_sse_headers(stream).is_err() {
-        return;
-    }
-    while !context.shutdown.load(Ordering::Acquire) {
-        match levels.recv_timeout(Duration::from_millis(100)) {
-            Ok(level) => {
-                if write_sse(
-                    stream,
-                    &serde_json::json!({ "rmsDb": level.rms_db, "peakDb": level.peak_db }),
-                )
-                .is_err()
-                {
-                    break;
-                }
-            }
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => break,
-        }
-    }
-}
-
-fn stream_dictation_audio(
-    stream: &mut TcpStream,
-    id: u64,
-    owner_token: String,
-    controls: &SyncSender<RecognitionControl>,
-    context: &HttpContext,
-) {
-    let (audio, chunks) = mpsc::sync_channel(4);
-    if let Err(response) = call_recognition(
-        controls,
-        DEVELOPER_CONTROL_TIMEOUT,
-        HttpResponse::code(503, "service-capture-unavailable"),
-        |reply| RecognitionControl::AttachDictationAudio {
-            id,
-            owner_token,
-            audio,
-            reply,
-        },
-    ) {
-        let _ = write_response(stream, response);
-        return;
-    }
-    if write_stream_headers(stream, "application/octet-stream").is_err() {
-        return;
-    }
-    while !context.shutdown.load(Ordering::Acquire) {
-        match chunks.recv_timeout(Duration::from_millis(100)) {
-            Ok(chunk) => {
-                let mut bytes = Vec::with_capacity(chunk.samples.len() * size_of::<f32>());
-                for sample in chunk.samples {
-                    bytes.extend_from_slice(&sample.to_le_bytes());
-                }
-                if stream.write_all(&bytes).is_err() || stream.flush().is_err() {
-                    break;
-                }
-            }
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => break,
-        }
-    }
-}
-
 fn dictation_path(path: &str) -> Option<(u64, &str)> {
     let mut parts = path.strip_prefix("/dictations/")?.split('/');
     let id = parts.next()?.parse().ok()?;
@@ -1045,7 +788,7 @@ fn developer_control(
     stream: &mut TcpStream,
     content_length: usize,
     mut body: Vec<u8>,
-    controls: Option<&SyncSender<crate::developer_control::DeveloperCall>>,
+    controls: Option<&SyncSender<crate::control::developer_control::DeveloperCall>>,
     shutdown: &AtomicBool,
 ) -> HttpResponse {
     if let Err(error) = read_body_bounded(
@@ -1065,7 +808,7 @@ fn developer_control(
         return HttpResponse::code(404, "developer-control-unavailable");
     };
     let (reply, response) = mpsc::sync_channel(1);
-    match controls.try_send(crate::developer_control::DeveloperCall { command, reply }) {
+    match controls.try_send(crate::control::developer_control::DeveloperCall { command, reply }) {
         Ok(()) => {}
         Err(TrySendError::Full(_)) => {
             return HttpResponse::code(503, "developer-control-busy");
@@ -1141,50 +884,33 @@ fn control(
     }
 }
 
-fn body_read_response(error: BodyReadError) -> HttpResponse {
-    match error {
-        BodyReadError::ResourceExhausted => HttpResponse::code(413, "resource-exhausted"),
-        BodyReadError::Invalid => HttpResponse::code(400, "invalid-body"),
-        BodyReadError::Deadline => HttpResponse::code(408, "request-timeout"),
-        BodyReadError::Shutdown => HttpResponse::code(503, "shutting-down"),
-        BodyReadError::Io(error) => {
-            tracing::debug!(%error, "could not read request body");
-            HttpResponse::code(400, "invalid-body")
-        }
-    }
-}
-
 fn transcription_selection(
     path: &str,
-) -> std::result::Result<crate::transcription_models::TranscriptionSelection, &'static str> {
+) -> std::result::Result<crate::transcription::models::TranscriptionSelection, &'static str> {
     let query = selection_query(path)?;
     let model = query.model.ok_or("unknown-model")?;
     validate_selection(model, query.into_language())
 }
 
 fn validate_selection(
-    model: crate::transcription_models::TranscriptionModelId,
+    model: crate::transcription::models::TranscriptionModelId,
     language: String,
-) -> std::result::Result<crate::transcription_models::TranscriptionSelection, &'static str> {
-    let selection = crate::transcription_models::TranscriptionSelection {
-        model,
-        language,
-        recognition_hints: String::new(),
-    };
-    crate::transcription_models::validate(&selection).map_err(|_| "unsupported-model")?;
+) -> std::result::Result<crate::transcription::models::TranscriptionSelection, &'static str> {
+    let selection = crate::transcription::models::TranscriptionSelection { model, language };
+    crate::transcription::models::validate(&selection).map_err(|_| "unsupported-model")?;
     Ok(selection)
 }
 
 #[derive(Default)]
 struct SelectionQuery {
-    model: Option<crate::transcription_models::TranscriptionModelId>,
+    model: Option<crate::transcription::models::TranscriptionModelId>,
     language: Option<String>,
 }
 
 impl SelectionQuery {
     fn into_language(self) -> String {
         self.language.unwrap_or_else(|| {
-            crate::transcription_models::TranscriptionSelection::default().language
+            crate::transcription::models::TranscriptionSelection::default().language
         })
     }
 }
@@ -1210,12 +936,12 @@ fn selection_query(path: &str) -> std::result::Result<SelectionQuery, &'static s
 
 fn transcribe_audio(
     stream: &mut TcpStream,
-    selection: crate::transcription_models::TranscriptionSelection,
+    selection: crate::transcription::models::TranscriptionSelection,
     content_length: usize,
     mut body: Vec<u8>,
-    transcription: &crate::transcription_service::TranscriptionServiceHandle,
+    transcription: &crate::transcription::service::TranscriptionServiceHandle,
     shutdown: &AtomicBool,
-    admission: crate::transcription_service::AudioAdmission,
+    admission: crate::transcription::service::AudioAdmission,
 ) -> Option<HttpResponse> {
     if let Err(error) = read_body_bounded(
         stream,
@@ -1236,15 +962,15 @@ fn transcribe_audio(
             BodyReadError::Shutdown => return None,
         });
     }
-    let clip = match crate::transcription_service::AudioClip::decode_wav(Cursor::new(body)) {
+    let clip = match crate::transcription::service::AudioClip::decode_wav(Cursor::new(body)) {
         Ok(clip) => clip,
-        Err(crate::transcription_service::AudioError::ResourceExhausted) => {
+        Err(crate::transcription::service::AudioError::ResourceExhausted) => {
             return Some(HttpResponse::code(413, "resource-exhausted"));
         }
-        Err(crate::transcription_service::AudioError::Unsupported) => {
+        Err(crate::transcription::service::AudioError::Unsupported) => {
             return Some(HttpResponse::code(415, "unsupported-audio"));
         }
-        Err(crate::transcription_service::AudioError::Invalid) => {
+        Err(crate::transcription::service::AudioError::Invalid) => {
             return Some(HttpResponse::code(400, "invalid-audio"));
         }
     };
@@ -1276,23 +1002,23 @@ fn transcribe_audio(
 }
 
 fn transcription_error(
-    error: crate::transcription_service::TranscriptionServiceError,
+    error: crate::transcription::service::TranscriptionServiceError,
 ) -> HttpResponse {
     match error {
-        crate::transcription_service::TranscriptionServiceError::QueueFull => {
+        crate::transcription::service::TranscriptionServiceError::QueueFull => {
             HttpResponse::code(429, "queue-full")
         }
-        crate::transcription_service::TranscriptionServiceError::Unavailable => {
+        crate::transcription::service::TranscriptionServiceError::Unavailable => {
             HttpResponse::code(503, "service-gone")
         }
-        crate::transcription_service::TranscriptionServiceError::Cancelled => {
+        crate::transcription::service::TranscriptionServiceError::Cancelled => {
             HttpResponse::code(409, "cancelled")
         }
-        crate::transcription_service::TranscriptionServiceError::Model(error) => {
+        crate::transcription::service::TranscriptionServiceError::Model(error) => {
             tracing::error!(%error, "prepared transcription model could not load");
             HttpResponse::code(500, "model-load-failed")
         }
-        crate::transcription_service::TranscriptionServiceError::Inference(error) => {
+        crate::transcription::service::TranscriptionServiceError::Inference(error) => {
             tracing::error!(%error, "local transcription failed");
             HttpResponse::code(500, "transcription-failed")
         }
@@ -1317,64 +1043,6 @@ fn client_aborted(stream: &TcpStream) -> bool {
     }
 }
 
-enum BodyReadError {
-    ResourceExhausted,
-    Invalid,
-    Deadline,
-    Shutdown,
-    Io(std::io::Error),
-}
-
-fn read_body_bounded(
-    stream: &mut TcpStream,
-    content_length: usize,
-    body: &mut Vec<u8>,
-    shutdown: &AtomicBool,
-    maximum: usize,
-    timeout: Duration,
-) -> std::result::Result<(), BodyReadError> {
-    if content_length > maximum {
-        return Err(BodyReadError::ResourceExhausted);
-    }
-    if body.len() > content_length {
-        return Err(BodyReadError::Invalid);
-    }
-    body.try_reserve_exact(content_length - body.len())
-        .map_err(|_| BodyReadError::ResourceExhausted)?;
-    let deadline = Instant::now() + timeout;
-    let mut buffer = [0_u8; 16 * 1024];
-    while body.len() < content_length {
-        if shutdown.load(Ordering::Acquire) {
-            return Err(BodyReadError::Shutdown);
-        }
-        if Instant::now() >= deadline {
-            return Err(BodyReadError::Deadline);
-        }
-        let remaining = content_length - body.len();
-        let read_length = remaining.min(buffer.len());
-        let read = match stream.read(&mut buffer[..read_length]) {
-            Ok(read) => read,
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) =>
-            {
-                continue;
-            }
-            Err(error) => return Err(BodyReadError::Io(error)),
-        };
-        if Instant::now() >= deadline {
-            return Err(BodyReadError::Deadline);
-        }
-        if read == 0 {
-            return Err(BodyReadError::Invalid);
-        }
-        body.extend_from_slice(&buffer[..read]);
-    }
-    Ok(())
-}
-
 fn model_prepare_path(path: &str) -> Option<&str> {
     let id = path.strip_prefix("/models/")?.strip_suffix("/prepare")?;
     (!id.is_empty() && !id.contains('/')).then_some(id)
@@ -1382,26 +1050,23 @@ fn model_prepare_path(path: &str) -> Option<&str> {
 
 fn model_infos(path: &str) -> std::result::Result<Vec<ModelInfo>, &'static str> {
     let language = selection_query(path)?.into_language();
-    if !crate::transcription_models::LANGUAGES
-        .iter()
-        .any(|(code, _)| *code == language)
-    {
+    if !crate::transcription::models::is_known_language(&language) {
         return Err("unsupported-language");
     }
-    Ok(crate::transcription_models::MODELS
+    Ok(crate::transcription::models::MODELS
         .iter()
         .filter(|model| model.available())
         .map(|model| {
             let managed = matches!(
                 model.runtime,
-                crate::transcription_models::ModelRuntime::AppleSpeech
+                crate::transcription::models::ModelRuntime::AppleSpeech
             );
-            let installed = crate::transcription_models::is_installed(model, &language);
+            let installed = crate::transcription::models::is_installed(model, &language);
             ModelInfo {
                 id: model.id.as_str(),
                 name: model.name,
                 installed,
-                verified: managed && installed || crate::transcription_models::is_verified(model),
+                verified: managed && installed || crate::transcription::models::is_verified(model),
                 managed,
                 download_bytes: model.download_bytes(),
                 languages: model.presentation_languages(),
@@ -1412,27 +1077,27 @@ fn model_infos(path: &str) -> std::result::Result<Vec<ModelInfo>, &'static str> 
 }
 
 fn installation_selection(
-    model: &crate::transcription_models::ModelDefinition,
+    model: &crate::transcription::models::ModelDefinition,
     path: &str,
-) -> std::result::Result<crate::transcription_models::TranscriptionSelection, &'static str> {
+) -> std::result::Result<crate::transcription::models::TranscriptionSelection, &'static str> {
     let query = selection_query(path)?;
     validate_selection(model.id, query.into_language())
 }
 
 fn stream_model_prepare(
     stream: &mut TcpStream,
-    model: &'static crate::transcription_models::ModelDefinition,
-    selection: crate::transcription_models::TranscriptionSelection,
+    model: &'static crate::transcription::models::ModelDefinition,
+    selection: crate::transcription::models::TranscriptionSelection,
     preparing: Arc<AtomicBool>,
     shutdown: &AtomicBool,
-    transcription: crate::transcription_service::TranscriptionServiceHandle,
+    transcription: crate::transcription::service::TranscriptionServiceHandle,
 ) {
     let preparer: ModelPreparer = Box::new(move |canceled, downloaded, stage| {
         if matches!(
             model.runtime,
-            crate::transcription_models::ModelRuntime::Gguf(_)
+            crate::transcription::models::ModelRuntime::Gguf(_)
         ) {
-            crate::transcription_models::download_with_stage_progress(
+            crate::transcription::models::download_with_stage_progress(
                 model,
                 &canceled,
                 &downloaded,
@@ -1442,7 +1107,7 @@ fn stream_model_prepare(
         if canceled.load(Ordering::Acquire) {
             bail!("model preparation canceled");
         }
-        crate::transcription_models::ModelPreparationStage::Loading.store(&stage);
+        crate::transcription::models::ModelPreparationStage::Loading.store(&stage);
         transcription
             .prepare(selection, canceled)
             .map_err(|error| eyre!("model preparation failed: {error:?}"))
@@ -1452,7 +1117,7 @@ fn stream_model_prepare(
 
 fn stream_model_prepare_with(
     stream: &mut TcpStream,
-    model: &'static crate::transcription_models::ModelDefinition,
+    model: &'static crate::transcription::models::ModelDefinition,
     preparing: Arc<AtomicBool>,
     shutdown: &AtomicBool,
     preparer: ModelPreparer,
@@ -1466,11 +1131,11 @@ fn stream_model_prepare_with(
     let downloaded = Arc::new(AtomicU64::new(0));
     let initial_stage = if matches!(
         model.runtime,
-        crate::transcription_models::ModelRuntime::AppleSpeech
+        crate::transcription::models::ModelRuntime::AppleSpeech
     ) {
-        crate::transcription_models::ModelPreparationStage::Loading as u8
+        crate::transcription::models::ModelPreparationStage::Loading as u8
     } else {
-        crate::transcription_models::ModelPreparationStage::Downloading as u8
+        crate::transcription::models::ModelPreparationStage::Downloading as u8
     };
     let stage = Arc::new(AtomicU8::new(initial_stage));
     let (result_sender, result_receiver) = mpsc::sync_channel(1);
@@ -1498,10 +1163,10 @@ fn stream_model_prepare_with(
             connected = false;
             break None;
         }
-        let current_stage = crate::transcription_models::ModelPreparationStage::load(&stage);
+        let current_stage = crate::transcription::models::ModelPreparationStage::load(&stage);
         let current_downloaded = downloaded.load(Ordering::Relaxed);
         let progress = match current_stage {
-            crate::transcription_models::ModelPreparationStage::Downloading
+            crate::transcription::models::ModelPreparationStage::Downloading
                 if last_stage != Some(current_stage) || last_downloaded != current_downloaded =>
             {
                 Some(serde_json::json!({
@@ -1510,12 +1175,12 @@ fn stream_model_prepare_with(
                     "totalBytes": total_bytes,
                 }))
             }
-            crate::transcription_models::ModelPreparationStage::Verifying
+            crate::transcription::models::ModelPreparationStage::Verifying
                 if last_stage != Some(current_stage) =>
             {
                 Some(serde_json::json!({ "type": "verifying" }))
             }
-            crate::transcription_models::ModelPreparationStage::Loading
+            crate::transcription::models::ModelPreparationStage::Loading
                 if last_stage != Some(current_stage) =>
             {
                 Some(serde_json::json!({ "type": "loading" }))
@@ -1577,15 +1242,15 @@ fn stream_model_prepare_with(
             );
         }
         Err(error) => {
-            let failed_stage = crate::transcription_models::ModelPreparationStage::load(&stage);
+            let failed_stage = crate::transcription::models::ModelPreparationStage::load(&stage);
             let code = match failed_stage {
-                crate::transcription_models::ModelPreparationStage::Downloading => {
+                crate::transcription::models::ModelPreparationStage::Downloading => {
                     "download-failed"
                 }
-                crate::transcription_models::ModelPreparationStage::Verifying => {
+                crate::transcription::models::ModelPreparationStage::Verifying => {
                     "verification-failed"
                 }
-                crate::transcription_models::ModelPreparationStage::Loading => "load-failed",
+                crate::transcription::models::ModelPreparationStage::Loading => "load-failed",
             };
             tracing::error!(%error, model = model.id.as_str(), code, "model preparation failed");
             let _ = write_sse(
@@ -1601,25 +1266,6 @@ fn model_prepare_error(code: &str, message: &str) -> serde_json::Value {
         "type": "error",
         "error": { "code": code, "message": message },
     })
-}
-
-fn write_sse_headers(stream: &mut TcpStream) -> std::io::Result<()> {
-    write_stream_headers(stream, "text/event-stream")
-}
-
-fn write_stream_headers(stream: &mut TcpStream, content_type: &str) -> std::io::Result<()> {
-    write!(
-        stream,
-        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nCache-Control: no-store\r\nConnection: close\r\nX-Content-Type-Options: nosniff\r\n\r\n"
-    )?;
-    stream.flush()
-}
-
-fn write_sse(stream: &mut TcpStream, value: &impl Serialize) -> std::io::Result<()> {
-    stream.write_all(b"data: ")?;
-    serde_json::to_writer(&mut *stream, value)?;
-    stream.write_all(b"\n\n")?;
-    stream.flush()
 }
 
 impl AuthObservationLimiter {
@@ -1641,87 +1287,17 @@ impl AuthObservationLimiter {
     }
 }
 
-impl HttpResponse {
-    fn empty(status: u16) -> Self {
-        Self {
-            status,
-            reason: reason(status),
-            content_type: None,
-            body: Vec::new(),
-        }
-    }
-
-    fn json<T: Serialize>(status: u16, value: &T) -> Self {
-        match serde_json::to_vec(value) {
-            Ok(body) => Self {
-                status,
-                reason: reason(status),
-                content_type: Some("application/json"),
-                body,
-            },
-            Err(error) => {
-                tracing::error!(%error, "could not serialize local API response");
-                Self::empty(500)
-            }
-        }
-    }
-
-    fn code(status: u16, code: &str) -> Self {
-        Self::json(status, &serde_json::json!({ "code": code }))
-    }
-}
-
-fn reason(status: u16) -> &'static str {
-    match status {
-        200 => "OK",
-        201 => "Created",
-        204 => "No Content",
-        400 => "Bad Request",
-        401 => "Unauthorized",
-        404 => "Not Found",
-        408 => "Request Timeout",
-        409 => "Conflict",
-        411 => "Length Required",
-        413 => "Content Too Large",
-        415 => "Unsupported Media Type",
-        429 => "Too Many Requests",
-        431 => "Request Header Fields Too Large",
-        500 => "Internal Server Error",
-        503 => "Service Unavailable",
-        504 => "Gateway Timeout",
-        _ => unreachable!("local API responses use a fixed status set"),
-    }
-}
-
-impl HttpRequest {
-    fn has_content_type(&self, mime: &str) -> bool {
-        self.content_type
-            .as_deref()
-            .and_then(|value| value.split(';').next())
-            .is_some_and(|value| value.trim().eq_ignore_ascii_case(mime))
-    }
-}
-
-#[derive(Debug)]
-enum RequestReadError {
-    TooLarge,
-    Invalid,
-    Deadline,
-    Shutdown,
-    Io(std::io::Error),
-}
-
 enum RequestAction {
     Respond(HttpResponse),
     Prepare {
-        model: &'static crate::transcription_models::ModelDefinition,
-        selection: crate::transcription_models::TranscriptionSelection,
+        model: &'static crate::transcription::models::ModelDefinition,
+        selection: crate::transcription::models::TranscriptionSelection,
     },
     Transcribe {
-        selection: crate::transcription_models::TranscriptionSelection,
+        selection: crate::transcription::models::TranscriptionSelection,
         content_length: usize,
         body_prefix: Vec<u8>,
-        admission: crate::transcription_service::AudioAdmission,
+        admission: crate::transcription::service::AudioAdmission,
     },
     DeveloperControl {
         content_length: usize,
@@ -1773,351 +1349,11 @@ struct ModelInfo {
     supports_language_detection: bool,
 }
 
-fn read_request(
-    stream: &mut TcpStream,
-    shutdown: &AtomicBool,
-) -> std::result::Result<HttpRequest, RequestReadError> {
-    read_request_until(stream, shutdown, Instant::now() + HEADER_DEADLINE)
-}
-
-fn read_request_until(
-    stream: &mut TcpStream,
-    shutdown: &AtomicBool,
-    deadline: Instant,
-) -> std::result::Result<HttpRequest, RequestReadError> {
-    let mut data = Vec::with_capacity(1024);
-    let mut buffer = [0_u8; 1024];
-    let header_end = loop {
-        if shutdown.load(Ordering::Acquire) {
-            return Err(RequestReadError::Shutdown);
-        }
-        if Instant::now() >= deadline {
-            return Err(RequestReadError::Deadline);
-        }
-        let read = match stream.read(&mut buffer) {
-            Ok(read) => read,
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) =>
-            {
-                continue;
-            }
-            Err(error) => return Err(RequestReadError::Io(error)),
-        };
-        if Instant::now() >= deadline {
-            return Err(RequestReadError::Deadline);
-        }
-        if read == 0 {
-            return Err(RequestReadError::Invalid);
-        }
-        if data.len() + read > MAX_HEADER_BYTES {
-            return Err(RequestReadError::TooLarge);
-        }
-        data.extend_from_slice(&buffer[..read]);
-        if let Some(end) = data.windows(4).position(|window| window == b"\r\n\r\n") {
-            break end;
-        }
-    };
-    let header = std::str::from_utf8(&data[..header_end]).map_err(|_| RequestReadError::Invalid)?;
-    let mut lines = header.split("\r\n");
-    let mut request_line = lines
-        .next()
-        .ok_or(RequestReadError::Invalid)?
-        .split_ascii_whitespace();
-    let method = request_line.next().ok_or(RequestReadError::Invalid)?;
-    let path = request_line.next().ok_or(RequestReadError::Invalid)?;
-    let version = request_line.next().ok_or(RequestReadError::Invalid)?;
-    if request_line.next().is_some()
-        || !matches!(version, "HTTP/1.0" | "HTTP/1.1")
-        || !path.starts_with('/')
-        || path.len() > MAX_PATH_BYTES
-    {
-        return Err(RequestReadError::Invalid);
-    }
-    let mut authorization = None;
-    let mut dictation_token = None;
-    let mut stream_token = None;
-    let mut content_type = None;
-    let mut content_length = None;
-    for (index, line) in lines.enumerate() {
-        if index >= MAX_HEADERS {
-            return Err(RequestReadError::TooLarge);
-        }
-        let (name, value) = line.split_once(':').ok_or(RequestReadError::Invalid)?;
-        if name.eq_ignore_ascii_case("authorization") {
-            authorization = Some(value.trim().to_owned());
-        } else if name.eq_ignore_ascii_case("x-hex-dictation-token") {
-            if dictation_token.is_some() {
-                return Err(RequestReadError::Invalid);
-            }
-            dictation_token = Some(value.trim().to_owned());
-        } else if name.eq_ignore_ascii_case("x-hex-stream-token") {
-            if stream_token.is_some() {
-                return Err(RequestReadError::Invalid);
-            }
-            stream_token = Some(value.trim().to_owned());
-        } else if name.eq_ignore_ascii_case("content-type") {
-            content_type = Some(value.trim().to_owned());
-        } else if name.eq_ignore_ascii_case("content-length") {
-            if content_length.is_some() {
-                return Err(RequestReadError::Invalid);
-            }
-            content_length = Some(
-                value
-                    .trim()
-                    .parse::<usize>()
-                    .map_err(|_| RequestReadError::Invalid)?,
-            );
-        } else if name.eq_ignore_ascii_case("transfer-encoding") {
-            return Err(RequestReadError::Invalid);
-        }
-    }
-    let body_prefix = data[header_end + 4..].to_vec();
-    if content_length.is_some_and(|length| body_prefix.len() > length) {
-        return Err(RequestReadError::Invalid);
-    }
-    Ok(HttpRequest {
-        method: method.into(),
-        path: path.into(),
-        authorization,
-        dictation_token,
-        stream_token,
-        content_type,
-        content_length,
-        body_prefix,
-    })
-}
-
-fn write_response(stream: &mut TcpStream, response: HttpResponse) -> std::io::Result<()> {
-    write!(
-        stream,
-        "HTTP/1.1 {} {}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\nX-Content-Type-Options: nosniff\r\n",
-        response.status,
-        response.reason,
-        response.body.len()
-    )?;
-    if let Some(content_type) = response.content_type {
-        write!(stream, "Content-Type: {content_type}\r\n")?;
-    }
-    stream.write_all(b"\r\n")?;
-    stream.write_all(&response.body)?;
-    stream.flush()
-}
-
 fn current_health() -> HealthResponse {
     HealthResponse {
         version: crate::VERSION,
         api_version: API_VERSION,
     }
-}
-
-#[cfg(debug_assertions)]
-pub fn call_developer(
-    command: &crate::developer_control::DeveloperCommand,
-) -> Result<crate::developer_control::DeveloperReply> {
-    let body = serde_json::to_vec(command)?;
-    let (status, body) = post_json("/dev/control", &body, DEVELOPER_CONTROL_TIMEOUT, 64 * 1024)?;
-    if status != 200 {
-        bail!(
-            "Hex developer control failed: {}",
-            error_code(status, &body)
-        );
-    }
-    serde_json::from_slice(&body).wrap_err("Hex developer response is invalid")
-}
-
-/// Sends one `hex` control request to the running app.
-pub fn call_control(
-    request: &crate::control::ControlRequest,
-) -> Result<crate::control::ControlResponse> {
-    let body = serde_json::to_vec(request)?;
-    // The app answers within the command's deadline or the server replies 504.
-    let (status, body) = post_json(
-        "/control",
-        &body,
-        request.command.deadline() + Duration::from_secs(5),
-        1024 * 1024,
-    )?;
-    if status != 200 {
-        let code = error_code(status, &body);
-        bail!(match code.as_str() {
-            "control-unavailable" => {
-                "the running Hex doesn't accept control commands; update Hex".to_string()
-            }
-            "control-busy" => "Hex is busy with other control commands; try again".into(),
-            "control-timeout" => "Hex didn't answer in time; check `hex status`".into(),
-            "invalid-control-command" => {
-                "the running Hex doesn't know this command; update Hex".into()
-            }
-            _ => format!("Hex refused the request ({code})"),
-        });
-    }
-    serde_json::from_slice(&body).wrap_err("Hex sent an invalid control reply")
-}
-
-/// The running app's process id, if its local API is live.
-pub fn running_pid() -> Option<u32> {
-    live_discovery().ok().map(|document| document.pid)
-}
-
-fn live_discovery() -> Result<DiscoveryDocument> {
-    let path = crate::app_paths::local_api_discovery_file()?;
-    let bytes = match fs::read(&path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            bail!("Hex is not running")
-        }
-        Err(error) => {
-            return Err(error).wrap_err_with(|| format!("could not read {}", path.display()));
-        }
-    };
-    let document: DiscoveryDocument =
-        serde_json::from_slice(&bytes).wrap_err("Hex's local API discovery file is invalid")?;
-    if !valid_discovery(&document) || !discovery_is_live(&document) {
-        bail!("Hex is not running");
-    }
-    Ok(document)
-}
-
-fn post_json(
-    path: &str,
-    body: &[u8],
-    read_timeout: Duration,
-    max_response: usize,
-) -> Result<(u16, Vec<u8>)> {
-    let document = live_discovery()?;
-    let address = SocketAddr::from(([127, 0, 0, 1], document.port));
-    let mut stream = TcpStream::connect_timeout(&address, CONNECTION_TIMEOUT)
-        .wrap_err("could not connect to Hex's local API")?;
-    stream.set_read_timeout(Some(read_timeout))?;
-    stream.set_write_timeout(Some(CONNECTION_TIMEOUT))?;
-    write!(
-        stream,
-        "POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        document.token,
-        body.len(),
-    )?;
-    stream.write_all(body)?;
-    stream.flush()?;
-
-    let mut response = Vec::new();
-    (&mut stream)
-        .take(max_response as u64 + 1)
-        .read_to_end(&mut response)
-        .wrap_err("Hex didn't answer")?;
-    if response.len() > max_response {
-        bail!("Hex's response is too large");
-    }
-    let Some(header_end) = response.windows(4).position(|window| window == b"\r\n\r\n") else {
-        bail!("Hex's response is malformed");
-    };
-    let headers = std::str::from_utf8(&response[..header_end])?;
-    let status = headers
-        .lines()
-        .next()
-        .and_then(|line| line.split_ascii_whitespace().nth(1))
-        .and_then(|status| status.parse::<u16>().ok())
-        .ok_or_else(|| eyre!("Hex's response has no HTTP status"))?;
-    Ok((status, response.split_off(header_end + 4)))
-}
-
-fn error_code(status: u16, body: &[u8]) -> String {
-    serde_json::from_slice::<serde_json::Value>(body)
-        .ok()
-        .and_then(|value| value.get("code")?.as_str().map(str::to_owned))
-        .unwrap_or_else(|| format!("http-{status}"))
-}
-
-fn generate_token() -> Result<String> {
-    let mut random = [0_u8; 32];
-    getrandom::fill(&mut random).map_err(|error| eyre!("could not generate API token: {error}"))?;
-    let mut token = String::with_capacity(68);
-    token.push_str("hex_");
-    for byte in random {
-        use std::fmt::Write as _;
-        write!(token, "{byte:02x}").expect("writing to a string cannot fail");
-    }
-    Ok(token)
-}
-
-fn prepare_discovery_path(path: &Path) -> Result<()> {
-    let Some(parent) = path.parent() else {
-        bail!("local API discovery path has no parent");
-    };
-    fs::create_dir_all(parent)?;
-    let existing = match fs::read(path) {
-        Ok(data) => serde_json::from_slice::<DiscoveryDocument>(&data).ok(),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => return Err(error.into()),
-    };
-    if existing
-        .as_ref()
-        .is_some_and(|document| valid_discovery(document) && discovery_is_live(document))
-    {
-        bail!("another local API service appears to be running");
-    }
-    Ok(())
-}
-
-fn valid_discovery(document: &DiscoveryDocument) -> bool {
-    document.api_version == API_VERSION && valid_token(&document.token)
-}
-
-fn valid_token(token: &str) -> bool {
-    token.len() == 68
-        && token.starts_with("hex_")
-        && token[4..]
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-}
-
-fn discovery_is_live(document: &DiscoveryDocument) -> bool {
-    document.port != 0
-        && document.pid != 0
-        && process_is_alive(document.pid)
-        && TcpStream::connect_timeout(
-            &SocketAddr::from(([127, 0, 0, 1], document.port)),
-            LIVE_PROBE_TIMEOUT,
-        )
-        .is_ok()
-}
-
-fn write_discovery(path: &Path, document: &DiscoveryDocument) -> Result<()> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| eyre!("local API discovery path has no parent"))?;
-    let temporary = path.with_extension(format!("json.{}.tmp", std::process::id()));
-    if let Err(error) = fs::remove_file(&temporary)
-        && error.kind() != std::io::ErrorKind::NotFound
-    {
-        return Err(error.into());
-    }
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&temporary)?;
-    let mut data = serde_json::to_vec(document)?;
-    data.push(b'\n');
-    file.write_all(&data)?;
-    file.sync_all()?;
-    fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))?;
-    fs::rename(&temporary, path)?;
-    File::open(parent)?.sync_all()?;
-    Ok(())
-}
-
-fn process_is_alive(pid: u32) -> bool {
-    let Ok(pid) = i32::try_from(pid) else {
-        return false;
-    };
-    unsafe { kill(pid, 0) == 0 }
-}
-
-unsafe extern "C" {
-    fn kill(pid: i32, signal: i32) -> i32;
 }
 
 #[cfg(test)]
@@ -2129,6 +1365,7 @@ mod tests {
 
     static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
     /// How long a test waits on another thread before failing instead of hanging.
+    #[cfg(target_os = "macos")]
     const TEST_WAIT: Duration = Duration::from_secs(5);
 
     #[test]
@@ -2167,15 +1404,21 @@ mod tests {
         assert_eq!(capabilities["control"], false);
         assert_eq!(capabilities["audioFormats"][0], "audio/wav");
         let vitals = request(document.port, Some(&document.token), "/profile/vitals");
-        assert!(vitals.starts_with("HTTP/1.1 200"));
-        let vitals: serde_json::Value = serde_json::from_str(response_body(&vitals)).unwrap();
-        assert!(vitals["footprint"].as_u64().unwrap() > 0);
-        assert!(vitals["heap"]["live"].as_u64().unwrap() > 0);
+        #[cfg(target_os = "macos")]
+        {
+            assert!(vitals.starts_with("HTTP/1.1 200"));
+            let vitals: serde_json::Value = serde_json::from_str(response_body(&vitals)).unwrap();
+            assert!(vitals["footprint"].as_u64().unwrap() > 0);
+            assert!(vitals["heap"]["live"].as_u64().unwrap() > 0);
+        }
+        // procwatch reads a process's footprint only on macOS.
+        #[cfg(not(target_os = "macos"))]
+        assert!(vitals.starts_with("HTTP/1.1 503"));
         let models = request(document.port, Some(&document.token), "/models");
         let models: Vec<serde_json::Value> = serde_json::from_str(response_body(&models)).unwrap();
         assert_eq!(
             models.len(),
-            crate::transcription_models::MODELS
+            crate::transcription::models::MODELS
                 .iter()
                 .filter(|model| model.available())
                 .count()
@@ -2258,12 +1501,12 @@ mod tests {
         let call = controls.recv_timeout(Duration::from_secs(2)).unwrap();
         assert!(matches!(
             call.command,
-            crate::developer_control::DeveloperCommand::Hud {
-                state: crate::developer_control::DeveloperHudState::Recording
+            crate::control::developer_control::DeveloperCommand::Hud {
+                state: crate::control::developer_control::DeveloperHudState::Recording
             }
         ));
         call.reply
-            .send(crate::developer_control::DeveloperReply::Ok)
+            .send(crate::control::developer_control::DeveloperReply::Ok)
             .unwrap();
         let response = client.join().unwrap();
         assert!(response.starts_with("HTTP/1.1 200"));
@@ -2360,6 +1603,7 @@ mod tests {
         fs::remove_dir_all(directory).unwrap();
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn authenticated_running_app_dictation_streams_observations_and_returns_raw_text() {
         let directory = temp_directory();
@@ -2569,8 +1813,8 @@ mod tests {
 
     #[test]
     fn model_preparation_rejects_disabled_apple_speech() {
-        let apple = crate::transcription_models::definition(
-            crate::transcription_models::TranscriptionModelId::AppleSpeech,
+        let apple = crate::transcription::models::definition(
+            crate::transcription::models::TranscriptionModelId::AppleSpeech,
         );
         assert!(installation_selection(apple, "/models/apple_speech/prepare?language=de").is_err());
     }
@@ -2627,8 +1871,12 @@ mod tests {
         fs::write(&discovery_path, b"not json").unwrap();
         let events = EventLog::create(&directory.join("events.ndjson")).unwrap();
         let api = start_published(discovery_path.clone(), events).unwrap();
-        let mode = fs::metadata(&discovery_path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&discovery_path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
         drop(api);
         assert!(!discovery_path.exists());
         fs::remove_dir_all(directory).unwrap();
@@ -2759,7 +2007,7 @@ mod tests {
     #[test]
     fn transcription_route_requires_wav_and_a_safe_declared_length() {
         let (_service, transcription) =
-            crate::transcription_service::TranscriptionService::start().unwrap();
+            crate::transcription::service::TranscriptionService::start().unwrap();
         let action = transcription_action(
             HttpRequest {
                 method: "POST".into(),
@@ -2804,7 +2052,7 @@ mod tests {
         let preparing = Arc::new(AtomicBool::new(true));
         let health: HealthProvider = Arc::new(test_health);
         let (_service, transcription) =
-            crate::transcription_service::TranscriptionService::start().unwrap();
+            crate::transcription::service::TranscriptionService::start().unwrap();
         let context = HttpContext {
             token: "test-token".into(),
             health,
@@ -2815,10 +2063,9 @@ mod tests {
             transcription,
             developer_control: None,
             control: None,
-            dictation_control: None,
-            dictation_levels: Arc::new(Mutex::new(HashMap::new())),
+            dictations: dictation::Dictations::new(None),
             streams: Arc::default(),
-            stream_engine: Arc::new(crate::transcription_stream::shared_engine),
+            stream_engine: Arc::new(crate::transcription::stream::shared_engine),
         };
         let action = handle_request(
             HttpRequest {
@@ -2867,16 +2114,16 @@ mod tests {
         let preparer: ModelPreparer = Box::new(|_, downloaded, stage| {
             downloaded.store(123, Ordering::Relaxed);
             thread::sleep(Duration::from_millis(400));
-            crate::transcription_models::ModelPreparationStage::Verifying.store(&stage);
+            crate::transcription::models::ModelPreparationStage::Verifying.store(&stage);
             thread::sleep(Duration::from_millis(400));
-            crate::transcription_models::ModelPreparationStage::Loading.store(&stage);
+            crate::transcription::models::ModelPreparationStage::Loading.store(&stage);
             thread::sleep(Duration::from_millis(400));
             Ok(())
         });
         stream_model_prepare_with(
             &mut stream,
-            crate::transcription_models::definition(
-                crate::transcription_models::TranscriptionModelId::ParakeetV2,
+            crate::transcription::models::definition(
+                crate::transcription::models::TranscriptionModelId::ParakeetV2,
             ),
             preparing.clone(),
             &AtomicBool::new(false),
@@ -2908,13 +2155,13 @@ mod tests {
         });
         let (mut stream, _) = listener.accept().unwrap();
         let preparer: ModelPreparer = Box::new(|_, _, stage| {
-            crate::transcription_models::ModelPreparationStage::Loading.store(&stage);
+            crate::transcription::models::ModelPreparationStage::Loading.store(&stage);
             Ok(())
         });
         stream_model_prepare_with(
             &mut stream,
-            crate::transcription_models::definition(
-                crate::transcription_models::TranscriptionModelId::ParakeetV2,
+            crate::transcription::models::definition(
+                crate::transcription::models::TranscriptionModelId::ParakeetV2,
             ),
             Arc::new(AtomicBool::new(true)),
             &AtomicBool::new(false),
@@ -2988,6 +2235,7 @@ mod tests {
     }
 
     /// Like `raw_request_bytes`, signalling once the response contains `marker`.
+    #[cfg(target_os = "macos")]
     fn raw_request_signalling(
         port: u16,
         request: &str,
@@ -3013,6 +2261,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "macos")]
     fn request_with_dictation_token(
         port: u16,
         token: &str,
@@ -3028,6 +2277,7 @@ mod tests {
         )
     }
 
+    #[cfg(target_os = "macos")]
     fn request_bytes(port: u16, token: &str, owner_token: &str, path: &str) -> Vec<u8> {
         raw_request_bytes(
             port,

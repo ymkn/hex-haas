@@ -11,13 +11,17 @@
 use rune::{El, col, el, row, text};
 use rune_kit::{Badge, ControlSize, IconButton, IconButtonVariant, Progress};
 
-use super::controls::{ButtonKind, Paint, button, modal_scrim_transition, modal_transition};
+use super::controls::{
+    ButtonKind, Paint, button, modal_scrim_transition, modal_transition, pressable_row, row_switch,
+    segmented,
+};
 use super::lists::error_panel;
 use super::{Request, Ui};
 use crate::app_settings::AppSettings;
-use crate::desktop_i18n::{tr, tr_fill, tr_named};
-use crate::transcription_models::{
-    self, ModelDefinition, ModelPreparationStage, ModelRuntime, TranscriptionModelId,
+use crate::desktop::i18n::{tr, tr_fill, tr_named};
+use crate::transcription::models::{
+    self as transcription_models, AUTO_LANGUAGE, BenchmarkRecord, ModelDefinition,
+    ModelPreparationStage, ModelRuntime, Recommendation, TranscriptionModelId,
     TranscriptionSelection, language_name,
 };
 
@@ -41,9 +45,37 @@ pub(super) struct LanguageFallback {
     pub(super) from: String,
 }
 
+/// How Labs › Sort and filter models orders the cards. Browsing only: it is
+/// never saved and never changes the language or the active model.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum Sort {
+    /// The catalog's order for the saved language (the picker without the Lab).
+    #[default]
+    Recommended,
+    /// Smallest model file first; models of unknown size last.
+    Size,
+    Name,
+}
+
+impl Sort {
+    const ALL: [Self; 3] = [Self::Recommended, Self::Size, Self::Name];
+
+    fn index(self) -> usize {
+        Self::ALL
+            .iter()
+            .position(|sort| *sort == self)
+            .unwrap_or_default()
+    }
+}
+
 #[derive(Default)]
 pub(super) struct Picker {
     pub(super) open: bool,
+    /// The card order while Labs › Sort and filter models is on.
+    sort: Sort,
+    /// Only models that support the saved language (or detect it, for Auto),
+    /// while Labs › Sort and filter models is on.
+    supported_only: bool,
     /// The model whose Delete is armed.
     deletion: Option<TranscriptionModelId>,
     deletion_error: Option<String>,
@@ -78,6 +110,141 @@ pub(super) fn open(ui: &mut Ui) {
     ui.open = None;
     ui.picker.open = true;
     ui.picker.clear_deletion();
+    ui.picker.sort = Sort::default();
+    ui.picker.supported_only = false;
+}
+
+/// Whether Labs › Sort and filter models is on.
+fn sort_filter_on(ui: &Ui) -> bool {
+    let feature = crate::labs::Feature::PickerSortFilter;
+    feature.shipped() && feature.on(&ui.settings)
+}
+
+/// Whether Labs › Benchmark details is on.
+fn benchmark_details_on(ui: &Ui) -> bool {
+    let feature = crate::labs::Feature::BenchmarkDetails;
+    feature.shipped() && feature.on(&ui.settings)
+}
+
+/// The badge a card shows. With Benchmark details on, "Most accurate" stays
+/// only when its figure is comparable with the other recommendations'.
+fn shown_recommendation(
+    recommendation: Option<Recommendation>,
+    model: &ModelDefinition,
+    language: &str,
+    details: bool,
+) -> Option<Recommendation> {
+    recommendation.filter(|recommendation| {
+        !details
+            || *recommendation != Recommendation::MostAccurate
+            || transcription_models::most_accurate_is_comparable(model, language)
+    })
+}
+
+/// The raw error rate with its direction: `7.57% CER · lower is better`.
+fn benchmark_rate(record: &BenchmarkRecord) -> String {
+    tr_named(
+        "{rate} · lower is better",
+        &[("rate", record.rate_label().as_str())],
+    )
+}
+
+/// One line of where a figure comes from: language, dataset and split,
+/// source, conditions, and the speed figure's qualification. Whatever the
+/// source did not record reads as unknown.
+fn benchmark_detail(record: &BenchmarkRecord) -> String {
+    let mut parts = vec![
+        language_name(record.language).to_owned(),
+        record
+            .dataset
+            .map_or_else(|| tr("Dataset unknown").to_owned(), str::to_owned),
+        match (record.source, record.source_revision) {
+            (Some(source), Some(revision)) => tr_named(
+                "Source: {source} at {revision}",
+                &[("source", source), ("revision", revision)],
+            ),
+            (Some(source), None) => tr_named("Source: {source}", &[("source", source)]),
+            (None, _) => tr("Source unrecorded").to_owned(),
+        },
+    ];
+    if record.utterances.is_none()
+        && record.batch_size.is_none()
+        && record.timestamps.is_none()
+        && record.hardware.is_none()
+    {
+        parts.push(tr("Conditions unknown").to_owned());
+    } else {
+        if let Some(utterances) = record.utterances {
+            parts.push(tr_fill("{} utterances", &utterances.to_string()));
+        }
+        if let Some(batch) = record.batch_size {
+            parts.push(tr_fill("Batch size {}", &batch.to_string()));
+        }
+        if let Some(timestamps) = record.timestamps {
+            parts.push(
+                if timestamps {
+                    tr("With timestamps")
+                } else {
+                    tr("Without timestamps")
+                }
+                .to_owned(),
+            );
+        }
+        parts.push(
+            record
+                .hardware
+                .map_or_else(|| tr("Hardware unknown").to_owned(), str::to_owned),
+        );
+    }
+    parts.push(tr("Speed: upstream figure; hardware and method unknown").to_owned());
+    parts.join(" · ")
+}
+
+type PickerModel = (
+    &'static ModelDefinition,
+    Option<transcription_models::Recommendation>,
+);
+
+/// The picker's models for `language` in `sort`'s order, only those that
+/// support it when `supported_only`. Recommended keeps the catalog's order.
+fn arranged(language: &str, sort: Sort, supported_only: bool) -> Vec<PickerModel> {
+    let mut models = transcription_models::picker_models(language);
+    if supported_only {
+        models.retain(|(model, _)| model.supports_language(language));
+    }
+    match sort {
+        Sort::Recommended => {}
+        Sort::Size => models.sort_by_key(|(model, _)| {
+            let bytes = model.download_bytes();
+            (bytes.is_none(), bytes.unwrap_or_default())
+        }),
+        Sort::Name => models.sort_by_cached_key(|(model, _)| model.name.to_lowercase()),
+    }
+    models
+}
+
+/// The cards the picker shows: the catalog's order, or with the Lab on its
+/// sort and language toggle.
+fn shown_models(ui: &Ui, language: &str) -> Vec<PickerModel> {
+    if sort_filter_on(ui) {
+        arranged(language, ui.picker.sort, ui.picker.supported_only)
+    } else {
+        transcription_models::picker_models(language)
+    }
+}
+
+/// The model the language toggle hides that still matters: the one being
+/// prepared (true), else the active one (false).
+fn hidden_model(
+    shown: &[PickerModel],
+    preparing: Option<TranscriptionModelId>,
+    active: Option<TranscriptionModelId>,
+) -> Option<(TranscriptionModelId, bool)> {
+    let hidden = |id: &TranscriptionModelId| shown.iter().all(|(model, _)| model.id != *id);
+    preparing
+        .filter(|id| hidden(id))
+        .map(|id| (id, true))
+        .or_else(|| active.filter(|id| hidden(id)).map(|id| (id, false)))
 }
 
 pub(super) fn close(ui: &mut Ui) {
@@ -188,10 +355,8 @@ pub(super) fn modal(ui: &Ui, p: Paint) -> Option<[El; 2]> {
             error,
         ));
     }
-    for (index, (model, recommendation)) in transcription_models::picker_models(&language)
-        .into_iter()
-        .enumerate()
-    {
+    let shown = shown_models(ui, &language);
+    for (index, (model, recommendation)) in shown.iter().copied().enumerate() {
         models = models.child(model_card(ui, p, index, model, recommendation, &language));
     }
     let header = row()
@@ -230,16 +395,22 @@ pub(super) fn modal(ui: &Ui, p: Paint) -> Option<[El; 2]> {
         // Presses inside the panel stay inside.
         .on_press(|_: &mut Ui| {})
         .child(header)
-        .child(el().key("rule").h(p.hair).w_full().fill(c.border_weak))
-        .child(
-            col()
-                .key("model-column")
-                .grow(1.0)
-                .shrink()
-                .w_full()
-                .pt(12.0)
-                .child(super::scroll_body("model-scroll", models.px(16.0))),
-        );
+        .child(el().key("rule").h(p.hair).w_full().fill(c.border_weak));
+    if sort_filter_on(ui) {
+        panel = panel.child(sort_filter_row(ui, p, &language));
+        if let Some(note) = hidden_note(ui, p, &shown, &language) {
+            panel = panel.child(note);
+        }
+    }
+    panel = panel.child(
+        col()
+            .key("model-column")
+            .grow(1.0)
+            .shrink()
+            .w_full()
+            .pt(12.0)
+            .child(super::scroll_body("model-scroll", models.px(16.0))),
+    );
     for shadow in &p.k.elevation.overlay {
         panel = panel.box_shadow(*shadow);
     }
@@ -264,6 +435,132 @@ pub(super) fn modal(ui: &Ui, p: Paint) -> Option<[El; 2]> {
     ])
 }
 
+/// `model`'s preparation label and progress while the service prepares it.
+fn preparation(ui: &Ui, model: &ModelDefinition) -> Option<(String, Option<f32>)> {
+    let transcription = ui.view.as_ref().map(|view| &view.transcription)?;
+    if transcription.preparing != Some(model.id) {
+        return None;
+    }
+    Some(match transcription.preparation_stage {
+        Some(ModelPreparationStage::Verifying) => (tr("Verifying model").into(), None),
+        Some(ModelPreparationStage::Loading) => {
+            let elapsed = ui
+                .preparing
+                .map_or(0, |(_, since)| since.elapsed().as_secs());
+            (tr_fill("Loading model · {}s", &elapsed.to_string()), None)
+        }
+        _ => {
+            let fraction = model.download_bytes().map_or(0.0, |bytes| {
+                (transcription.downloaded_bytes as f32 / bytes as f32).clamp(0.0, 1.0)
+            });
+            (
+                tr_fill("Downloading {}%", &format!("{:.0}", fraction * 100.0)),
+                matches!(model.runtime, ModelRuntime::Gguf(_)).then_some(fraction),
+            )
+        }
+    })
+}
+
+/// Labs › Sort and filter models' row under the header: the sort and the
+/// saved-language toggle. Neither saves anything.
+fn sort_filter_row(ui: &Ui, p: Paint, language: &str) -> El {
+    let labels = [tr("By recommendation"), tr("By size"), tr("By name")];
+    let sort = segmented(
+        p,
+        "picker-sort",
+        &labels,
+        ui.picker.sort.index(),
+        |ui: &mut Ui, index| ui.picker.sort = Sort::ALL[index],
+    );
+    let label = if language == AUTO_LANGUAGE {
+        tr("Only models that detect the language automatically").to_owned()
+    } else {
+        tr_named(
+            "Only models that support {language}",
+            &[("language", language_name(language))],
+        )
+    };
+    let toggle = pressable_row(
+        row()
+            .key("picker-supported")
+            .label(label.clone())
+            .gap(8.0)
+            .center_y()
+            .shrink()
+            .child(
+                text(label)
+                    .key("label")
+                    .font(p.k.ty.small)
+                    .color(p.text())
+                    .shrink()
+                    .wrap(),
+            )
+            .child(row_switch(p, ui.picker.supported_only)),
+    )
+    .on_press(|ui: &mut Ui| ui.picker.supported_only = !ui.picker.supported_only);
+    row()
+        .key("picker-controls")
+        .px(16.0)
+        .pt(12.0)
+        .gaps(8.0, 12.0)
+        .center_y()
+        .justify_between()
+        .flex_wrap()
+        .child(sort)
+        .child(toggle)
+}
+
+/// One line outside the results naming the active model or the one being
+/// prepared while the language toggle hides it, with the preparation's
+/// Cancel.
+fn hidden_note(ui: &Ui, p: Paint, shown: &[PickerModel], language: &str) -> Option<El> {
+    let transcription = ui.view.as_ref().map(|view| &view.transcription);
+    let preparing = transcription.and_then(|t| t.preparing);
+    let selected = transcription_models::definition(ui.settings.transcription.model);
+    let active = transcription_selection_is_active(
+        &ui.settings.transcription,
+        selected,
+        ui.picker
+            .installed(selected, selected.language_for(language)),
+    )
+    .then_some(selected.id);
+    let (id, is_preparing) = hidden_model(shown, preparing, active)?;
+    let model = transcription_models::definition(id);
+    let state = if is_preparing {
+        preparation(ui, model)?.0
+    } else {
+        tr("Active").to_owned()
+    };
+    let mut note = row()
+        .key("picker-hidden")
+        .px(16.0)
+        .pt(8.0)
+        .gap(8.0)
+        .center_y()
+        .child(
+            text(tr_named(
+                "{model} is hidden by the language filter: {state}",
+                &[("model", model.name), ("state", state.as_str())],
+            ))
+            .key("label")
+            .font(p.k.ty.small)
+            .color(p.muted())
+            .grow(1.0)
+            .shrink()
+            .wrap(),
+        );
+    if is_preparing {
+        note = note.child(button(
+            p,
+            "cancel-hidden-model",
+            tr("Cancel"),
+            ButtonKind::Secondary,
+            |ui: &mut Ui, _| cancel(ui),
+        ));
+    }
+    Some(note)
+}
+
 enum Status {
     Active,
     Available {
@@ -285,35 +582,11 @@ fn model_card(
 ) -> El {
     let c = &p.k.c;
     let installed = ui.picker.installed(model, model.language_for(language));
-    let transcription = ui.view.as_ref().map(|view| &view.transcription);
-    let preparing = transcription.and_then(|t| t.preparing) == Some(model.id);
+    let preparation = preparation(ui, model);
+    let preparing = preparation.is_some();
     let active = transcription_selection_is_active(&ui.settings.transcription, model, installed);
-    let status = if preparing {
-        let transcription = transcription.expect("preparing comes from the snapshot");
-        match transcription.preparation_stage {
-            Some(ModelPreparationStage::Verifying) => Status::Preparing {
-                label: tr("Verifying model").into(),
-                progress: None,
-            },
-            Some(ModelPreparationStage::Loading) => {
-                let elapsed = ui
-                    .preparing
-                    .map_or(0, |(_, since)| since.elapsed().as_secs());
-                Status::Preparing {
-                    label: tr_fill("Loading model · {}s", &elapsed.to_string()),
-                    progress: None,
-                }
-            }
-            _ => {
-                let fraction = model.download_bytes().map_or(0.0, |bytes| {
-                    (transcription.downloaded_bytes as f32 / bytes as f32).clamp(0.0, 1.0)
-                });
-                Status::Preparing {
-                    label: tr_fill("Downloading {}%", &format!("{:.0}", fraction * 100.0)),
-                    progress: matches!(model.runtime, ModelRuntime::Gguf(_)).then_some(fraction),
-                }
-            }
-        }
+    let status = if let Some((label, progress)) = preparation {
+        Status::Preparing { label, progress }
     } else if active {
         Status::Active
     } else {
@@ -411,7 +684,12 @@ fn model_card(
                 .font(p.k.ty.body_medium)
                 .color(p.text()),
         );
-    if let Some(recommendation) = recommendation {
+    // Labs › Benchmark details: raw error rates with their provenance.
+    let details = benchmark_details_on(ui);
+    let record = details
+        .then(|| transcription_models::benchmark(model))
+        .flatten();
+    if let Some(recommendation) = shown_recommendation(recommendation, model, language, details) {
         title = title.child(Badge::new(tr(recommendation.label())).build(p.k));
     }
     if model.streams {
@@ -465,12 +743,24 @@ fn model_card(
                 .gap(20.0)
                 .child(metric("speed", tr("Speed"), tr(model.realtime).into()))
                 .child(metric("size", tr("Size"), model.size_label()))
-                .child(metric(
-                    "accuracy",
-                    tr("Accuracy"),
-                    model.accuracy_label().unwrap_or_else(|| "System".into()),
-                )),
+                .child(match &record {
+                    Some(record) => metric("error-rate", tr("Error rate"), benchmark_rate(record)),
+                    None => metric(
+                        "accuracy",
+                        tr("Accuracy"),
+                        model.accuracy_label().unwrap_or_else(|| "System".into()),
+                    ),
+                }),
         );
+    if let Some(record) = &record {
+        card = card.child(
+            text(benchmark_detail(record))
+                .key("benchmark")
+                .font(p.k.ty.small)
+                .color(p.muted())
+                .wrap(),
+        );
+    }
     if !model.supports_language(language) {
         card = card.child(
             text(tr_named(
@@ -545,5 +835,148 @@ mod tests {
 
         assert!(!transcription_selection_is_active(&selection, model, false));
         assert!(transcription_selection_is_active(&selection, model, true));
+    }
+
+    fn ids(models: &[PickerModel]) -> Vec<TranscriptionModelId> {
+        models.iter().map(|(model, _)| model.id).collect()
+    }
+
+    #[test]
+    fn recommended_keeps_the_catalogs_order_and_the_others_reorder_it() {
+        for language in ["en", "ja", AUTO_LANGUAGE] {
+            assert_eq!(
+                ids(&arranged(language, Sort::Recommended, false)),
+                ids(&transcription_models::picker_models(language))
+            );
+            let by_size = arranged(language, Sort::Size, false);
+            let sizes: Vec<_> = by_size
+                .iter()
+                .map(|(model, _)| model.download_bytes())
+                .collect();
+            let known = sizes.iter().take_while(|bytes| bytes.is_some()).count();
+            assert!(
+                sizes[known..].iter().all(Option::is_none),
+                "unknown sizes last"
+            );
+            assert!(sizes[..known].windows(2).all(|pair| pair[0] <= pair[1]));
+            let by_name = arranged(language, Sort::Name, false);
+            assert!(
+                by_name
+                    .windows(2)
+                    .all(|pair| { pair[0].0.name.to_lowercase() <= pair[1].0.name.to_lowercase() })
+            );
+            assert_eq!(by_name.len(), by_size.len());
+        }
+    }
+
+    #[test]
+    fn the_language_toggle_keeps_only_models_for_the_saved_language() {
+        for language in ["en", "ja", "mt", AUTO_LANGUAGE] {
+            let all = transcription_models::picker_models(language);
+            let supported = arranged(language, Sort::Recommended, true);
+            assert!(!supported.is_empty());
+            assert_eq!(
+                supported.len(),
+                all.iter()
+                    .filter(|(model, _)| model.language_for(language) == language)
+                    .count()
+            );
+        }
+    }
+
+    #[test]
+    fn a_hidden_preparing_or_active_model_is_named() {
+        let shown = arranged("ja", Sort::Recommended, true);
+        let hidden = TranscriptionModelId::ParakeetUnifiedEnglish;
+        let visible = shown[0].0.id;
+        assert!(!ids(&shown).contains(&hidden));
+        assert_eq!(
+            hidden_model(&shown, Some(hidden), Some(visible)),
+            Some((hidden, true))
+        );
+        assert_eq!(
+            hidden_model(&shown, None, Some(hidden)),
+            Some((hidden, false))
+        );
+        assert_eq!(hidden_model(&shown, Some(visible), Some(visible)), None);
+        assert_eq!(hidden_model(&shown, None, None), None);
+    }
+
+    #[test]
+    fn benchmark_details_show_raw_rates_and_mark_unknowns() {
+        let qwen = transcription_models::definition(TranscriptionModelId::Qwen3Asr06B);
+        let record = transcription_models::benchmark(qwen).unwrap();
+        assert_eq!(benchmark_rate(&record), "7.57% CER · lower is better");
+        let detail = benchmark_detail(&record);
+        for part in [
+            "Mandarin Chinese",
+            "FLEURS test",
+            "at 7045d1c",
+            "945 utterances",
+            "Batch size 8",
+            "Without timestamps",
+            "Hardware unknown",
+            "Speed: upstream figure",
+        ] {
+            assert!(detail.contains(part), "{detail:?} lacks {part:?}");
+        }
+        let parakeet = transcription_models::definition(TranscriptionModelId::ParakeetV2);
+        let detail = benchmark_detail(&transcription_models::benchmark(parakeet).unwrap());
+        for part in [
+            "English",
+            "Dataset unknown",
+            "Source unrecorded",
+            "Conditions unknown",
+        ] {
+            assert!(detail.contains(part), "{detail:?} lacks {part:?}");
+        }
+        let apple = transcription_models::definition(TranscriptionModelId::AppleSpeech);
+        assert!(transcription_models::benchmark(apple).is_none());
+    }
+
+    #[test]
+    fn most_accurate_needs_comparable_figures_only_with_benchmark_details() {
+        let cohere = transcription_models::definition(TranscriptionModelId::CohereTranscribe);
+        let badge = Some(Recommendation::MostAccurate);
+        assert_eq!(shown_recommendation(badge, cohere, "en", false), badge);
+        assert_eq!(shown_recommendation(badge, cohere, "en", true), None);
+        let recommended = Some(Recommendation::Recommended);
+        assert_eq!(
+            shown_recommendation(recommended, cohere, "el", true),
+            recommended
+        );
+    }
+
+    #[test]
+    fn benchmark_details_are_off_by_default() {
+        let ui = Ui::with(
+            AppSettings::default(),
+            super::super::Service::Fixture(Vec::new()),
+        );
+        assert!(!benchmark_details_on(&ui));
+        let mut settings = AppSettings::default();
+        settings.labs.benchmark_details = true;
+        let ui = Ui::with(settings, super::super::Service::Fixture(Vec::new()));
+        assert!(benchmark_details_on(&ui));
+    }
+
+    #[test]
+    fn browsing_never_saves_or_asks_for_a_model() {
+        let mut settings = AppSettings::default();
+        settings.labs.picker_sort_filter = true;
+        let mut ui = Ui::with(settings, super::super::Service::Fixture(Vec::new()));
+        let before = ui.settings.clone();
+        open(&mut ui);
+        assert!(sort_filter_on(&ui));
+        ui.picker.sort = Sort::Size;
+        ui.picker.supported_only = true;
+        let _ = shown_models(&ui, &before.transcription.language);
+        assert_eq!(ui.settings, before);
+        assert_eq!(ui.saved, 0);
+        assert!(matches!(&ui.service, super::super::Service::Fixture(sent) if sent.is_empty()));
+        close(&mut ui);
+        open(&mut ui);
+        assert_eq!(ui.picker.sort, Sort::Recommended);
+        assert!(!ui.picker.supported_only);
     }
 }

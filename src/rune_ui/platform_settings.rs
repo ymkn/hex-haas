@@ -11,18 +11,18 @@ use super::controls::{
     ButtonKind, Choice, DESCRIPTION, Paint, button, card, icon_row, icon_toggle_row, note, section,
     select, setting_row,
 };
-use super::lists::{PermissionControl, Tone, permission_control, tone_tag};
-use super::platform::{CalendarRequest, MeetingRequest, NotesAvailability, PlatformRequest};
+use super::lists::{Tone, permission_control, tone_tag};
+use super::platform::{CalendarRequest, MeetingRequest, NotesAvailability, Os, PlatformRequest};
 use super::settings::toggle_menu;
 use super::{Menu, Pane, ShortcutTarget, Ui, icons};
 use crate::app_settings::{
     AppSettings, CALENDAR_LEAD_MINUTES, HotkeyBinding, KNOWN_MEETING_PROVIDERS, MeetingPolicy,
-    MeetingProviderChoice, ModifierSide,
+    MeetingProviderChoice, MeetingRetention, ModifierSide,
 };
+use crate::audio::hex_microphone::DriverActionState;
 use crate::calendar::{CalendarAccess, CallProvider};
-use crate::desktop_i18n::{tr, tr_fill, tr_named};
-use crate::hex_microphone::DriverActionState;
-use crate::onboarding::{PermissionAction, PermissionKind, PermissionWarning};
+use crate::desktop::i18n::{tr, tr_fill, tr_named};
+use crate::desktop::onboarding::{PermissionAction, PermissionKind, PermissionWarning};
 
 /// A permission's row key, its name as System Settings lists it, and what
 /// Hex cannot do without it.
@@ -68,7 +68,7 @@ pub(super) fn permissions_section(ui: &Ui, p: Paint) -> Option<El> {
     if !ui.platform.caps.permissions || ui.tour.is_some() {
         return None;
     }
-    let warnings = crate::onboarding::permission_warnings(ui.platform.permissions);
+    let warnings = crate::desktop::onboarding::permission_warnings(ui.platform.permissions);
     if warnings.is_empty() {
         return None;
     }
@@ -94,21 +94,90 @@ pub(super) fn permissions_section(ui: &Ui, p: Paint) -> Option<El> {
                     ),
                 );
             }
+            let stale =
+                warning.kind == PermissionKind::Accessibility && ui.platform.stale(warning.kind);
+            let description = if stale {
+                tr("An older Hex entry can keep this off")
+            } else {
+                description
+            };
+            let action = if stale {
+                PermissionAction::ResetAndPrompt(warning.kind)
+            } else {
+                warning.action
+            };
             let control = permission_control(
                 p,
                 &format!("{key}-allow"),
-                if ui.platform.asked(warning.kind) {
-                    PermissionControl::Waiting
-                } else {
-                    PermissionControl::Allow
-                },
+                ui.platform.control_for(warning.kind, false),
                 ButtonKind::Secondary,
-                move |ui: &mut Ui| ui.ask(PlatformRequest::Permission(warning.action)),
+                move |ui: &mut Ui| ui.ask(PlatformRequest::Permission(action)),
             );
             setting_row(p, key, name, Some(description), control)
         })
         .collect();
     Some(section(p, "permissions", tr("Permissions needed"), rows))
+}
+
+/// Records which untrusted permission rows are currently visible in the window
+/// so the macOS host clears retired Hex bundle IDs' stale TCC rows once in the
+/// background when a row appears.
+pub(super) fn update_shown_permissions(ui: &mut Ui) {
+    use crate::desktop::onboarding::{PermissionState, Step};
+    let visible = ui.window.as_ref().is_none_or(rune::AppHandle::is_visible);
+    let mut shown = Vec::new();
+    if visible && ui.platform.caps.permissions {
+        let setup_showing = ui
+            .tour
+            .as_ref()
+            .is_some_and(|tour| tour.flow.step() == Step::Setup)
+            || ui.first_run.is_some()
+            || (ui.tour.is_none() && !ui.labs_open && ui.pane == Pane::General);
+        if setup_showing
+            && matches!(
+                ui.platform.permissions.accessibility,
+                PermissionState::NeedsRequest | PermissionState::NeedsSettings
+            )
+        {
+            shown.push(PermissionKind::Accessibility);
+        }
+        if ui.tour.is_none() && !ui.labs_open {
+            if ui.pane == Pane::Meetings
+                && super::meetings::available(ui)
+                && ui.meetings.view == super::meetings::View::Settings
+                && !ui.platform.system_audio
+            {
+                shown.push(PermissionKind::SystemAudio);
+            }
+            #[cfg(hex_capture)]
+            if ui.pane == Pane::Annotate
+                && ui.settings.capture.enabled
+                && ui
+                    .platform
+                    .scrawl
+                    .as_ref()
+                    .is_some_and(|view| !view.screen_recording && !view.screen_needs_restart)
+            {
+                shown.push(PermissionKind::ScreenRecording);
+            }
+        }
+    }
+    ui.platform.permissions_shown = shown;
+}
+
+/// Fixture setup for General's missing-permissions scenes (`waiting` vs `stale`).
+pub(super) fn mac_permissions_fixture(ui: &mut Ui, stale: bool) {
+    use crate::desktop::onboarding::PermissionState;
+    *ui = super::mac_fixture();
+    ui.platform.permissions.microphone = PermissionState::NeedsSettings;
+    ui.platform.permissions.accessibility = PermissionState::NeedsSettings;
+    if stale {
+        ui.platform.note_stale(PermissionKind::Accessibility);
+    } else {
+        ui.platform.note_asked(PermissionKind::Accessibility);
+    }
+    ui.platform.login_item = Some(crate::desktop::login_item::LoginItemStatus::RequiresApproval);
+    ui.platform.accessibility_renamed = true;
 }
 
 /// A save error where the OS has no listener card to show it in.
@@ -170,7 +239,7 @@ pub(super) fn meetings_toggle(ui: &Ui, p: Paint) -> El {
 }
 
 /// Meetings › Settings: the opt-in (and the system-audio permission while
-/// it's missing); once on, Calendar and each detected call provider's Ask /
+/// it's missing); once on, how long meetings are kept, Calendar and each detected call provider's Ask /
 /// Always record / Never offer choice; behind Advanced the indicator,
 /// folder, Apple Intelligence notes, and the granted permission.
 pub(super) fn meetings_settings(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> Vec<El> {
@@ -178,8 +247,10 @@ pub(super) fn meetings_settings(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> Vec<E
     let meetings = &ui.settings.meetings;
     let mut rows = vec![meetings_toggle(ui, p)];
     let mut more = Vec::new();
-    if meetings.enabled {
+    // Only macOS asks before Hex may hear the other participants.
+    if meetings.enabled && ui.platform.caps.permissions {
         let permitted = ui.platform.system_audio;
+        let stale = !permitted && ui.platform.stale(PermissionKind::SystemAudio);
         let system_audio = icon_row(
             p,
             "meeting-system-audio",
@@ -187,24 +258,27 @@ pub(super) fn meetings_settings(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> Vec<E
             tr("Screen & System Audio Recording"),
             Some(if permitted {
                 tr("Captures the other participants' audio")
+            } else if stale {
+                tr("An older Hex entry can keep this off")
             } else {
                 tr("Required to hear the other participants.")
             }),
             permission_control(
                 p,
                 "meeting-system-audio-allow",
-                if permitted {
-                    PermissionControl::Allowed
-                } else if ui.platform.asked(PermissionKind::SystemAudio) {
-                    PermissionControl::Waiting
-                } else {
-                    PermissionControl::Allow
-                },
+                ui.platform
+                    .control_for(PermissionKind::SystemAudio, permitted),
                 ButtonKind::Secondary,
-                |ui: &mut Ui| {
-                    // macOS prompts once; after that the switch is in
-                    // System Settings, with the guide beside it.
-                    ui.ask(PlatformRequest::SystemAudio);
+                move |ui: &mut Ui| {
+                    if stale {
+                        ui.ask(PlatformRequest::Permission(
+                            PermissionAction::ResetAndPrompt(PermissionKind::SystemAudio),
+                        ));
+                    } else {
+                        // macOS prompts once; after that the switch is in
+                        // System Settings, with the guide beside it.
+                        ui.ask(PlatformRequest::SystemAudio);
+                    }
                 },
             ),
         );
@@ -214,6 +288,9 @@ pub(super) fn meetings_settings(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> Vec<E
         } else {
             rows.push(system_audio);
         }
+    }
+    if meetings.enabled {
+        rows.push(retention_row(ui, p, layer));
         more.push(icon_toggle_row(
             p,
             "meeting-indicator",
@@ -251,16 +328,36 @@ pub(super) fn meetings_settings(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> Vec<E
                     |ui: &mut Ui, _| ui.ask(PlatformRequest::Meeting(MeetingRequest::ChooseFolder)),
                 )),
         ));
+        if ui.platform.caps.os == Os::Macos {
+            more.push(icon_toggle_row(
+                p,
+                "meeting-notes",
+                &icons::SPARKLES,
+                tr("Summarize with Apple Intelligence"),
+                notes_description(ui.platform.notes),
+                meetings.summarize_with_apple_intelligence,
+                |ui: &mut Ui| {
+                    let enabled = !ui.settings.meetings.summarize_with_apple_intelligence;
+                    ui.update(|settings| {
+                        settings.meetings.summarize_with_apple_intelligence = enabled
+                    });
+                },
+            ));
+        }
         more.push(icon_toggle_row(
             p,
-            "meeting-notes",
+            "meeting-notes-opencode",
             &icons::SPARKLES,
-            tr("Summarize with Apple Intelligence"),
-            notes_description(ui.platform.notes),
-            meetings.summarize_with_apple_intelligence,
+            tr("Summarize with OpenCode"),
+            if ui.platform.caps.os == Os::Macos {
+                tr("When Apple Intelligence is off or unavailable. Sends the transcript to your OpenCode model")
+            } else {
+                tr("Meeting titles and short summaries. Sends the transcript to your OpenCode model")
+            },
+            meetings.summarize_with_opencode,
             |ui: &mut Ui| {
-                let enabled = !ui.settings.meetings.summarize_with_apple_intelligence;
-                ui.update(|settings| settings.meetings.summarize_with_apple_intelligence = enabled);
+                let enabled = !ui.settings.meetings.summarize_with_opencode;
+                ui.update(|settings| settings.meetings.summarize_with_opencode = enabled);
             },
         ));
         if let Some(error) = &ui.platform.meeting_folder_error {
@@ -278,6 +375,45 @@ pub(super) fn meetings_settings(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> Vec<E
         }
     }
     sections
+}
+
+/// How long finished meetings are kept before they move to the Trash.
+fn retention_row(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> El {
+    let chosen = ui.settings.meetings.retention;
+    let retention = chosen.unwrap_or(MeetingRetention::DEFAULT);
+    let control = super::general::pick_select(
+        ui,
+        p,
+        "meeting-retention",
+        MeetingRetention::ALL
+            .iter()
+            .map(|retention| tr(retention.label()))
+            .collect(),
+        MeetingRetention::ALL
+            .iter()
+            .position(|choice| *choice == retention)
+            .unwrap_or_default(),
+        |ui, index| {
+            ui.update(|settings| settings.meetings.retention = Some(MeetingRetention::ALL[index]));
+        },
+        layer,
+    );
+    icon_row(
+        p,
+        "meeting-retention",
+        &icons::CLOCK,
+        tr("Keep meetings"),
+        match chosen {
+            None => Some(tr(
+                "Audio, transcripts, notes, and Hex's Markdown copy move to the Trash. Meetings from before this setting stay until you choose",
+            )),
+            Some(MeetingRetention::Forever) => None,
+            Some(_) => Some(tr(
+                "Audio, transcripts, notes, and Hex's Markdown copy move to the Trash",
+            )),
+        },
+        control,
+    )
 }
 
 static ZOOM_ICON: Icon = Icon {

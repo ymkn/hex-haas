@@ -1,6 +1,6 @@
-//! Hex's real first run on the onboarding story (experiment
-//! `new-onboarding`). The window's tour ([`onboarding`](super::super::onboarding))
-//! stays the state machine underneath: it starts the model download, asks
+//! Hex's first run on the onboarding story, replayed by Labs' Run setup
+//! again and `hex onboarding reset`; a new install still gets the tour.
+//! The window's tour ([`onboarding`](super::super::onboarding)) stays the state machine underneath: it starts the model download, asks
 //! for the permissions, relaunches when macOS needs it, watches the practice
 //! dictation, and records completion. This module shows the story's pages
 //! over the window and feeds them that real state each frame.
@@ -15,8 +15,12 @@ use super::super::{Request, Ui, onboarding};
 use super::fixture::{Language, Speech};
 use super::pill::set_other_label;
 use super::stories::{FRAME, Flow, Onboard, advance_to};
-use crate::onboarding::{Input, ItemStatus, Practice, SetupItem, SetupStatus, Step as TourStep};
-use crate::transcription_models::{self, TranscriptionModelId, TranscriptionSelection};
+use crate::desktop::onboarding::{
+    Input, ItemStatus, Practice, SetupItem, SetupStatus, Step as TourStep,
+};
+use crate::transcription::models::{
+    self as transcription_models, TranscriptionModelId, TranscriptionSelection,
+};
 
 /// How long both permission checks show before the page moves on.
 const GRANTED_BEAT: f64 = 0.7;
@@ -38,6 +42,8 @@ pub(crate) struct Live {
     choice: TranscriptionSelection,
     granted_at: Option<f64>,
     checked: Option<Checked>,
+    /// Dictation streams send their live words to the practice field.
+    _live_words: crate::dictation::live_text::Demand,
 }
 
 /// The last look at the disk and macOS.
@@ -60,17 +66,6 @@ fn clock() -> f64 {
     START.get_or_init(Instant::now).elapsed().as_secs_f64() + 1.0
 }
 
-/// Whether this run shows the new first run in place of the tour.
-pub(in crate::rune_ui) fn wanted(ui: &Ui) -> bool {
-    wanted_for(&ui.platform)
-}
-
-pub(in crate::rune_ui) fn wanted_for(platform: &super::super::platform::PlatformState) -> bool {
-    platform.experiments[crate::experiments::Experiment::NewOnboarding.index()]
-        && platform.caps.permissions
-        && platform.caps.practice_dictation
-}
-
 fn english(selection: &TranscriptionSelection) -> bool {
     selection.model == TranscriptionModelId::ParakeetUnifiedEnglish
 }
@@ -79,7 +74,7 @@ fn english(selection: &TranscriptionSelection) -> bool {
 fn other_selection(current: &TranscriptionSelection) -> TranscriptionSelection {
     if english(current) {
         let v3 = transcription_models::definition(TranscriptionModelId::ParakeetV3);
-        let preferred = crate::desktop_i18n::preferred_language();
+        let preferred = crate::desktop::i18n::preferred_language();
         let language = if preferred != "en" && v3.supports_language(&preferred) {
             preferred
         } else {
@@ -88,13 +83,11 @@ fn other_selection(current: &TranscriptionSelection) -> TranscriptionSelection {
         TranscriptionSelection {
             model: TranscriptionModelId::ParakeetV3,
             language,
-            recognition_hints: current.recognition_hints.clone(),
         }
     } else {
         TranscriptionSelection {
             model: TranscriptionModelId::ParakeetUnifiedEnglish,
             language: "en".into(),
-            recognition_hints: current.recognition_hints.clone(),
         }
     }
 }
@@ -104,11 +97,8 @@ fn installed(ui: &Ui, selection: &TranscriptionSelection) -> bool {
         .is_ok_and(|model| ui.picker.installed(model, &selection.language))
 }
 
-/// Builds the first run when the tour starts and this run wants it.
-pub(in crate::rune_ui) fn start(ui: &mut Ui) {
-    if !wanted(ui) {
-        return;
-    }
+/// Builds the first run over the tour Run setup again just started.
+fn start(ui: &mut Ui) {
     let Some(tour_step) = ui.tour.as_ref().map(|tour| tour.flow.step()) else {
         return;
     };
@@ -126,8 +116,8 @@ pub(in crate::rune_ui) fn start(ui: &mut Ui) {
     set_other_label(transcription_models::language_name(&other.language));
     let had_model = installed(ui, &choice);
     let status = ui.platform.setup_status(had_model);
-    let granted = status.microphone == crate::onboarding::PermissionState::Ready
-        && status.accessibility == crate::onboarding::PermissionState::Ready;
+    let granted = status.microphone == crate::desktop::onboarding::PermissionState::Ready
+        && status.accessibility == crate::desktop::onboarding::PermissionState::Ready;
 
     let mut s = Onboard::new(Flow::FirstRun);
     s.speech = Speech::AfterDownload;
@@ -145,6 +135,7 @@ pub(in crate::rune_ui) fn start(ui: &mut Ui) {
         choice,
         granted_at: None,
         checked: None,
+        _live_words: crate::dictation::live_text::demand(),
     });
     let now = clock();
     s.now = now;
@@ -163,34 +154,13 @@ pub(in crate::rune_ui) fn start(ui: &mut Ui) {
     }
 }
 
-/// Why Hex can't replay its first run here, if it can't.
-pub(crate) fn restart_unavailable(ui: &Ui) -> Option<&'static str> {
-    if !ui.platform.dev_build {
-        Some("Restarting onboarding is only in dev, test, and local builds")
-    } else if !(ui.platform.caps.permissions && ui.platform.caps.practice_dictation) {
-        Some("The new onboarding is not on this OS yet")
-    } else {
-        None
-    }
-}
-
-/// "Restart onboarding" and `hex onboarding reset`: turns the new first run
-/// on for this install, forgets that onboarding finished, and opens it now.
-/// Settings, history, models, and permissions stay as they are, so the run
-/// finds them ready and passes their steps.
+/// "Run setup again" and `hex onboarding reset`: forgets that onboarding
+/// finished and opens it now. Settings, history, models, and permissions
+/// stay as they are, so the run finds them ready and passes their steps.
 pub(crate) fn restart(ui: &mut Ui, tx: &mut Tx) -> Result<(), String> {
-    use crate::experiments::{self, Experiment};
-    if let Some(why) = restart_unavailable(ui) {
-        return Err(why.into());
-    }
     if ui.live() {
-        if !experiments::enabled(Experiment::NewOnboarding) {
-            experiments::set_enabled(Experiment::NewOnboarding, true)
-                .map_err(|error| format!("{error:#}"))?;
-        }
-        crate::onboarding::reset().map_err(|error| format!("{error:#}"))?;
+        crate::desktop::onboarding::reset().map_err(|error| format!("{error:#}"))?;
     }
-    ui.platform.experiments[Experiment::NewOnboarding.index()] = true;
     ui.select_pane(super::super::Pane::General, tx);
     ui.first_run = None;
     ui.tour = Some(onboarding::Tour::replay(&ui.settings, &ui.platform));
@@ -257,6 +227,7 @@ pub(in crate::rune_ui) fn poll(ui: &mut Ui, tx: &mut Tx) -> bool {
     {
         onboarding::input(ui, Input::Continue);
     }
+    let asks_permissions = ui.platform.caps.permissions;
     let Some(s) = ui.first_run.as_mut() else {
         return false;
     };
@@ -264,6 +235,11 @@ pub(in crate::rune_ui) fn poll(ui: &mut Ui, tx: &mut Tx) -> bool {
         return false;
     };
     live.checked = Some(checked);
+    // Linux and Windows ask for no permissions: both rows are ready.
+    if !asks_permissions {
+        live.microphone = ItemStatus::Ready;
+        live.accessibility = ItemStatus::Ready;
+    }
 
     // Permissions, as the tour's setup rows show them.
     if let Some(view) = &view {
@@ -277,8 +253,8 @@ pub(in crate::rune_ui) fn poll(ui: &mut Ui, tx: &mut Tx) -> bool {
         live.restart = view.restart;
         live.practice = view.practice;
     }
-    let granted = status.microphone == crate::onboarding::PermissionState::Ready
-        && status.accessibility == crate::onboarding::PermissionState::Ready;
+    let granted = status.microphone == crate::desktop::onboarding::PermissionState::Ready
+        && status.accessibility == crate::desktop::onboarding::PermissionState::Ready;
     if granted {
         live.granted_at.get_or_insert(now);
     } else {
@@ -340,8 +316,8 @@ pub(super) fn finish(ui: &mut Ui) {
     let installed = ui.picker.selected_installed(&ui.settings);
     if ui.live()
         && ui.platform.setup_status(installed).ready()
-        && !crate::onboarding::completion_recorded()
-        && let Err(error) = crate::onboarding::record_completion()
+        && !crate::desktop::onboarding::completion_recorded()
+        && let Err(error) = crate::desktop::onboarding::record_completion()
     {
         tracing::warn!(%error, "could not record onboarding completion");
     }
@@ -406,15 +382,20 @@ pub(super) fn practice_changed(ui: &mut Ui, tx: &mut Tx) {
     }
 }
 
-/// What the practice dictation's last try needs said, under the field.
-pub(super) fn hint(p: Paint, live: &Live) -> Option<El> {
-    let copy = match live.practice {
+/// What the practice dictation's last try needs said.
+pub(super) fn hint_copy(live: &Live) -> Option<&'static str> {
+    Some(match live.practice {
         Practice::TooShort => "Hold the shortcut a little longer while you speak.",
         Practice::NothingHeard => "Hex didn't hear any words. Try again a little louder.",
         Practice::Failed => "That didn't work. Try again.",
         Practice::Transcribing => "Typing what you said…",
         _ => return None,
-    };
+    })
+}
+
+/// [`hint_copy`] under the practice field.
+pub(super) fn hint(p: Paint, live: &Live) -> Option<El> {
+    let copy = hint_copy(live)?;
     Some(
         text(copy)
             .key("practice-hint")

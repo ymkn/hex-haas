@@ -13,7 +13,7 @@ use super::Ui;
 use super::controls::{
     ButtonKind, DESCRIPTION, METRICS, Paint, PushSize, button, pulsing_dot, status_dot,
 };
-use crate::desktop_i18n::tr;
+use crate::desktop::i18n::tr;
 
 const LIST_WIDTH: f32 = 320.0;
 /// A [`list_row`]'s text inset.
@@ -204,6 +204,51 @@ pub(super) fn error_panel(p: Paint, key: &str, title: &str, detail: &str) -> El 
         )
 }
 
+/// An [`error_panel`] with a close button, for an error that stays until the
+/// user dismisses it.
+pub(super) fn dismissible_error_panel(
+    p: Paint,
+    key: &str,
+    title: &str,
+    detail: &str,
+    dismiss: impl Fn(&mut Ui) + 'static,
+) -> El {
+    let d = &p.k.c.danger;
+    row()
+        .key(key)
+        .pl(12.0)
+        .pr(6.0)
+        .py(6.0)
+        .gap(8.0)
+        .radius(p.k.radius.md)
+        .fill(d.bg)
+        .border(0.5, d.border)
+        .child(
+            col()
+                .key("message")
+                .grow(1.0)
+                .shrink()
+                .py(4.0)
+                .gap(2.0)
+                .child(text(title).key("title").font(p.k.ty.ui_medium).color(d.fg))
+                .child(
+                    text(detail)
+                        .key("detail")
+                        .font(DESCRIPTION)
+                        .color(p.muted())
+                        .wrap(),
+                ),
+        )
+        .child(
+            rune_kit::IconButton::new(CLOSE)
+                .variant(rune_kit::IconButtonVariant::Ghost)
+                .label(tr("Close"))
+                .on_press(dismiss)
+                .build(p.k)
+                .key("dismiss"),
+        )
+}
+
 /// The list column and the detail beside it, split by a hairline.
 pub(super) fn split(p: Paint, key: &str, list: El, detail: El) -> El {
     row()
@@ -300,6 +345,9 @@ pub(super) enum PermissionControl {
     Allow,
     /// Asked: macOS's prompt or System Settings is up; Allow opens it again.
     Waiting,
+    /// Returned from System Settings still untrusted: resets stale TCC
+    /// entries and reopens the prompt and guide.
+    Stale,
     Allowed,
 }
 
@@ -359,7 +407,7 @@ pub(super) fn permission_control(
             12.0,
             button(p, key, tr("Allow"), kind, move |ui: &mut Ui, _| allow(ui)),
         ),
-        PermissionControl::Waiting => (
+        PermissionControl::Waiting | PermissionControl::Stale => (
             Some(
                 el().key("mark")
                     .size(8.0, 8.0)
@@ -369,7 +417,11 @@ pub(super) fn permission_control(
             button(
                 p,
                 key,
-                tr("Allow"),
+                if control == PermissionControl::Stale {
+                    tr("Still grey? Fix it")
+                } else {
+                    tr("Allow")
+                },
                 ButtonKind::Secondary,
                 move |ui: &mut Ui, _| allow(ui),
             ),

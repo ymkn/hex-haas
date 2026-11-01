@@ -14,7 +14,7 @@ use fs2::FileExt;
 
 use super::Method;
 use super::protocol::is_version_name;
-use crate::background_process;
+use crate::desktop::background_process;
 
 #[cfg(target_arch = "x86_64")]
 pub const TARGET: &str = "windows-x64";
@@ -58,7 +58,7 @@ pub fn method() -> Method {
 /// The `windows-*` target is the signed executable our installers copy
 /// unchanged, so this build is the file whose SHA-256 it has.
 pub fn running_sha256() -> Option<String> {
-    crate::transcription_models::sha256_hex(&std::env::current_exe().ok()?, None).ok()
+    crate::transcription::models::sha256_hex(&std::env::current_exe().ok()?, None).ok()
 }
 
 pub fn updates_disabled_by_policy() -> bool {
@@ -94,7 +94,7 @@ pub fn stage(file: &Path, version: &str) -> Result<Staged> {
         let _ = fs::remove_file(&staging);
     }
     let executable = activation?;
-    if let Err(error) = crate::windows_login_item::repoint(&executable) {
+    if let Err(error) = crate::windows::login_item::repoint(&executable) {
         tracing::warn!(%error, "could not repoint Launch at login to the updated Hex");
     }
     if let Err(error) = repoint_start_menu_shortcut(&executable) {

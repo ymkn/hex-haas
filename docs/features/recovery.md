@@ -162,6 +162,26 @@ Checks in [suppression.rs](../../src/suppression.rs):
 Proof limit: reducer response to a supplied interruption, not macOS disabling
 and re-enabling a real tap.
 
+`recover.tap-health`: macOS can disable a tap (callback timeout, user input)
+or silently disable or invalidate it while Hex idles, after sleep, secure
+input, or an Accessibility change. The tap thread repairs all three taps (key,
+modifier, HID) and logs each repair to `process.log`.
+
+```ts
+disable event (timeout | user input)
+  -> re-enable every tap                    // "macOS disabled the event tap; re-enabled it"
+  -> recover.tap-interruption
+every 5 s on the tap thread
+  ├── tap disabled without notice -> re-enable  // "event tap was disabled without notice"
+  ├── tap invalidated or re-enable fails -> recreate  // "recreated event tap"
+  └── creation fails -> retry next check    // "could not recreate event tap", logged once
+  -> key or modifier gap -> recover.tap-interruption
+tap thread holds a user-initiated activity  // App Nap cannot throttle it; idle sleep allowed
+```
+Source: `TapSet::check`, `reenable_disabled_taps`, and `AppNapOptOut` in
+[suppression.rs](../../src/suppression.rs). No check: it needs macOS to disable
+a real tap. Proof limit: reported field failure (#612), not reproduced.
+
 The [2.1.11 release notes](../releases/2.1.11.md) describe the shipped navigation
 and missed-release fix; they are historical context, not a current-tree test.
 
@@ -190,6 +210,9 @@ saved microphone missing or will not open
   -> found -> switch back once capture is idle        // not during a pending start or tail
 MacBook lid closed (macOS)                            // built-in mic is off but still listed
   -> built-in mic is passed over like Hex Microphone  // AppleClamshellState, read per resolve
+  ├── headphone-jack mic (BuiltInHeadphoneInputDevice UID, or the built-in
+  │   input's emic/line data source) -> stays usable: listed, selectable,
+  │   followed as the default, and can stand in (#712)
   ├── default or saved mic is built in -> first other real input stands in
   │     -> Settings: "… is off while the lid is closed, so Hex listens to …"
   ├── no other input -> "the built-in microphone is off while the lid is closed"
@@ -213,9 +236,11 @@ Checks in [audio.rs](../../src/audio.rs):
 `startup_retry_recovers_metadata_and_audio_without_restarting`,
 `a_missing_selection_uses_the_default_until_it_returns`,
 `a_closed_lid_passes_over_the_built_in_microphone`,
+`only_the_internal_microphone_is_switched_off_by_the_lid`,
+`a_headphone_jack_microphone_is_used_with_the_lid_closed`,
 `where_the_os_reports_new_devices_only_a_failed_open_is_retried`,
 `only_an_idle_capture_lets_the_microphone_switch`;
-[dictation_audio.rs](../../src/dictation_audio.rs):
+[dictation/audio.rs](../../src/dictation/audio.rs):
 `recovered_owner_delivers_audio_and_accepts_a_new_capture`,
 `microphone_loss_keeps_only_a_programmatic_captures_delivered_audio`,
 `microphone_loss_with_only_pre_roll_keeps_nothing`,
@@ -228,7 +253,9 @@ through the running listener).
 Proof limit: retry policy and channel-backed replacement audio, not a physical
 device reconnect or full native mic-to-target result. The closed-lid cases are
 pure resolution and a fixture scene; the IOKit lid read and its notification
-have not been observed on a real MacBook closing and opening its lid.
+have not been observed on a real MacBook closing and opening its lid, and the
+headphone-jack UID and data-source codes come from CoreAudio's documented
+values, not a jack microphone observed with the lid closed.
 
 `recover.cold-open`: "Release when idle" opens for a gesture, not an idle retry
 loop. Each attempt must own its opening result.
@@ -252,12 +279,16 @@ ready stream fails while the press is held
   │     └── ready -> capture from the original press -> expected output
   └── after the threshold -> fail with "Microphone capture was interrupted"
 CoreAudio processor overload (Xrun) -> warn and keep the stream // not a failure
+gap in the microphone timeline (any OS, warm or cold)
+  ├── 50–250 ms -> filled with silence, capture continues // logged, #619
+  └── over 250 ms -> fail as a capture discontinuity
 ```
-Checks in [dictation_audio.rs](../../src/dictation_audio.rs):
+Checks in [dictation/audio.rs](../../src/dictation/audio.rs):
 `cold_capture_restart_rejects_late_open_results_and_closes_after_finish`,
 `enabling_warm_microphone_preserves_pending_capture_and_recovers_after_cancellation`,
 `cold_stream_failure_before_hold_threshold_reopens_for_the_same_press`,
-`cold_stream_failure_after_hold_threshold_still_fails_the_capture`; in
+`cold_stream_failure_after_hold_threshold_still_fails_the_capture`,
+`a_short_microphone_gap_is_filled_with_silence_instead_of_failing_the_capture`; in
 [audio.rs](../../src/audio.rs): `overload_glitches_do_not_interrupt_the_stream`,
 `cold_open_retries_the_selected_microphone_before_falling_back`.
 
@@ -279,6 +310,16 @@ for their device, or a physical cold open after idle.
 Proof limit: controlled asynchronous opener and capture ownership, not onset
 latency or the macOS microphone indicator.
 
+**Fixed after dev ([#619](https://github.com/anomalyco/hex/issues/619)):** a
+Bluetooth headset's stream skipped about 130–145 ms of audio soon after it
+started, and every gap over 50 ms failed the held capture with the error tone.
+Gaps up to 250 ms are now filled with silence on the timeline, so the capture
+(and its pre-roll ring) keeps going; longer gaps still fail it. The Annotate
+sink still records the gap itself. Not verified on the reporter's headset; the
+report that a Bluetooth device was used with `avoid_bluetooth_microphone` on
+was not reproduced (a saved Bluetooth microphone, or no other usable input,
+keeps it by design).
+
 ### Fence Late Capture Notifications
 
 `recover.late-notification`: keeping a failure visible is correct until it
@@ -290,7 +331,7 @@ start capture B -> new generation                     // fences obsolete notific
   ├── late failure/ready A -> cannot finish, fail, or activate B
   └── B's own audio -> finish B -> expected output
 ```
-Checks in [dictation_audio.rs](../../src/dictation_audio.rs):
+Checks in [dictation/audio.rs](../../src/dictation/audio.rs):
 `capture_failures_survive_terminal_controls_but_not_a_new_capture`,
 `boundary_drain_preserves_finish_failure_but_does_not_fail_a_new_capture`.
 Proof limit: error delivery across capture boundaries, not arbitrary
@@ -322,7 +363,7 @@ microphone timeline
 
 command recovery -> next fresh dictation still works  // not just an emptied queue
 ```
-Sources: [dictation_audio.rs](../../src/dictation_audio.rs),
+Sources: [dictation/audio.rs](../../src/dictation/audio.rs),
 `overflow_recognition` and `forward_recognition`;
 [recognition.rs](../../src/recognition.rs), discontinuity handling.
 Proof limit: source-backed contract only. A whole-path native stall check must
@@ -362,7 +403,7 @@ Hex crashes -> systemd restart-on-failure (no window) OR explicit hex start
 
 hex quit / Quit Hex -> drain accepted work -> release microphone and hotkeys -> exit 0
 ```
-Sources/checks: [linux_app.rs](../../src/linux_app.rs),
+Sources/checks: [linux/app.rs](../../src/linux/app.rs),
 [Linux CI](../../.github/workflows/check-linux.yml),
 [test-wayland-paste.sh](../../scripts/test-wayland-paste.sh), and
 [test-linux-service.py](../../scripts/test-linux-service.py).
@@ -422,12 +463,12 @@ restoring it. Verified against xdg-desktop-portal-kde's `BindShortcuts` and
 Plasma session.
 
 
-Checks in [linux_input.rs](../../src/linux_input.rs):
+Checks in [linux/input.rs](../../src/linux/input.rs):
 `escape_is_wanted_only_while_something_records`,
 `escape_grab_conflict_is_not_fatal`, `non_conflict_grab_errors_stay_fatal`,
 and `escape_warning_is_logged_once_per_episode_and_clears_on_recovery`.
 `listener_warning_is_nonfatal_and_round_trips_in_status` in
-[linux_app.rs](../../src/linux_app.rs) checks status publication, warning
+[linux/app.rs](../../src/linux/app.rs) checks status publication, warning
 recovery, and listener shutdown. The ignored X11 checks
 `conflicted_escape_still_dictates_without_cancel`,
 `modified_escape_conflict_keeps_plain_escape_cancel`, and

@@ -29,6 +29,9 @@ pub struct Paster {
 pub enum PasteMode {
     Continue,
     Standalone,
+    /// Labs › Copy dictation only: the text goes to the clipboard as an
+    /// ordinary entry and nothing is pasted, typed, or restored.
+    CopyOnly,
 }
 
 struct PreparedClipboard {
@@ -62,6 +65,15 @@ impl ClipboardRestore {
         }
         self.last_change_count = Some(inserted_change_count);
         self.generation
+    }
+
+    /// Labs › Keep dictation on clipboard: the paste stays on the clipboard,
+    /// so no earlier snapshot may come back and any pending restore stands
+    /// down.
+    fn keep(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        self.original = None;
+        self.last_change_count = None;
     }
 }
 
@@ -219,18 +231,21 @@ impl Paster {
         mode: PasteMode,
         commit: impl FnOnce() -> bool,
     ) -> Result<()> {
+        if matches!(mode, PasteMode::CopyOnly) {
+            return self.copy_only(text, commit);
+        }
         let revision = self.activity.revision();
-        let text = self
-            .continuation
-            .as_ref()
-            .filter(|continuation| {
-                !matches!(mode, PasteMode::Standalone) && continuation.revision == revision
-            })
-            .map_or_else(
-                || text.to_string(),
-                |continuation| join(&continuation.inserted, text),
-            );
-        if crate::context::frontmost_bundle_path().is_some_and(|bundle| has_clipboard_race(&bundle))
+        let continuation = self.continuation.as_ref().filter(|continuation| {
+            !matches!(mode, PasteMode::Standalone) && continuation.revision == revision
+        });
+        let text = match continuation {
+            Some(continuation) => join(&continuation.inserted, text),
+            // Read as the paste commits, so the toggle applies at once.
+            None if crate::labs::smart_spacing() => with_smart_spacing(text),
+            None => text.to_string(),
+        };
+        if crate::dictation::context::frontmost_bundle_path()
+            .is_some_and(|bundle| has_clipboard_race(&bundle))
         {
             commit_prepared_paste(
                 || Ok(()),
@@ -240,7 +255,17 @@ impl Paster {
                         self.continuation = None;
                     }
                     tracing::debug!("typing instead of pasting into Chromium 155 or 156");
-                    keyboard::type_text(&text)
+                    keyboard::type_text(&text)?;
+                    if crate::labs::keep_on_clipboard() {
+                        self.clipboard_restore
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .keep();
+                        if let Err(error) = write_clipboard_text(&self.clipboard, &text, false) {
+                            tracing::warn!(%error, "could not leave the dictation on the clipboard");
+                        }
+                    }
+                    Ok(())
                 },
             )?;
         } else {
@@ -251,6 +276,25 @@ impl Paster {
             inserted: text,
         });
         Ok(())
+    }
+
+    /// Leaves `text` on the clipboard for the user to paste: no ⌘V, no typed
+    /// text, and no restore. A pending restore stands down and no earlier
+    /// snapshot comes back, and the next paste starts a new continuation.
+    fn copy_only(&mut self, text: &str, commit: impl FnOnce() -> bool) -> Result<()> {
+        commit_prepared_paste(
+            || Ok(()),
+            commit,
+            |()| {
+                self.continuation = None;
+                self.prepared_clipboard = None;
+                self.clipboard_restore
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .keep();
+                write_clipboard_text(&self.clipboard, text, false)
+            },
+        )
     }
 
     fn paste_through_clipboard(
@@ -294,14 +338,24 @@ impl Paster {
                 if matches!(mode, PasteMode::Standalone) {
                     self.continuation = None;
                 }
-                if let Err(error) = write_clipboard_text(&self.clipboard, text) {
+                // Read as the paste commits, so the toggle applies at once.
+                let keep = crate::labs::keep_on_clipboard();
+                if let Err(error) = write_clipboard_text(&self.clipboard, text, !keep) {
                     if let Err(restore_error) = restore_clipboard(&self.clipboard, &previous) {
                         tracing::error!(%restore_error, "could not recover the clipboard after a failed write");
                     }
                     return Err(error);
                 }
+                if keep {
+                    restore.keep();
+                    return Ok(None);
+                }
                 let inserted_change_count = self.clipboard.changeCount();
-                Ok(restore.register(previous, previous_change_count, inserted_change_count))
+                Ok(Some(restore.register(
+                    previous,
+                    previous_change_count,
+                    inserted_change_count,
+                )))
             },
         )?;
 
@@ -309,6 +363,9 @@ impl Paster {
         complete_paste(
             || keyboard::post_command('v'),
             move || {
+                let Some(generation) = generation else {
+                    return;
+                };
                 thread::spawn(move || {
                     thread::sleep(Duration::from_millis(500));
                     let mut restore = clipboard_restore
@@ -503,20 +560,23 @@ fn should_preserve_flavor(flags: u32, has_authoritative_flavor: bool) -> bool {
 }
 
 /// nspasteboard.org markers asking clipboard managers not to record a write.
-/// The transcript is only on the clipboard for the duration of the paste.
+/// The transcript is only on the clipboard for the duration of the paste,
+/// unless Labs › Keep dictation on clipboard leaves it there (`transient`
+/// false), when it is an ordinary clipboard entry.
 const CLIPBOARD_MANAGER_MARKERS: [&str; 2] = [
     "org.nspasteboard.TransientType",
     "org.nspasteboard.AutoGeneratedType",
 ];
 
-fn write_clipboard_text(clipboard: &NSPasteboard, text: &str) -> Result<()> {
+fn write_clipboard_text(clipboard: &NSPasteboard, text: &str, transient: bool) -> Result<()> {
     // One item carrying the text and its markers, published by a single write,
     // so a polling clipboard manager never observes the text without them.
     let item = NSPasteboardItem::new();
     let marker_data = NSData::new();
-    let markers_written = CLIPBOARD_MANAGER_MARKERS
-        .iter()
-        .all(|marker| item.setData_forType(&marker_data, &NSString::from_str(marker)));
+    let markers_written = !transient
+        || CLIPBOARD_MANAGER_MARKERS
+            .iter()
+            .all(|marker| item.setData_forType(&marker_data, &NSString::from_str(marker)));
     let text_written =
         item.setString_forType(&NSString::from_str(text), unsafe { NSPasteboardTypeString });
     if !(markers_written && text_written) {
@@ -662,6 +722,37 @@ fn join(previous: &str, next: &str) -> String {
         next.insert(0, ' ');
     }
     next
+}
+
+/// Labs › Smart spacing: one leading space when the character before the
+/// focused app's cursor asks for it. A selection, or a cursor the app
+/// doesn't expose through Accessibility, leaves the text unchanged.
+fn with_smart_spacing(text: &str) -> String {
+    let previous = crate::dictation::context::frontmost_pid()
+        .and_then(crate::accessibility::char_before_caret);
+    match previous {
+        Some(previous) if needs_leading_space(previous, text) => format!(" {text}"),
+        _ => text.to_string(),
+    }
+}
+
+/// Whether `text` pasted right after `previous` needs a space between:
+/// after a letter, digit, sentence punctuation, or closing bracket or
+/// quote, never after whitespace, opening punctuation, or symbols such as
+/// `@` and `$`, and never before text that starts with whitespace or
+/// closing punctuation.
+fn needs_leading_space(previous: char, text: &str) -> bool {
+    let Some(first) = text.chars().next() else {
+        return false;
+    };
+    if first.is_whitespace() || is_closing(first) {
+        return false;
+    }
+    previous.is_alphanumeric()
+        || matches!(
+            previous,
+            '.' | ',' | ';' | ':' | '!' | '?' | '…' | ')' | ']' | '}' | '”' | '’' | '»'
+        )
 }
 
 fn ends_sentence(text: &str) -> bool {
@@ -955,6 +1046,22 @@ mod tests {
     }
 
     #[test]
+    fn smart_spacing_adds_a_space_only_where_one_belongs() {
+        for previous in ['a', 'Z', '7', '.', '?', ')', '”'] {
+            assert!(needs_leading_space(previous, "in progress"), "{previous:?}");
+        }
+        for previous in ['@', '$', '#', '/', '-', '(', '“', ' ', '\n', '\t'] {
+            assert!(
+                !needs_leading_space(previous, "in progress"),
+                "{previous:?}"
+            );
+        }
+        assert!(!needs_leading_space('a', ""));
+        assert!(!needs_leading_space('a', " already spaced"));
+        assert!(!needs_leading_space('a', ", then more"));
+    }
+
+    #[test]
     fn preserves_likely_proper_nouns_mid_sentence() {
         assert_eq!(join("Open", "GitHub next."), " GitHub next.");
         assert_eq!(join("Message", "Slack now."), " Slack now.");
@@ -984,6 +1091,129 @@ mod tests {
         assert_ne!(first, second);
         assert_eq!(restore.original, Some(original));
         assert_eq!(restore.last_change_count, Some(14));
+    }
+
+    #[test]
+    fn a_kept_paste_leaves_nothing_to_restore() {
+        let mut restore = ClipboardRestore::default();
+        let original = ClipboardSnapshot {
+            items: vec![vec![ClipboardFlavor {
+                data_type: "public.utf8-plain-text".into(),
+                data: b"before".to_vec(),
+                flags: 0,
+            }]],
+        };
+        let pending = restore.register(original.clone(), 10, 12);
+
+        restore.keep();
+
+        assert_ne!(
+            restore.generation, pending,
+            "the pending restore stands down"
+        );
+        assert_eq!(restore.original, None);
+        assert_eq!(restore.last_change_count, None);
+        // A later restoring paste snapshots what is there now, not `original`.
+        let now = ClipboardSnapshot {
+            items: vec![vec![ClipboardFlavor {
+                data_type: "public.utf8-plain-text".into(),
+                data: b"kept dictation".to_vec(),
+                flags: 0,
+            }]],
+        };
+        restore.register(now.clone(), 12, 14);
+        assert_eq!(restore.original, Some(now));
+    }
+
+    #[test]
+    fn a_kept_transcript_is_an_ordinary_clipboard_entry() {
+        let _test = PASTEBOARD_TEST.lock().unwrap();
+        let clipboard = NSPasteboard::pasteboardWithUniqueName();
+
+        write_clipboard_text(&clipboard, "kept text", false).unwrap();
+
+        let snapshot = capture_clipboard(&clipboard).unwrap();
+        let types = snapshot.items[0]
+            .iter()
+            .map(|flavor| flavor.data_type.as_str())
+            .collect::<Vec<_>>();
+        for marker in CLIPBOARD_MANAGER_MARKERS {
+            assert!(!types.contains(&marker), "{marker} in {types:?}");
+        }
+        assert_eq!(
+            clipboard
+                .stringForType(unsafe { NSPasteboardTypeString })
+                .unwrap()
+                .to_string(),
+            "kept text"
+        );
+    }
+
+    #[test]
+    fn a_copy_only_dictation_is_left_on_the_clipboard_with_nothing_to_restore() {
+        let _test = PASTEBOARD_TEST.lock().unwrap();
+        let clipboard = NSPasteboard::pasteboardWithUniqueName();
+        write_clipboard_text(&clipboard, "before", false).unwrap();
+        let mut paster = Paster {
+            clipboard: clipboard.clone(),
+            activity: InputActivity::default(),
+            continuation: Some(Continuation {
+                revision: 0,
+                inserted: "earlier".into(),
+            }),
+            clipboard_restore: Arc::new(Mutex::new(ClipboardRestore::default())),
+            prepared_clipboard: None,
+        };
+        let pending = paster.clipboard_restore.lock().unwrap().register(
+            capture_clipboard(&clipboard).unwrap(),
+            1,
+            2,
+        );
+
+        // A rejected commit changes nothing.
+        assert!(
+            paster
+                .paste("dictated text", PasteMode::CopyOnly, || false)
+                .is_err()
+        );
+        assert_eq!(
+            clipboard
+                .stringForType(unsafe { NSPasteboardTypeString })
+                .unwrap()
+                .to_string(),
+            "before"
+        );
+
+        // Returns without posting ⌘V or typing: only the clipboard changes.
+        paster
+            .paste("dictated text", PasteMode::CopyOnly, || true)
+            .unwrap();
+
+        assert_eq!(
+            clipboard
+                .stringForType(unsafe { NSPasteboardTypeString })
+                .unwrap()
+                .to_string(),
+            "dictated text",
+            "the transcript is not joined to an earlier paste"
+        );
+        let snapshot = capture_clipboard(&clipboard).unwrap();
+        let types = snapshot.items[0]
+            .iter()
+            .map(|flavor| flavor.data_type.as_str())
+            .collect::<Vec<_>>();
+        for marker in CLIPBOARD_MANAGER_MARKERS {
+            assert!(!types.contains(&marker), "{marker} in {types:?}");
+        }
+        let restore = paster.clipboard_restore.lock().unwrap();
+        assert_ne!(
+            restore.generation, pending,
+            "the pending restore stands down"
+        );
+        assert_eq!(restore.original, None);
+        assert_eq!(restore.last_change_count, None);
+        drop(restore);
+        assert!(paster.continuation.is_none());
     }
 
     #[test]
@@ -1059,7 +1289,7 @@ mod tests {
         let _test = PASTEBOARD_TEST.lock().unwrap();
         let clipboard = NSPasteboard::pasteboardWithUniqueName();
 
-        write_clipboard_text(&clipboard, "dictated text").unwrap();
+        write_clipboard_text(&clipboard, "dictated text", true).unwrap();
 
         let snapshot = capture_clipboard(&clipboard).unwrap();
         assert_eq!(snapshot.items.len(), 1);

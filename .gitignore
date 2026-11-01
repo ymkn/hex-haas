@@ -6,11 +6,13 @@
 /.local-corpus/
 /dist
 /.wrangler
+.wrangler/
 node_modules/
 __pycache__/
 *.py[cod]
 *.rmeta
 /ios/*DerivedData
+/ios/build
 /ios/HEXMobile.xcodeproj
 /result
 /result-*

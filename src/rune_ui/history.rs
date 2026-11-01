@@ -9,7 +9,7 @@ use super::controls::{ButtonKind, Paint, button};
 use super::list_detail::{self as ld, Item};
 use super::lists::{error_panel, section_label};
 use super::{Menu, Ui};
-use crate::desktop_i18n::{event_age, tr, tr_fill, tr_named};
+use crate::desktop::i18n::{event_age, tr, tr_fill, tr_named};
 use crate::history::{History, HistoryEntry, HistoryKind, HistoryRetention};
 
 #[derive(Default)]
@@ -91,7 +91,7 @@ impl HistoryPane {
             "The deploy failed because the cache key changed.",
             Some("Slack"),
         );
-        rewritten.processing = Some(crate::events::DictationProcessing {
+        rewritten.processing = Some(crate::desktop::events::DictationProcessing {
             profile: "Chat".into(),
             latency_ms: 910,
             fallback: None,

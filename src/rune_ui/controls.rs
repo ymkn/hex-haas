@@ -1,15 +1,15 @@
 //! Settings controls on `rune-kit`, themed with OpenCode's design language
 //! (`rune-theme-opencode`): the card, row, switch, segmented control,
-//! select-style menus, buttons, keycaps, note, and text field. Colours,
+//! select-style menus, buttons, keycaps, and note. Colours,
 //! type, radii, elevation, and motion come from the kit's tokens.
 
 use rune::{
-    Color, Edge, El, LoopSpec, Shadow, Spring, SpringPair, TextEdit, TextStyle, Transition, Tx,
-    col, el, row, text,
+    Color, Edge, El, LoopSpec, Shadow, Spring, SpringPair, TextStyle, Transition, Tx, col, el, row,
+    text,
 };
 use rune_kit::{
     Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit, Menu, MenuItem,
-    Placement, SegmentedControl, Select, SelectAppearance, Switch, TextInput,
+    Placement, SegmentedControl, Select, SelectAppearance, Switch,
 };
 
 use super::Ui;
@@ -284,6 +284,19 @@ pub(super) fn icon_row(
     description: Option<&str>,
     control: El,
 ) -> El {
+    icon_row_tagged(p, key, glyph, title, None, description, control)
+}
+
+/// An [`icon_row`] with a small tag after its title.
+pub(super) fn icon_row_tagged(
+    p: Paint,
+    key: &str,
+    glyph: &'static rune::Icon,
+    title: &str,
+    tag: Option<El>,
+    description: Option<&str>,
+    control: El,
+) -> El {
     let description = description.map(|copy| {
         text(copy)
             .key("description")
@@ -291,7 +304,7 @@ pub(super) fn icon_row(
             .color(p.muted())
             .wrap()
     });
-    copy_row(p, key, Some(glyph), title, description, control, false)
+    copy_row_tagged(p, key, Some(glyph), title, tag, description, control, false)
 }
 
 /// An [`icon_row`] whose description has its own colour (errors, progress).
@@ -354,6 +367,21 @@ pub(super) fn copy_row(
     control: El,
     compact: bool,
 ) -> El {
+    copy_row_tagged(p, key, glyph, title, None, description, control, compact)
+}
+
+/// A [`copy_row`] with a small tag after its title.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn copy_row_tagged(
+    p: Paint,
+    key: &str,
+    glyph: Option<&'static rune::Icon>,
+    title: &str,
+    tag: Option<El>,
+    description: Option<El>,
+    control: El,
+    compact: bool,
+) -> El {
     let m = METRICS;
     let height = if description.is_some() && !compact {
         m.row_h_described
@@ -366,7 +394,15 @@ pub(super) fn copy_row(
         .min_w(COPY_MIN_WIDTH)
         .grow(1.0)
         .gap(if compact { 0.0 } else { 2.0 })
-        .child(text(title).key("label").font(p.k.ty.ui).color(p.text()))
+        .child(match tag {
+            None => text(title).key("label").font(p.k.ty.ui).color(p.text()),
+            Some(tag) => row()
+                .key("title")
+                .gap(6.0)
+                .center_y()
+                .child(text(title).key("label").font(p.k.ty.ui).color(p.text()))
+                .child(tag),
+        })
         .children(description);
     row()
         .key(key)
@@ -973,23 +1009,6 @@ pub(super) fn note(key: &str, copy: &str, color: Color) -> El {
             .wrap()
             .grow(1.0),
     )
-}
-
-pub(super) fn text_field(
-    p: Paint,
-    key: &str,
-    edit: &TextEdit,
-    placeholder: &str,
-    access: fn(&mut Ui) -> &mut TextEdit,
-    submit: fn(&mut Ui, &mut Tx),
-) -> El {
-    TextInput::new(edit)
-        .placeholder(placeholder)
-        .width(Some(280.0))
-        .on_edit(access)
-        .on_submit(submit)
-        .build(p.k)
-        .key(key)
 }
 
 /// The keyboard highlight in a search popover's results: Up and Down move

@@ -93,7 +93,6 @@ pub fn opencode_workspace() -> Result<PathBuf> {
     Ok(support_dir()?.join("opencode"))
 }
 
-#[cfg(target_os = "macos")]
 pub fn local_api_discovery_file() -> Result<PathBuf> {
     Ok(support_dir()?.join("local-api.json"))
 }
@@ -106,13 +105,8 @@ pub fn personal_commands_workspace() -> Result<PathBuf> {
     user_config_dir()
 }
 
-/// The per-user `experiments` file (`crate::experiments`).
-pub fn experiments_file() -> Result<PathBuf> {
-    Ok(user_config_dir()?.join("experiments"))
-}
-
-/// The per-user config folder holding `hex.config.ts` and `experiments` on
-/// every OS: `~/.config/hex`, `~/.config/hex-haas` for this fork, or
+/// The per-user config folder holding `hex.config.ts` on every OS:
+/// `~/.config/hex`, `~/.config/hex-haas` for this fork, or
 /// `~/.config/hex-test` for `Hex Test.app`.
 fn user_config_dir() -> Result<PathBuf> {
     let home = dirs::home_dir().ok_or_else(|| eyre!("home directory is unavailable"))?;
@@ -132,7 +126,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn experiments_live_beside_hex_config_ts_in_each_builds_own_folder() {
+    fn each_build_has_its_own_config_folder() {
         let home = std::path::Path::new("/Users/kit");
         assert_eq!(
             user_config_dir_in(home, false),
@@ -142,15 +136,12 @@ mod tests {
             user_config_dir_in(home, true),
             home.join(".config").join("hex-test")
         );
-        let file = experiments_file().unwrap();
-        assert_eq!(file.parent(), personal_commands_workspace().ok().as_deref());
-        let home = dirs::home_dir().unwrap();
-        let expected = if is_haas_build() {
-            home.join(".config").join("hex-haas")
-        } else {
-            user_config_dir_in(&home, is_macos_test_build())
-        };
-        assert_eq!(file, expected.join("experiments"));
+        let workspace = personal_commands_workspace();
+        assert_eq!(
+            workspace.unwrap(),
+            user_config_dir().unwrap(),
+            "hex.config.ts and this fork's config folder move together"
+        );
     }
 
     #[test]
@@ -159,6 +150,12 @@ mod tests {
             assert_eq!(
                 support_dir().unwrap(),
                 dirs::data_dir().unwrap().join("hex-haas")
+            );
+        }
+        if is_haas_build() && std::env::var_os("HEX_USER_CONFIG_DIR").is_none() {
+            assert_eq!(
+                personal_commands_workspace().unwrap(),
+                dirs::home_dir().unwrap().join(".config").join("hex-haas")
             );
         }
     }

@@ -1,5 +1,5 @@
 //! Pieces for the next onboarding, and the options built from them as
-//! playground stories (only with the `playground` experiment; the shipping
+//! playground stories (only with Labs; the shipping
 //! tour in [`onboarding`](super::onboarding) doesn't use them yet).
 //!
 //! - [`gpu_stage`] & [`hud_stage`]: flat Rune UI + Hex's real `Dot scope`
@@ -23,12 +23,14 @@
 //! - [`landing`]: shared typography, zero-bounce transitions, and `"Hex is ready"`.
 
 mod cards;
+mod dictated;
 mod field_text;
 mod first_run;
 mod fixture;
 mod flight;
 mod flows;
 mod game;
+pub(crate) mod game_fx;
 pub(crate) mod gpu_stage;
 mod hex_meter;
 mod hud_stage;

@@ -22,23 +22,27 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2_app_kit::{NSEvent, NSEventMask, NSEventType};
 
-use super::meetings::{Meeting, Status, Transcript, Turn};
+use super::meetings::Meeting;
+use super::meetings_host::MeetingFeed;
 use super::platform::{
-    CalendarRequest, CalendarView, DemoRequest, HudDemo, HudLab, MeetingRequest, NativeHost,
-    NotesAvailability, PlatformRequest, PlatformState, UpcomingMeeting,
+    CalendarRequest, CalendarView, HudDemo, HudLab, MeetingRequest, NativeHost, NotesAvailability,
+    PlatformRequest, PlatformState, UpcomingMeeting, poll_voice_filter, voice_filter_request,
 };
+use super::practice::PracticeFeed;
 use super::settings::Chord;
 use super::{HostState, ServiceView};
 use crate::app_settings::{
     CalendarSettings, HotkeyBinding, HotkeyKey, HotkeyModifiers, modifiers_from_flags,
 };
 use crate::calendar::{AccessAnswer, CalendarAccess, CalendarSnapshot};
-use crate::desktop_host::DesktopAction;
-use crate::desktop_i18n::tr;
-use crate::login_item::{LoginItemFailure, LoginItemRequest, LoginItemWorker};
+use crate::desktop::host::DesktopAction;
+use crate::desktop::i18n::tr;
+use crate::desktop::login_item::{LoginItemFailure, LoginItemRequest, LoginItemWorker};
+use crate::desktop::onboarding::{
+    Input, PermissionAction, PermissionKind, PermissionState, StalePermissionTracker,
+};
 use crate::macos_rune::RuntimeHandle;
 pub(super) use crate::macos_rune::{Request, ShortcutTarget};
-use crate::onboarding::{Input, Observation, PermissionAction, PermissionKind, PermissionState};
 
 /// The window saves a recorded shortcut; the listener follows `settings.json`.
 pub(super) const HOST_SAVES_SHORTCUTS: bool = false;
@@ -163,7 +167,10 @@ impl ChordWatch {
     fn start(wake: Arc<dyn Fn() + Send + Sync>) -> Result<Self> {
         crate::app_settings::set_hotkey_capture_active(true);
         let (sender, results) = mpsc::channel();
-        let capture = RefCell::new(ChordCapture::default());
+        // Labs › Sided modifier chords is read once, as recording starts.
+        let capture = RefCell::new(ChordCapture::with_sides(
+            crate::labs::sided_modifier_chords(),
+        ));
         let block = RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
             // SAFETY: AppKit passes a live event for the handler's duration.
             let event_ref = unsafe { event.as_ref() };
@@ -181,11 +188,17 @@ impl ChordWatch {
                     )
                 }
                 NSEventType::FlagsChanged => capture.borrow_mut().flags_changed(flags),
+                // Mouse buttons record only with Labs › Mouse shortcuts on;
+                // otherwise the click reaches the window as usual.
                 NSEventType::LeftMouseDown
                 | NSEventType::RightMouseDown
-                | NSEventType::OtherMouseDown => capture
-                    .borrow_mut()
-                    .mouse_down(event_ref.buttonNumber(), flags),
+                | NSEventType::OtherMouseDown
+                    if crate::labs::mouse_shortcuts() =>
+                {
+                    capture
+                        .borrow_mut()
+                        .mouse_down(event_ref.buttonNumber(), flags)
+                }
                 // Key releases still reach the window so its key state
                 // stays balanced.
                 _ => return event.as_ptr(),
@@ -229,15 +242,26 @@ impl Drop for ChordWatch {
 
 /// Turns key and modifier events into a chord: a key with its held
 /// modifiers, or the most modifier keys held at once when they are all
-/// released without a key, with the sides `recorded_sides` keeps.
+/// released without a key, with the sides `recorded_sides` keeps (or,
+/// with Labs › Sided modifier chords on, the side each was pressed on).
 #[derive(Default)]
 struct ChordCapture {
     peak: HotkeyModifiers,
     /// A key went down with these modifiers; their release records nothing.
     keyed: bool,
+    /// A modifier-only chord keeps every modifier's side, such as
+    /// Right ⌘ + Right ⌥, instead of widening each to either side.
+    sided: bool,
 }
 
 impl ChordCapture {
+    fn with_sides(sided: bool) -> Self {
+        Self {
+            sided,
+            ..Self::default()
+        }
+    }
+
     fn mouse_down(&mut self, button: isize, flags: u64) -> Option<Chord> {
         let key = u16::try_from(button).ok().and_then(HotkeyKey::mouse)?;
         let mut modifiers = modifiers_from_flags(flags).without_side_constraints();
@@ -284,7 +308,12 @@ impl ChordCapture {
 
     /// While modifiers are down, reports the ones their release would record.
     fn flags_changed(&mut self, flags: u64) -> Option<Chord> {
-        let current = modifiers_from_flags(flags).recorded_sides();
+        let held = modifiers_from_flags(flags);
+        let current = if self.sided {
+            held
+        } else {
+            held.recorded_sides()
+        };
         if !current.is_empty() {
             if self.keyed {
                 return None;
@@ -469,13 +498,23 @@ pub(super) fn set_launch_at_login(_: bool) -> Result<bool, String> {
     Err("Launch at login goes through the macOS host".into())
 }
 
-pub(super) fn native_host() -> Box<dyn NativeHost> {
-    Box::new(MacHost::new())
+pub(super) fn native_host(wake: Arc<dyn Fn() + Send + Sync>) -> Box<dyn NativeHost> {
+    Box::new(MacHost::new(wake))
+}
+
+fn stale_slot(kind: PermissionKind) -> Option<usize> {
+    match kind {
+        PermissionKind::Accessibility => Some(0),
+        PermissionKind::SystemAudio => Some(1),
+        PermissionKind::ScreenRecording => Some(2),
+        PermissionKind::Microphone => None,
+    }
 }
 
 /// Performs the panes' OS-only requests and refreshes their state once a
 /// second (permission checks and the driver status are not free per frame).
 struct MacHost {
+    wake: Arc<dyn Fn() + Send + Sync>,
     login: Option<LoginItemWorker>,
     login_checking: bool,
     folder_error: Option<String>,
@@ -484,18 +523,27 @@ struct MacHost {
     meetings: MeetingFeed,
     practice: Option<PracticeFeed>,
     /// The meetings folder panel, while it is open.
-    folder_choice: Option<crate::file_dialog::Pending>,
+    folder_choice: Option<crate::desktop::file_dialog::Pending>,
     calendar: CalendarFeed,
+    /// Tracks System Settings return timing for Accessibility, System Audio,
+    /// and Screen Recording.
+    stale: [StalePermissionTracker; 3],
+    /// In-flight `"Still grey? Fix it"` resets, indexed by [`stale_slot`].
+    resetting: [bool; 3],
+    reset_tx: mpsc::Sender<PermissionKind>,
+    reset_rx: Receiver<PermissionKind>,
     #[cfg(hex_capture)]
     scrawl: ScrawlHost,
 }
 
 impl MacHost {
-    fn new() -> Self {
+    fn new(wake: Arc<dyn Fn() + Send + Sync>) -> Self {
         let login = LoginItemWorker::new()
             .inspect_err(|error| tracing::warn!(%error, "login item worker is unavailable"))
             .ok();
+        let (reset_tx, reset_rx) = mpsc::channel();
         let mut host = Self {
+            wake,
             login,
             login_checking: false,
             folder_error: None,
@@ -505,11 +553,56 @@ impl MacHost {
             practice: None,
             folder_choice: None,
             calendar: CalendarFeed::default(),
+            stale: Default::default(),
+            resetting: [false; 3],
+            reset_tx,
+            reset_rx,
             #[cfg(hex_capture)]
             scrawl: ScrawlHost::default(),
         };
         let _ = host.request_login(LoginItemRequest::Status);
         host
+    }
+
+    fn note_permission_asked(&mut self, kind: PermissionKind) {
+        if let Some(slot) = stale_slot(kind) {
+            self.stale[slot].note_asked(Instant::now());
+        }
+    }
+
+    fn finish_permission_reset(&mut self, kind: PermissionKind) {
+        if let Some(slot) = stale_slot(kind) {
+            self.resetting[slot] = false;
+            self.stale[slot].note_asked(Instant::now());
+        }
+        match kind {
+            PermissionKind::Accessibility => {
+                if crate::desktop::onboarding::status_with_transcription_model(true).accessibility
+                    != PermissionState::Ready
+                {
+                    let _ = crate::desktop::permission_guide::prompt_accessibility_trust();
+                    crate::desktop::permission_guide::show(PermissionKind::Accessibility);
+                }
+            }
+            PermissionKind::SystemAudio => {
+                crate::meeting::reset_system_audio_request();
+                if !crate::meeting::system_audio_ready()
+                    && !crate::meeting::request_system_audio_access()
+                {
+                    crate::desktop::permission_guide::show(PermissionKind::SystemAudio);
+                }
+            }
+            PermissionKind::ScreenRecording => {
+                #[cfg(hex_capture)]
+                crate::capture_host::invalidate_screen_access();
+                if !crate::meeting::screen_recording_permitted() {
+                    let _ = crate::meeting::request_screen_recording();
+                    crate::desktop::permission_guide::show(PermissionKind::ScreenRecording);
+                }
+            }
+            PermissionKind::Microphone => {}
+        }
+        self.refresh_at = Instant::now();
     }
 
     fn request_login(&mut self, request: LoginItemRequest) -> Result<(), String> {
@@ -575,7 +668,7 @@ impl NativeHost for MacHost {
     fn send(&mut self, request: PlatformRequest) -> Result<(), String> {
         match request {
             PlatformRequest::Permission(PermissionAction::RequestMicrophone) => {
-                crate::onboarding::request_microphone();
+                crate::desktop::onboarding::request_microphone();
             }
             PlatformRequest::Permission(PermissionAction::ShowGuide(kind)) => {
                 // Screen Recording may have been granted since the last
@@ -584,20 +677,39 @@ impl NativeHost for MacHost {
                     || crate::capture_host::screen_access()
                         == crate::capture_host::ScreenAccess::Off
                 {
-                    crate::permission_guide::show(kind);
+                    self.note_permission_asked(kind);
+                    crate::desktop::permission_guide::show(kind);
+                }
+            }
+            PlatformRequest::Permission(PermissionAction::ResetAndPrompt(kind)) => {
+                if let Some(slot) = stale_slot(kind)
+                    && !self.resetting[slot]
+                {
+                    self.resetting[slot] = true;
+                    self.stale[slot].note_asked(Instant::now());
+                    let tx = self.reset_tx.clone();
+                    let wake = self.wake.clone();
+                    crate::desktop::permission_guide::reset_and_reopen_async(kind, move |done| {
+                        let _ = tx.send(done);
+                        wake();
+                    });
                 }
             }
             PlatformRequest::Permission(PermissionAction::Restart) => {
-                if !crate::onboarding::spawn_relaunch() {
+                if !crate::desktop::onboarding::spawn_relaunch() {
                     return Err("could not restart Hex".into());
                 }
                 crate::macos_rune::quit();
             }
             PlatformRequest::SystemAudio => {
+                self.note_permission_asked(PermissionKind::SystemAudio);
+                crate::desktop::permission_guide::clear_legacy_entries_async(
+                    PermissionKind::SystemAudio,
+                );
                 // macOS prompts once; after that the switch is in System
                 // Settings, with the guide beside it.
                 if !crate::meeting::request_system_audio_access() {
-                    crate::permission_guide::show(PermissionKind::SystemAudio);
+                    crate::desktop::permission_guide::show(PermissionKind::SystemAudio);
                 }
             }
             PlatformRequest::SetLaunchAtLogin(enabled) => {
@@ -606,10 +718,10 @@ impl NativeHost for MacHost {
             PlatformRequest::OpenLoginItemSettings => {
                 let _ = self.request_login(LoginItemRequest::OpenSettings);
             }
-            PlatformRequest::InstallHexMicrophone => crate::hex_microphone::install_driver_async(),
-            PlatformRequest::UninstallHexMicrophone => {
-                crate::hex_microphone::uninstall_driver_async()
-            }
+            PlatformRequest::InstallHexMicrophone
+            | PlatformRequest::UninstallHexMicrophone
+            | PlatformRequest::SetTuning(_)
+            | PlatformRequest::HexMicrophoneDemo(_) => voice_filter_request(request),
             PlatformRequest::Meeting(request) => self.meeting(request)?,
             PlatformRequest::Calendar(CalendarRequest::Connect) => self.calendar.connect(),
             PlatformRequest::Calendar(CalendarRequest::OpenPrivacySettings) => {
@@ -617,32 +729,21 @@ impl NativeHost for MacHost {
                 crate::calendar::open_privacy_settings();
             }
             PlatformRequest::Relaunch => {
-                if let Err(error) = crate::onboarding::record_relaunch(crate::onboarding::unix_ms())
-                {
+                if let Err(error) = crate::desktop::onboarding::record_relaunch(
+                    crate::desktop::onboarding::unix_ms(),
+                ) {
                     tracing::warn!(%error, "could not record the onboarding relaunch");
                 }
-                if !crate::onboarding::spawn_relaunch() {
+                if !crate::desktop::onboarding::spawn_relaunch() {
                     return Err("could not relaunch Hex".into());
                 }
                 crate::macos_rune::quit();
             }
-            PlatformRequest::SetTuning(tuning) => {
-                crate::hex_microphone::update_tuned_config(|current| *current = tuning);
-            }
-            PlatformRequest::HexMicrophoneDemo(request) => match request {
-                DemoRequest::Record => crate::hex_microphone::start_demo_recording(),
-                DemoRequest::StopRecording => crate::hex_microphone::stop_demo_recording(),
-                DemoRequest::SelectSource(source) => {
-                    crate::hex_microphone::select_demo_source(source)
-                }
-                DemoRequest::Play(track) => crate::hex_microphone::play_demo_track(track),
-                DemoRequest::StopPlayback => crate::hex_microphone::stop_demo_playback(),
-            },
             PlatformRequest::ConfigureHud(lab) => configure_hud(&self.runtime()?, lab),
             PlatformRequest::TuneHud(lab) => tune_hud(&self.runtime()?, lab),
             PlatformRequest::EndHudDemo => self
                 .runtime()?
-                .indicator(crate::dictation_indicator::DictationIndicatorEvent::Reset),
+                .indicator(crate::dictation::indicator::DictationIndicatorEvent::Reset),
             PlatformRequest::SaveDotScope(tuning) => {
                 tuning.save().map_err(|error| format!("{error:#}"))?;
             }
@@ -656,8 +757,16 @@ impl NativeHost for MacHost {
 
     fn poll(&mut self, state: &mut PlatformState) -> bool {
         let mut changed = false;
+        for &kind in &state.permissions_shown {
+            crate::desktop::permission_guide::clear_legacy_entries_async(kind);
+        }
+        while let Ok(kind) = self.reset_rx.try_recv() {
+            self.finish_permission_reset(kind);
+            state.clear_stale(kind);
+            changed = true;
+        }
         // The playground's HUD stories change the tuning HUD Lab shows.
-        let shared = crate::dot_scope::lab();
+        let shared = crate::rune_hud::dot_scope::lab();
         if shared != state.hud.tuning {
             state.hud.tuning = shared;
             changed = true;
@@ -693,23 +802,10 @@ impl NativeHost for MacHost {
             }
             changed = true;
         }
-        // The Voice Filter pane's demo moves every frame while it records or
-        // plays; nothing decodes or renders while the Voice Filter is off.
-        let voice_filter = crate::app_settings::hex_microphone_enabled();
-        if voice_filter
-            && (state.demo.is_none()
-                || crate::hex_microphone::demo_is_busy()
-                || crate::hex_microphone::demo_recompute_is_running()
-                || state
-                    .demo
-                    .as_ref()
-                    .is_some_and(|demo| demo.is_recording || demo.playing.is_some()))
-        {
-            state.demo = Some(crate::hex_microphone::demo_snapshot());
-            changed = true;
-        }
+        let refresh = Instant::now() >= self.refresh_at;
+        changed |= poll_voice_filter(state, refresh);
         #[cfg(hex_capture)]
-        if state.dev_build {
+        {
             changed |= self.scrawl.poll(state, Instant::now() >= self.refresh_at);
         }
         if Instant::now() < self.refresh_at {
@@ -732,12 +828,9 @@ impl NativeHost for MacHost {
         }
         changed |= self.calendar.poll(&mut state.calendar);
         changed |= update(
-            &mut state.tuning,
-            crate::hex_microphone::current_tuned_config(),
-        );
-        changed |= update(
             &mut state.accessibility_renamed,
-            crate::permission_guide::list_name(PermissionKind::Accessibility) != "Accessibility",
+            crate::desktop::permission_guide::list_name(PermissionKind::Accessibility)
+                != "Accessibility",
         );
         changed |= update(
             &mut state.activity_log,
@@ -745,7 +838,7 @@ impl NativeHost for MacHost {
                 .ok()
                 .map(|logs| logs.join("live.ndjson")),
         );
-        let permissions = crate::onboarding::status_with_transcription_model(
+        let permissions = crate::desktop::onboarding::status_with_transcription_model(
             state.permissions.transcription_model,
         );
         let system_audio = crate::meeting::system_audio_ready();
@@ -761,11 +854,43 @@ impl NativeHost for MacHost {
             }
         });
         changed |= state.permissions_asked.len() != asked_len;
+        let now = Instant::now();
+        let focus = self
+            .stale
+            .iter()
+            .any(StalePermissionTracker::is_waiting)
+            .then(crate::desktop::permission_guide::settings_focus)
+            .unwrap_or_default();
+        let mut next_stale = Vec::new();
+        for (slot, (kind, untrusted)) in [
+            (
+                PermissionKind::Accessibility,
+                matches!(
+                    permissions.accessibility,
+                    PermissionState::NeedsRequest | PermissionState::NeedsSettings
+                ),
+            ),
+            (PermissionKind::SystemAudio, !system_audio),
+            (PermissionKind::ScreenRecording, {
+                #[cfg(hex_capture)]
+                {
+                    crate::capture_host::screen_access() == crate::capture_host::ScreenAccess::Off
+                }
+                #[cfg(not(hex_capture))]
+                {
+                    false
+                }
+            }),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if !self.resetting[slot] && self.stale[slot].poll(now, untrusted, focus) {
+                next_stale.push(kind);
+            }
+        }
+        changed |= update(&mut state.permissions_stale, next_stale);
         changed |= update(&mut state.login_item_checking, self.login_checking);
-        changed |= update(
-            &mut state.hex_microphone,
-            voice_filter.then(crate::hex_microphone::status),
-        );
         changed |= update(
             &mut state.notes,
             *self.notes.get_or_insert_with(notes_availability),
@@ -780,9 +905,11 @@ impl NativeHost for MacHost {
 
     fn tour_inputs(&mut self, practicing: bool) -> Vec<Input> {
         let mut inputs = Vec::new();
-        if crate::onboarding::take_listener_failure() {
+        if crate::desktop::onboarding::take_listener_failure() {
             inputs.push(Input::ListenerFailed {
-                relaunch_allowed: crate::onboarding::relaunch_allowed(crate::onboarding::unix_ms()),
+                relaunch_allowed: crate::desktop::onboarding::relaunch_allowed(
+                    crate::desktop::onboarding::unix_ms(),
+                ),
             });
         }
         if !practicing {
@@ -797,10 +924,6 @@ impl NativeHost for MacHost {
             inputs.extend(practice.observations().into_iter().map(Input::Dictation));
         }
         inputs
-    }
-
-    fn practice_level(&self) -> f32 {
-        crate::input_level::recent().unwrap_or(0.0)
     }
 }
 
@@ -1074,171 +1197,11 @@ fn save_calendar_connected() -> Result<(), String> {
     Ok(())
 }
 
-/// The Meetings pane's listing from the read-only store query, rescanned at
-/// most once a second; unchanged meeting folders come from its cache.
-#[derive(Default)]
-struct MeetingFeed {
-    library: Option<crate::meeting::query::Library>,
-    scan_at: Option<Instant>,
-    shown: Option<Result<Vec<Meeting>, String>>,
-}
-
-impl MeetingFeed {
-    fn poll(&mut self) -> Option<Result<Vec<Meeting>, String>> {
-        let now = Instant::now();
-        if self.scan_at.is_some_and(|at| now < at) {
-            return None;
-        }
-        self.scan_at = Some(now + PLATFORM_REFRESH);
-        let listed = self.scan();
-        if self.shown.as_ref() == Some(&listed) {
-            return None;
-        }
-        self.shown = Some(listed.clone());
-        Some(listed)
-    }
-
-    fn scan(&mut self) -> Result<Vec<Meeting>, String> {
-        let library = match &self.library {
-            Some(library) => library,
-            None => {
-                let root = crate::meeting::root().map_err(|error| format!("{error:#}"))?;
-                self.library
-                    .insert(crate::meeting::query::Library::new(root))
-            }
-        };
-        let scan = library.scan().map_err(|error| format!("{error:#}"))?;
-        let now_ms = crate::events::now_ms();
-        Ok(scan
-            .meetings
-            .iter()
-            .map(|meeting| pane_meeting(meeting, now_ms))
-            .collect())
-    }
-}
-
-/// A stored meeting as the pane shows it.
-fn pane_meeting(meeting: &crate::meeting::query::Meeting, now_ms: u64) -> Meeting {
-    use crate::meeting::MeetingStatus;
-    let manifest = &meeting.manifest;
-    let transcript = if meeting.entries.is_empty() && !meeting.warnings.is_empty() {
-        Transcript::Unavailable(meeting.warnings.join("\n"))
-    } else {
-        Transcript::Loaded(turns(&meeting.entries))
-    };
-    Meeting {
-        id: meeting.id.clone(),
-        title: meeting.title(),
-        status: match meeting.status {
-            MeetingStatus::Starting => Status::Starting,
-            MeetingStatus::Recording => Status::Recording,
-            MeetingStatus::Transcribing => Status::Transcribing,
-            MeetingStatus::Complete => Status::Complete,
-            MeetingStatus::Interrupted => Status::Interrupted,
-            MeetingStatus::Failed => Status::Failed,
-        },
-        day: crate::meeting::day_label(meeting.start_ms(), now_ms),
-        clock: crate::meeting::clock(meeting.start_ms()),
-        duration_ms: meeting.duration_ms(now_ms),
-        app: manifest.app.clone(),
-        summary: manifest
-            .notes
-            .as_ref()
-            .map(|notes| notes.summary.clone())
-            .filter(|summary| !summary.is_empty()),
-        notes_running: crate::meeting::notes_in_progress(&meeting.id),
-        has_markdown: manifest
-            .export_path
-            .as_ref()
-            .is_some_and(|path| path.exists()),
-        error: manifest.error.clone(),
-        export_error: manifest.export_error.clone(),
-        notes_error: manifest.notes_error.clone(),
-        live_error: manifest.live_transcription_error.clone(),
-        transcript,
-        // Sections come from the transcript lines, not the merged turns, as
-        // the menu bar and `hex meetings show --chapter` read them.
-        chapters: meeting
-            .chapter_views(now_ms)
-            .iter()
-            .map(|view| super::meetings::Chapter {
-                title: view.chapter.title.clone(),
-                summary: view.chapter.summary.clone(),
-                start_ms: view.chapter.start_ms,
-                markdown: view.markdown(),
-            })
-            .collect(),
-    }
-}
-
-/// Speaker turns, marking silences of 30 s or more.
-fn turns(entries: &[crate::meeting::TranscriptEntry]) -> Vec<Turn> {
-    let mut previous_end: Option<u64> = None;
-    crate::meeting::coalesce_transcript(entries.iter().cloned())
-        .into_iter()
-        .map(|turn| {
-            let pause_before_ms = previous_end
-                .map(|end| turn.start_ms.saturating_sub(end))
-                .filter(|pause| *pause >= 30_000);
-            previous_end = Some(previous_end.map_or(turn.end_ms, |end| end.max(turn.end_ms)));
-            Turn {
-                mine: turn.source == crate::meeting::MeetingSource::Microphone,
-                start_ms: turn.start_ms,
-                text: turn.text,
-                pause_before_ms,
-            }
-        })
-        .collect()
-}
-
-/// The listener's dictation outcomes logged since the practice step began.
-struct PracticeFeed {
-    reader: crate::events::EventReader,
-    since_ms: u64,
-}
-
-impl PracticeFeed {
-    fn new(event_path: &std::path::Path) -> Self {
-        Self {
-            reader: crate::events::EventReader::open(event_path),
-            since_ms: crate::events::now_ms(),
-        }
-    }
-
-    fn observations(&mut self) -> Vec<Observation> {
-        use crate::events::{DictationPhase, VoiceEvent};
-        if let Err(error) = self.reader.refresh() {
-            tracing::warn!(%error, "could not read dictation events for practice");
-            return Vec::new();
-        }
-        let since_ms = self.since_ms;
-        self.reader
-            .drain()
-            .filter_map(|event| match event {
-                VoiceEvent::Dictation {
-                    timestamp_ms,
-                    phase,
-                    ..
-                } if timestamp_ms >= since_ms => Some(match phase {
-                    DictationPhase::Started => Observation::Started,
-                    DictationPhase::Transcribing => Observation::Transcribing,
-                    DictationPhase::Discarded => Observation::Discarded,
-                    DictationPhase::Cancelled => Observation::Cancelled,
-                    DictationPhase::Pasted | DictationPhase::Edited => Observation::Pasted,
-                    DictationPhase::Failed(_) => Observation::Failed,
-                    _ => return None,
-                }),
-                _ => None,
-            })
-            .collect()
-    }
-}
-
 /// Opens the folder panel beside the window, starting at the current
 /// meetings folder.
-fn choose_folder() -> crate::file_dialog::Pending {
-    use crate::file_dialog::{Dialog, Target};
-    crate::file_dialog::open(
+fn choose_folder() -> crate::desktop::file_dialog::Pending {
+    use crate::desktop::file_dialog::{Dialog, Target};
+    crate::desktop::file_dialog::open(
         Dialog {
             title: tr("Transcript folder").into(),
             target: Target::Folder,
@@ -1253,7 +1216,7 @@ fn choose_folder() -> crate::file_dialog::Pending {
 #[cfg(hex_capture)]
 #[derive(Default)]
 struct ScrawlHost {
-    folder_choice: Option<crate::file_dialog::Pending>,
+    folder_choice: Option<crate::desktop::file_dialog::Pending>,
     folder_error: Option<String>,
 }
 
@@ -1277,8 +1240,8 @@ impl ScrawlHost {
             }
             ScrawlRequest::ChooseFolder => {
                 if self.folder_choice.is_none() {
-                    use crate::file_dialog::{Dialog, Target};
-                    self.folder_choice = Some(crate::file_dialog::open(
+                    use crate::desktop::file_dialog::{Dialog, Target};
+                    self.folder_choice = Some(crate::desktop::file_dialog::open(
                         Dialog {
                             title: tr("Annotations folder").into(),
                             target: Target::Folder,
@@ -1360,7 +1323,7 @@ fn save_meetings_folder(folder: PathBuf) -> Result<(), String> {
 
 /// Shows HUD Lab's tuning and demonstrated state on the dictation HUD.
 fn configure_hud(runtime: &RuntimeHandle, lab: HudLab) {
-    use crate::dictation_indicator::DictationIndicatorEvent as Event;
+    use crate::dictation::indicator::DictationIndicatorEvent as Event;
     tune_hud(runtime, lab);
     runtime.indicator(Event::Reset);
     match lab.demo {
@@ -1381,7 +1344,7 @@ fn configure_hud(runtime: &RuntimeHandle, lab: HudLab) {
 
 /// Applies HUD Lab's tuning to whatever the HUD shows.
 fn tune_hud(runtime: &RuntimeHandle, lab: HudLab) {
-    use crate::dictation_indicator::DictationIndicatorEvent as Event;
+    use crate::dictation::indicator::DictationIndicatorEvent as Event;
     runtime.indicator(Event::ConfigureDotScope(lab.tuning));
 }
 
@@ -1461,138 +1424,6 @@ mod tests {
             .keycaps(),
             _ => panic!("not holding"),
         }
-    }
-
-    #[test]
-    fn the_meeting_feed_lists_stored_meetings_once_until_they_change() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/meetings");
-        let mut feed = MeetingFeed {
-            library: Some(crate::meeting::query::Library::new(root)),
-            ..MeetingFeed::default()
-        };
-        let meetings = feed.poll().expect("the first poll lists").unwrap();
-        let ids: Vec<_> = meetings.iter().map(|meeting| meeting.id.as_str()).collect();
-        assert_eq!(
-            ids,
-            [
-                "1790001000000-1003",
-                "1790000500000-1002",
-                "1790000000000-1001"
-            ],
-            "newest first, without the unreadable folder"
-        );
-        let standup = &meetings[0];
-        assert_eq!(standup.status, Status::Interrupted, "an unlocked recording");
-        let review = &meetings[1];
-        assert_eq!(review.title, "Roadmap review");
-        let Transcript::Loaded(turns) = &review.transcript else {
-            panic!("the roadmap review has a transcript");
-        };
-        assert!(!turns[0].mine && turns[1].mine);
-        assert_eq!(turns.last().unwrap().pause_before_ms, Some(42_000));
-        feed.scan_at = None;
-        assert!(
-            feed.poll().is_none(),
-            "an unchanged listing is not sent again"
-        );
-    }
-
-    #[test]
-    fn copy_section_matches_the_menu_bar_and_the_cli() {
-        let root = std::env::temp_dir().join(format!(
-            "hex-copy-section-{}-{}",
-            std::process::id(),
-            crate::events::now_ms()
-        ));
-        let id = "1790003000000-1005";
-        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/meetings-chapters")
-            .join(id);
-        let directory = root.join(id);
-        std::fs::create_dir_all(&directory).unwrap();
-        std::fs::copy(
-            fixture.join("manifest.json"),
-            directory.join("manifest.json"),
-        )
-        .unwrap();
-        // One speaker's two lines join into one turn across the boundary
-        // at 06:30; the second line belongs to the chapter after.
-        let line = |start_ms: u64, end_ms: u64, text: &str| crate::meeting::TranscriptEntry {
-            source: crate::meeting::MeetingSource::Microphone,
-            start_ms,
-            end_ms,
-            text: text.into(),
-        };
-        let entries = [
-            line(181_000, 188_000, "Next, the motion lint."),
-            line(386_000, 389_000, "That settles the lint."),
-            line(390_500, 397_000, "Last thing: a name for the chat app."),
-        ];
-        let ndjson = entries
-            .iter()
-            .map(|entry| serde_json::to_string(entry).unwrap() + "\n")
-            .collect::<String>();
-        std::fs::write(directory.join("transcript.ndjson"), ndjson).unwrap();
-
-        let library = crate::meeting::query::Library::new(&root);
-        let meeting = library.meeting(id).unwrap();
-        let now_ms = crate::events::now_ms();
-        let pane = pane_meeting(&meeting, now_ms);
-        let chapters = &meeting.manifest.chapters;
-        for (index, chapter) in pane.chapters.iter().enumerate() {
-            // The menu bar's Copy Section (`meeting::section_for_id`).
-            let menu = crate::meeting::section_markdown(
-                &chapters[index],
-                &crate::meeting::chapter_entries(&entries, chapters, index),
-            );
-            assert_eq!(chapter.markdown, menu);
-            let cli = library.chapter_markdown(id, index + 1, now_ms).unwrap();
-            assert!(cli.ends_with(&format!("\n{menu}\n")), "{cli}");
-        }
-        assert!(pane.chapters[1].markdown.contains("That settles the lint."));
-        assert!(!pane.chapters[1].markdown.contains("Last thing"));
-        assert!(pane.chapters[2].markdown.contains("Last thing"));
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn practice_hears_dictations_logged_after_it_began() {
-        use crate::events::{DictationPhase, VoiceEvent};
-        let path = std::env::temp_dir().join(format!("hex-practice-{}.ndjson", std::process::id()));
-        let dictation = |timestamp_ms, phase| {
-            serde_json::to_string(&VoiceEvent::Dictation {
-                timestamp_ms,
-                phase,
-                text: String::new(),
-                processing: None,
-                reason: None,
-            })
-            .unwrap()
-                + "\n"
-        };
-        std::fs::write(&path, dictation(1, DictationPhase::Started)).unwrap();
-        let mut practice = PracticeFeed::new(&path);
-        let now = practice.since_ms;
-        let log = [
-            dictation(now, DictationPhase::Started),
-            dictation(now + 1, DictationPhase::Transcribing),
-            dictation(now + 2, DictationPhase::Logged),
-            dictation(now + 3, DictationPhase::Edited),
-        ];
-        std::fs::write(&path, dictation(1, DictationPhase::Started) + &log.concat()).unwrap();
-        assert_eq!(
-            practice.observations(),
-            [
-                Observation::Started,
-                Observation::Transcribing,
-                Observation::Pasted
-            ]
-        );
-        assert!(
-            practice.observations().is_empty(),
-            "each event is heard once"
-        );
-        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
@@ -1677,6 +1508,63 @@ mod tests {
                 .unwrap()
                 .modifiers
                 .function
+        );
+    }
+
+    const RIGHT_COMMAND: u64 = 0x0010_0010;
+
+    #[test]
+    fn with_sided_chords_each_modifier_keeps_its_side() {
+        let mut capture = ChordCapture::with_sides(true);
+        assert_eq!(held(capture.flags_changed(RIGHT_COMMAND)), ["R⌘"]);
+        assert_eq!(
+            held(capture.flags_changed(RIGHT_COMMAND | RIGHT_OPTION)),
+            ["R⌥", "R⌘"]
+        );
+        let binding = captured(capture.flags_changed(0)).unwrap();
+        assert_eq!(binding.key, None);
+        assert_eq!(binding.modifiers.option, Some(ModifierSide::Right));
+        assert_eq!(binding.modifiers.command, Some(ModifierSide::Right));
+        assert_eq!(binding.modifiers.count(), 2);
+        assert_eq!(binding.standalone_side(), None, "no side picker");
+        assert_eq!(binding.keycaps(), ["R⌥", "R⌘"]);
+        let runtime = binding.runtime();
+        assert!(runtime.exact_modifiers(RIGHT_COMMAND | RIGHT_OPTION));
+        assert!(!runtime.exact_modifiers(LEFT_COMMAND | LEFT_OPTION));
+        assert!(!runtime.exact_modifiers(LEFT_COMMAND | RIGHT_OPTION));
+        let restored: HotkeyBinding =
+            serde_json::from_str(&serde_json::to_string(&binding).unwrap()).unwrap();
+        assert_eq!(restored, binding);
+        // It still conflicts with ⌥⌘ from either side, not with the left keys.
+        let either = HotkeyBinding {
+            modifiers: HotkeyModifiers::option_command(),
+            key: None,
+        };
+        assert!(binding.overlaps(&either));
+        assert!(!binding.overlaps(&HotkeyBinding {
+            modifiers: HotkeyModifiers {
+                option: Some(ModifierSide::Left),
+                command: Some(ModifierSide::Left),
+                ..Default::default()
+            },
+            key: None,
+        }));
+    }
+
+    #[test]
+    fn without_sided_chords_two_modifiers_record_from_either_side() {
+        let mut capture = ChordCapture::with_sides(false);
+        capture.flags_changed(RIGHT_COMMAND);
+        assert_eq!(
+            held(capture.flags_changed(RIGHT_COMMAND | RIGHT_OPTION)),
+            ["⌥", "⌘"]
+        );
+        let binding = captured(capture.flags_changed(0)).unwrap();
+        assert_eq!(binding.modifiers, HotkeyModifiers::option_command());
+        assert!(
+            binding
+                .runtime()
+                .exact_modifiers(LEFT_COMMAND | LEFT_OPTION)
         );
     }
 

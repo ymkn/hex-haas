@@ -121,7 +121,7 @@ pub enum RouteDelivery {
         to: String,
     },
     /// OpenCode didn't take it; retried every 15 s. `why` says what went
-    /// wrong in a few words ("opencode2 not found").
+    /// wrong in a few words ("OpenCode isn't running").
     Queued {
         to: String,
         why: String,
@@ -165,7 +165,6 @@ pub fn router() -> Router {
             }
         })
         .with_summary(scrawl_capture::sketch::summary_markdown)
-        .with_opencode(crate::dictation_processor::installed_opencode_executable)
 }
 
 fn sends(config: &RouterConfig) -> bool {
@@ -240,6 +239,7 @@ pub(super) enum Job {
     Undo,
     /// `hex capture send`: any capture, to `to` or where its route or its
     /// last send says.
+    #[cfg_attr(target_os = "windows", allow(dead_code))]
     SendBundle {
         bundle: PathBuf,
         to: Option<String>,
@@ -255,11 +255,13 @@ static NEXT_ROUTES: AtomicU64 = AtomicU64::new(0);
 
 /// How long `hex capture send` waits for the send, inside the control
 /// deadline.
+#[cfg_attr(target_os = "windows", allow(dead_code))]
 const CLI_WAIT: Duration = Duration::from_secs(8);
 
 /// Sends `bundle` through the `capture-route` thread and says what became
 /// of it: as the capsule's pick when it is the newest capture, so its
 /// route and Undo follow.
+#[cfg_attr(target_os = "windows", allow(dead_code))]
 pub(super) fn send_bundle(
     bundle: PathBuf,
     to: Option<String>,
@@ -964,11 +966,9 @@ fn send_why(error: &str, agent_host: bool) -> String {
         return fit(said.lines().next().unwrap_or(said));
     }
     if error.starts_with("Could not reach server") {
-        "couldn't reach OpenCode".into()
+        "OpenCode isn't running".into()
     } else if error.contains("didn't answer in time") {
         "OpenCode didn't answer".into()
-    } else if error.contains("Could not find opencode2") || error.contains("OPENCODE_BIN") {
-        "opencode2 not found".into()
     } else {
         fit(&delivery::short(error))
     }
@@ -1546,12 +1546,8 @@ mod tests {
                 "Skill not found: x",
             ),
             (
-                "Could not find opencode2; set OPENCODE_BIN or add it to PATH",
-                "opencode2 not found",
-            ),
-            (
                 "Could not reach server at http://127.0.0.1:4096: Connection refused (os error 61)",
-                "couldn't reach OpenCode",
+                "OpenCode isn't running",
             ),
             (
                 "OpenCode at http://127.0.0.1:4096 didn't answer in time: Resource temporarily \
@@ -1898,6 +1894,104 @@ mod tests {
             assert_eq!(sent.as_deref(), Some("ses_seer"));
         }
 
+        /// A real repository with SEER in its main checkout (the newer) and
+        /// RUNE DESKTOP in a worktree of it.
+        fn worktree_repo() -> (PathBuf, PathBuf) {
+            let base = std::env::temp_dir()
+                .canonicalize()
+                .unwrap()
+                .join(format!("hex-rule-worktree-{}", std::process::id()));
+            let (main, worktree) = (base.join("seer"), base.join("worktrees/rune"));
+            let gitdir = main.join(".git/worktrees/rune");
+            std::fs::create_dir_all(&gitdir).unwrap();
+            std::fs::create_dir_all(&worktree).unwrap();
+            std::fs::write(gitdir.join("commondir"), "../..").unwrap();
+            std::fs::write(
+                worktree.join(".git"),
+                format!("gitdir: {}\n", gitdir.display()),
+            )
+            .unwrap();
+            (main, worktree)
+        }
+
+        fn main_and_worktree(path: &str, _: Duration) -> anyhow::Result<Vec<u8>> {
+            let (main, worktree) = worktree_repo();
+            let session = |id: &str, title: &str, updated: u64, dir: &Path| {
+                serde_json::json!({
+                    "id": id, "title": title, "parentID": null,
+                    "time": {"updated": updated}, "location": {"directory": dir},
+                })
+            };
+            let all = [
+                session("ses_seer", "SEER", 30, &main),
+                session("ses_rune", "RUNE DESKTOP", 20, &worktree),
+            ];
+            let body = match path.strip_prefix("/api/session/") {
+                Some(id) => all
+                    .iter()
+                    .find(|s| s["id"] == id)
+                    .map(|s| serde_json::json!({ "data": s }))
+                    .ok_or_else(|| anyhow::anyhow!("404 Not Found"))?,
+                None => serde_json::json!({ "data": all }),
+            };
+            Ok(serde_json::to_vec(&body)?)
+        }
+
+        #[test]
+        fn an_always_rule_to_a_worktree_session_sends_there_not_to_the_main_checkout() {
+            let (main, _) = worktree_repo();
+            let senses = || look::Senses {
+                hooks: Hooks {
+                    sdk: no_sdk,
+                    listener_dir: dev_server,
+                    api: main_and_worktree,
+                },
+                ..senses(no_tab)
+            };
+            let context = || RouteContext {
+                front_bundle_id: Some("com.example.rune".into()),
+                captured_bundle_id: Some("com.example.rune".into()),
+                app_pid: None,
+            };
+            let look = look_with(context(), router_with(|_| {}), senses()).unwrap();
+            let mut worker = worker(SharedOutcomes::default());
+            worker.written(written("com.example.rune"), look);
+            let (kind, key, target) = worker.rule_for("ses_rune").expect("an app rule");
+            assert_eq!(
+                target, "ses_rune",
+                "the worktree's session, not the repository"
+            );
+            let saved = RouterConfig {
+                send_captures: true,
+                ..RouterConfig::default()
+            }
+            .with_rule(kind, &key, &target)
+            .unwrap();
+            for _ in 0..2 {
+                let (answer, sent) = route(
+                    router_with(|c| *c = saved.clone()),
+                    "com.example.rune",
+                    senses(),
+                );
+                assert!(
+                    matches!(answer, RouteAnswer::Rule { ref to, .. } if to.session == "ses_rune"),
+                    "{answer:?}"
+                );
+                assert_eq!(sent.as_deref(), Some("ses_rune"));
+            }
+            // A rule naming the repository goes to its main checkout's session.
+            let (_, sent) = route(
+                router_with(|c| {
+                    c.apps
+                        .insert("com.example.rune".into(), main.display().to_string());
+                }),
+                "com.example.rune",
+                senses(),
+            );
+            assert_eq!(sent.as_deref(), Some("ses_seer"));
+            let _ = std::fs::remove_dir_all(main.parent().unwrap());
+        }
+
         #[test]
         fn an_always_rule_names_the_session_it_sends_to() {
             let router = router_with(|c| {
@@ -1920,7 +2014,7 @@ mod tests {
             current.offered = Some(scrawl_capture::OfferRule {
                 kind: RuleKind::Site,
                 key: "https://board.example.com".into(),
-                folder: "/p/board".into(),
+                target: "ses_board".into(),
             });
             let site = |session: &str| {
                 Some((

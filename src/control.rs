@@ -6,14 +6,21 @@
 //! here or in the app's own setters.
 
 pub mod cli;
+#[cfg(all(debug_assertions, target_os = "macos"))]
+pub(crate) mod dashboard;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) mod developer_control;
+#[cfg(not(target_os = "macos"))]
+pub(crate) mod host;
 pub mod settings;
+pub(crate) mod transcript_cli;
 
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::vocabulary::{self, VocabularyEntry};
+use crate::dictation::vocabulary::{self, VocabularyEntry};
 
 /// The wire version of [`ControlRequest`] and [`ControlResponse`]. A change
 /// that breaks either shape increments it.
@@ -78,6 +85,10 @@ pub enum ControlCommand {
         /// `stop` only: answer with the transcript instead of pasting it.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         print: bool,
+        /// `start` and `toggle` only: the dictation this starts pastes the
+        /// transcript as heard, skipping the Output pane's steps.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        raw: bool,
     },
     PasteLast,
     MeetingRecord {
@@ -93,6 +104,10 @@ pub enum ControlCommand {
     SettingsSet {
         key: String,
         value: String,
+    },
+    /// Several settings at once, all or none (`hex settings apply`).
+    SettingsApply {
+        values: serde_json::Map<String, serde_json::Value>,
     },
     ModelList,
     ModelUse {
@@ -114,7 +129,7 @@ pub enum ControlCommand {
     /// Replay the first-run onboarding in the window (dev, test, and local
     /// builds); settings, history, models, and permissions stay.
     OnboardingReset,
-    /// Open the window on a playground story (the `playground` experiment).
+    /// Open the window on a playground story (Labs).
     WindowStory {
         story: String,
         #[serde(default)]
@@ -390,8 +405,8 @@ impl ControlCommand {
 pub enum PrintedTranscript {
     Text(String),
     NoSpeech,
-    /// Only the Linux listener stops by itself without a recording.
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    /// The Linux and Windows listeners stop by themselves without a recording.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     NotRecording,
     Failed(String),
 }
@@ -451,11 +466,17 @@ pub fn await_printed(receiver: &Receiver<PrintedTranscript>, wait: Duration) -> 
 }
 
 /// `print` applies only to `stop`.
-pub fn check_print(action: CaptureAction, print: bool) -> Result<(), ControlError> {
+pub fn check_flags(action: CaptureAction, print: bool, raw: bool) -> Result<(), ControlError> {
     if print && action != CaptureAction::Stop {
         return Err(ControlError::new(
             "invalid-value",
             "--print works only with `hex dictation stop`",
+        ));
+    }
+    if raw && !matches!(action, CaptureAction::Start | CaptureAction::Toggle) {
+        return Err(ControlError::new(
+            "invalid-value",
+            "--raw works only with `hex dictation start` and `hex dictation toggle`",
         ));
     }
     Ok(())
@@ -500,15 +521,48 @@ pub struct StatusReport {
     pub window: WindowReport,
     /// current, checking, available, or unavailable.
     pub update: String,
-    /// The experiments this Hex read at its launch (`crate::experiments`).
+    /// The Labs features turned on (`crate::labs`), by `hex labs` name.
     #[serde(default)]
-    pub experiments: Vec<String>,
+    pub labs: Vec<String>,
+    /// What this OS's Hex can do, by capability name (`rune_ui::platform`).
+    /// A command for one it can't do answers `unsupported`.
+    #[serde(default)]
+    pub capabilities: std::collections::BTreeMap<String, bool>,
+}
+
+/// `StatusReport::update` for an updater status.
+pub fn update_label(status: &crate::desktop::host::DesktopUpdateStatus) -> &'static str {
+    use crate::desktop::host::DesktopUpdateStatus;
+    match status {
+        DesktopUpdateStatus::Checking | DesktopUpdateStatus::Downloading => "checking",
+        DesktopUpdateStatus::Available
+        | DesktopUpdateStatus::ReadyToRestart
+        | DesktopUpdateStatus::SwitchAvailable { .. }
+        | DesktopUpdateStatus::PackageUpdate { .. } => "available",
+        DesktopUpdateStatus::Unavailable
+        | DesktopUpdateStatus::Managed
+        | DesktopUpdateStatus::Failed => "unavailable",
+        DesktopUpdateStatus::Current
+        | DesktopUpdateStatus::SourceBuild
+        | DesktopUpdateStatus::PackageManager => "current",
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct ListenerReport {
     pub running: bool,
     pub status: String,
+    /// What a Wayland shortcuts portal granted, in the desktop's own keys,
+    /// including keys changed only in its settings (#723); empty elsewhere.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shortcuts: Vec<GrantedShortcutReport>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct GrantedShortcutReport {
+    pub name: String,
+    /// `None` when the desktop refused it or names no key.
+    pub trigger: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -616,14 +670,21 @@ pub struct ModelInfo {
     pub installed: bool,
     pub selected: bool,
     pub streams: bool,
+    /// How transcription takes the vocabulary: `prompt` (Whisper,
+    /// Qwen3-ASR), `bias` (Parakeet, with Labs › Vocabulary biasing), or
+    /// `none`.
+    pub vocabulary: String,
+    /// Deprecated: whether the model reads the vocabulary as its prompt,
+    /// which is what recognition hints became. Use `vocabulary`.
     pub supports_recognition_hints: bool,
 }
 
 /// Every model `hex model` can name, with what this Mac has installed.
 pub fn model_infos(
-    selection: &crate::transcription_models::TranscriptionSelection,
+    selection: &crate::transcription::models::TranscriptionSelection,
 ) -> Vec<ModelInfo> {
-    crate::transcription_models::MODELS
+    use crate::transcription::models::VocabularyUse;
+    crate::transcription::models::MODELS
         .iter()
         .filter(|model| model.available())
         .map(|model| ModelInfo {
@@ -631,10 +692,16 @@ pub fn model_infos(
             name: model.name.into(),
             languages: model.languages.iter().map(|&code| code.into()).collect(),
             size: model.size_label(),
-            installed: crate::transcription_models::is_installed(model, &selection.language),
+            installed: crate::transcription::models::is_installed(model, &selection.language),
             selected: model.id == selection.model,
             streams: model.streams,
-            supports_recognition_hints: model.supports_recognition_hints,
+            vocabulary: match model.vocabulary_use() {
+                VocabularyUse::Prompt => "prompt",
+                VocabularyUse::Bias => "bias",
+                VocabularyUse::None => "none",
+            }
+            .into(),
+            supports_recognition_hints: model.vocabulary_use() == VocabularyUse::Prompt,
         })
         .collect()
 }
@@ -646,28 +713,25 @@ pub fn model_selection(
     settings: &crate::app_settings::AppSettings,
     model: &str,
     language: Option<&str>,
-) -> Result<crate::transcription_models::TranscriptionSelection, ControlError> {
+) -> Result<crate::transcription::models::TranscriptionSelection, ControlError> {
     let id = model
-        .parse::<crate::transcription_models::TranscriptionModelId>()
+        .parse::<crate::transcription::models::TranscriptionModelId>()
         .ok()
-        .filter(|id| crate::transcription_models::definition(*id).available())
+        .filter(|id| crate::transcription::models::definition(*id).available())
         .ok_or_else(|| {
             ControlError::new(
                 "unknown-model",
                 format!("unknown model `{model}`; run `hex model list` for the ids"),
             )
         })?;
-    // The model's own remembered language and recognition hints, as the
-    // menu bar picks them; only the language can be overridden.
+    // The model's own remembered language, as the menu bar picks it; only
+    // the language can be overridden.
     let mut selection = settings.transcription_for_model(id);
     if let Some(language) = language {
         selection.language = language.into();
     }
-    let definition = crate::transcription_models::definition(id);
-    if !definition.supports_recognition_hints {
-        selection.recognition_hints.clear();
-    }
-    crate::transcription_models::validate(&selection).map_err(|error| {
+    let definition = crate::transcription::models::definition(id);
+    crate::transcription::models::validate(&selection).map_err(|error| {
         let supported = if definition.languages.contains(&"*") {
             "any language code Hex knows (en, de, fr, ja, …)".to_owned()
         } else {
@@ -811,8 +875,10 @@ mod tests {
             ControlReply::Error { code, .. } if code == "failed"
         ));
         // Only `stop` prints, and older requests without the field still parse.
-        assert!(check_print(CaptureAction::Start, true).is_err());
-        assert!(check_print(CaptureAction::Stop, true).is_ok());
+        assert!(check_flags(CaptureAction::Start, true, false).is_err());
+        assert!(check_flags(CaptureAction::Stop, true, false).is_ok());
+        assert!(check_flags(CaptureAction::Toggle, false, true).is_ok());
+        assert!(check_flags(CaptureAction::Stop, false, true).is_err());
         assert_eq!(
             serde_json::from_str::<ControlRequest>(
                 r#"{"version":4,"command":"dictation","action":"stop"}"#
@@ -821,7 +887,8 @@ mod tests {
             .command,
             ControlCommand::Dictation {
                 action: CaptureAction::Stop,
-                print: false
+                print: false,
+                raw: false,
             }
         );
     }
@@ -844,10 +911,17 @@ mod tests {
             ControlCommand::Dictation {
                 action: CaptureAction::Toggle,
                 print: false,
+                raw: false,
             },
             ControlCommand::Dictation {
                 action: CaptureAction::Stop,
                 print: true,
+                raw: false,
+            },
+            ControlCommand::Dictation {
+                action: CaptureAction::Start,
+                print: false,
+                raw: true,
             },
             ControlCommand::PasteLast,
             ControlCommand::MeetingRecord {
@@ -859,6 +933,9 @@ mod tests {
             ControlCommand::SettingsSet {
                 key: "release_microphone_while_idle".into(),
                 value: "on".into(),
+            },
+            ControlCommand::SettingsApply {
+                values: serde_json::Map::from_iter([("sound_effects".into(), false.into())]),
             },
             ControlCommand::ModelList,
             ControlCommand::ModelUse {
@@ -887,11 +964,11 @@ mod tests {
             },
             ControlCommand::VocabularyList,
             ControlCommand::VocabularyAdd {
-                term: "abattoir".into(),
-                sounds_like: vec!["avatar".into()],
+                term: "cappuccino".into(),
+                sounds_like: vec!["capuchin".into()],
             },
             ControlCommand::VocabularyRemove {
-                term: "abattoir".into(),
+                term: "cappuccino".into(),
             },
         ] {
             round_trip_request(command);
@@ -917,29 +994,29 @@ mod tests {
         let remove = |term: &str| ControlCommand::VocabularyRemove { term: term.into() };
         let mut list = Vec::new();
         assert_eq!(
-            edit_vocabulary(&mut list, &add("abattoir", &["avatar, a bat war"])).unwrap(),
-            ControlReply::done("Added “abattoir”")
+            edit_vocabulary(&mut list, &add("cappuccino", &["capuchin, cap a chino"])).unwrap(),
+            ControlReply::done("Added “cappuccino”")
         );
-        assert_eq!(list[0].sounds_like, ["avatar", "a bat war"]);
+        assert_eq!(list[0].sounds_like, ["capuchin", "cap a chino"]);
         assert_eq!(
-            edit_vocabulary(&mut list, &add("Abattoir", &[])).unwrap(),
-            ControlReply::unchanged("“Abattoir” is already in the vocabulary")
+            edit_vocabulary(&mut list, &add("Cappuccino", &[])).unwrap(),
+            ControlReply::unchanged("“Cappuccino” is already in the vocabulary")
         );
         assert_eq!(
-            edit_vocabulary(&mut list, &add("abattoir", &["abba toy"])).unwrap(),
-            ControlReply::done("Added spellings to “abattoir”")
+            edit_vocabulary(&mut list, &add("cappuccino", &["cap you chino"])).unwrap(),
+            ControlReply::done("Added spellings to “cappuccino”")
         );
         assert_eq!(
             edit_vocabulary(&mut list, &add(" ", &[])).unwrap_err().code,
             "invalid-value"
         );
         assert_eq!(
-            edit_vocabulary(&mut list, &remove("ABATTOIR")).unwrap(),
-            ControlReply::done("Removed “ABATTOIR”")
+            edit_vocabulary(&mut list, &remove("CAPPUCCINO")).unwrap(),
+            ControlReply::done("Removed “CAPPUCCINO”")
         );
         assert_eq!(
-            edit_vocabulary(&mut list, &remove("abattoir")).unwrap(),
-            ControlReply::unchanged("“abattoir” isn't in the vocabulary")
+            edit_vocabulary(&mut list, &remove("cappuccino")).unwrap(),
+            ControlReply::unchanged("“cappuccino” isn't in the vocabulary")
         );
         assert!(list.is_empty());
     }
@@ -996,13 +1073,14 @@ mod tests {
                     choices: vec![],
                     writable: true,
                     about: "Play tones".into(),
+                    available: true,
                 }],
             },
             ControlReply::Models { models: vec![] },
             ControlReply::Vocabulary {
                 entries: vec![VocabularyEntry {
-                    term: "abattoir".into(),
-                    sounds_like: vec!["avatar".into()],
+                    term: "cappuccino".into(),
+                    sounds_like: vec!["capuchin".into()],
                 }],
             },
             ControlReply::ScrawlCapture(Box::new(ScrawlCaptureReport {
@@ -1119,35 +1197,24 @@ mod tests {
     }
 
     #[test]
-    fn model_selection_keeps_remembered_hints_and_validates_the_language() {
-        use crate::transcription_models::{TranscriptionModelId as Id, TranscriptionSelection};
+    fn model_selection_keeps_the_remembered_language_and_validates_it() {
+        use crate::transcription::models::{TranscriptionModelId as Id, TranscriptionSelection};
         let settings = crate::app_settings::AppSettings {
             transcription: TranscriptionSelection {
                 model: Id::ParakeetV3,
                 language: "en".into(),
-                recognition_hints: "Current hints".into(),
             },
             transcription_recents: vec![TranscriptionSelection {
                 model: Id::WhisperLargeV3Turbo,
                 language: "de".into(),
-                recognition_hints: "Kit Langton".into(),
             }],
             ..Default::default()
         };
         let pick = |model, language| model_selection(&settings, model, language);
         let remembered = pick("whisper_large_v3_turbo", None).unwrap();
-        assert_eq!(
-            (
-                remembered.language.as_str(),
-                remembered.recognition_hints.as_str()
-            ),
-            ("de", "Kit Langton")
-        );
+        assert_eq!(remembered.language, "de");
         let french = pick("whisper_large_v3_turbo", Some("fr")).unwrap();
-        assert_eq!(
-            (french.language.as_str(), french.recognition_hints.as_str()),
-            ("fr", "Kit Langton")
-        );
+        assert_eq!(french.language, "fr");
         // Whisper's wildcard takes any language Hex knows, not any string.
         for (model, language) in [
             ("whisper_large_v3_turbo", "klingon"),

@@ -99,13 +99,25 @@ uninstall() {
     rm -f "$binary"
   fi
   for desktop in \
+    "$applications/anomaly.hex.desktop" \
+    "$autostart/anomaly.hex.desktop" \
     "$applications/hex.desktop" \
     "$autostart/hex.desktop"
   do
-    if [ -f "$desktop" ] && grep -Fxq 'X-Hex-Managed=true' "$desktop"; then
+    if [ -f "$desktop" ] && [ ! -L "$desktop" ] && grep -Fxq 'X-Hex-Managed=true' "$desktop"; then
       rm -f "$desktop"
     fi
   done
+  # The icons Hex writes into the user's theme when no package ships them,
+  # marked by a PNG text chunk.
+  for icon in "$data_home"/icons/hicolor/*/apps/anomaly.hex.png; do
+    if [ -f "$icon" ] && [ ! -L "$icon" ] && LC_ALL=C grep -Faq 'X-Hex-Managed=true' "$icon"; then
+      rm -f "$icon"
+    fi
+  done
+  if [ -d "$data_home/icons/hicolor" ] && [ ! -L "$data_home/icons/hicolor" ]; then
+    touch "$data_home/icons/hicolor" 2>/dev/null || true
+  fi
   rm -f "$support_dir/current" "$support_dir/.current.next" "$support_dir/install.json"
   rm -rf "$support_dir/versions"
   echo "Removed Hex. Logs and settings remain in $support_dir."
@@ -353,8 +365,9 @@ fi
 if [ -e "$support_dir/current" ] && [ ! -L "$support_dir/current" ]; then
   fail "Refusing to replace an unmanaged file: $support_dir/current"
 fi
-application_entry="$applications/hex.desktop"
-autostart_entry="$autostart/hex.desktop"
+# Named for Hex's app id, which its windows and the desktop portal use.
+application_entry="$applications/anomaly.hex.desktop"
+autostart_entry="$autostart/anomaly.hex.desktop"
 for desktop in "$application_entry" "$autostart_entry"; do
   if [ -L "$desktop" ]; then
     fail "Refusing to replace a desktop-entry symlink: $desktop"
@@ -364,8 +377,8 @@ for desktop in "$application_entry" "$autostart_entry"; do
   fi
 done
 
-application_staged=$(mktemp "$applications/.hex.desktop.XXXXXX")
-autostart_staged=$(mktemp "$autostart/.hex.desktop.XXXXXX")
+application_staged=$(mktemp "$applications/.anomaly.hex.desktop.XXXXXX")
+autostart_staged=$(mktemp "$autostart/.anomaly.hex.desktop.XXXXXX")
 unit_staged=$(mktemp "$units/.hex.service.XXXXXX")
 umask 077
 cat > "$application_staged" <<EOF
@@ -374,10 +387,11 @@ Type=Application
 Name=Hex
 Comment=Local voice dictation
 Exec="$binary"
-Icon=audio-input-microphone
+Icon=anomaly.hex
 Terminal=false
 Categories=Utility;Accessibility;
 StartupNotify=true
+StartupWMClass=anomaly.hex
 Actions=quit;
 X-Hex-Managed=true
 
@@ -391,7 +405,7 @@ Type=Application
 Name=Hex
 Comment=Local voice dictation
 Exec="$binary" start
-Icon=audio-input-microphone
+Icon=anomaly.hex
 Terminal=false
 X-GNOME-Autostart-enabled=true
 X-Hex-Managed=true
@@ -463,6 +477,12 @@ mv -Tf "$application_staged" "$application_entry"
 application_staged=
 mv -Tf "$autostart_staged" "$autostart_entry"
 autostart_staged=
+# Earlier installs named both entries hex.desktop.
+for desktop in "$applications/hex.desktop" "$autostart/hex.desktop"; do
+  if [ -f "$desktop" ] && [ ! -L "$desktop" ] && grep -Fxq 'X-Hex-Managed=true' "$desktop"; then
+    rm -f "$desktop"
+  fi
+done
 mv -Tf "$unit_staged" "$unit"
 unit_staged=
 sync -f "$applications"

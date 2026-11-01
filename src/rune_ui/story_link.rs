@@ -1,18 +1,18 @@
 //! Links into the playground: `hex://story/<group>/<story>[?variant=V&play=1]`
 //! (`hex-test://` in a test build) and `hex window story`. Both open the
 //! window on the story, pick the variant, and with `play` run its `r`
-//! trigger, as pressing R does. Only with the `playground` experiment on.
+//! trigger, as pressing R does. Only with Labs on.
 
 use rune::Tx;
 
 use super::playground;
 
 /// Why a link opened only the window.
-pub(crate) const PLAYGROUND_OFF: &str = "the playground is an experiment; turn it on with \
-     `hex experiments enable playground` and restart Hex";
+pub(crate) const PLAYGROUND_OFF: &str = "the playground is in Labs; turn it on with \
+     `hex labs on playground` and restart Hex";
 
 /// Longer links are ignored: they come from outside Hex.
-const MAX_LINK: usize = 2048;
+pub(super) const MAX_LINK: usize = 2048;
 
 /// A story to open in the playground.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -95,7 +95,7 @@ fn story_name(story: &str) -> String {
     playground::alias(&story).unwrap_or(story)
 }
 
-fn percent_decode(segment: &str) -> Option<String> {
+pub(super) fn percent_decode(segment: &str) -> Option<String> {
     let bytes = segment.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -116,7 +116,7 @@ fn percent_decode(segment: &str) -> Option<String> {
 }
 
 /// Opens the playground on `link`'s story; the caller opens the window.
-/// Without the `playground` experiment it says why and changes nothing.
+/// With Labs off it says why and changes nothing.
 pub(crate) fn open(link: &StoryLink, tx: &mut Tx) -> Result<(), &'static str> {
     if !playground::enabled() {
         return Err(PLAYGROUND_OFF);

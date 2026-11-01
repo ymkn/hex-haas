@@ -29,6 +29,8 @@ app and **Disabled** when it does nothing.
 
 ## Install
 
+x86_64 PCs need a 2013 or newer processor with AVX2 (Intel Haswell / AMD Excavator or later); on an older processor Hex shows a message and quits instead of starting.
+
 Download and run the installer for your PC:
 
 - x64: [`HexSetup.exe`](https://anoma.ly/hex/download/windows-x64-setup)
@@ -123,7 +125,8 @@ cargo run -- devices
 cargo run -- model devices
 ```
 
-Install the default English model, load it, and transcribe a WAV file:
+Install the selected model (with Hex stopped, `model install` downloads in
+this process), load it, and transcribe a WAV file:
 
 ```powershell
 cargo run -- model install
@@ -131,12 +134,12 @@ cargo run -- model check
 cargo run -- model transcribe .\sample.wav
 ```
 
-For Polish, select the multilingual Parakeet model explicitly:
+For Polish, name the multilingual Parakeet model:
 
 ```powershell
-cargo run -- model install --model parakeet_v3 --language pl
-cargo run -- model check --model parakeet_v3 --language pl
-cargo run -- capture --model parakeet_v3 --language pl --copy
+cargo run -- model install parakeet_v3 --language pl
+cargo run -- model check parakeet_v3 --language pl
+cargo run -- record --model parakeet_v3 --language pl --copy
 ```
 
 Open the desktop application after the model is installed:
@@ -162,7 +165,7 @@ by the app:
 cargo run -- listen --model parakeet_v3 --language pl
 ```
 
-`capture` prewarms the selected model and opens the microphone before prompting.
+`record` prewarms the selected model and opens the microphone before prompting.
 Press Enter once to start, then again to stop. Captures shorter than 300 ms are
 discarded. `--device` accepts a case-insensitive fragment from `devices`.
 
@@ -174,6 +177,21 @@ launch, so it has no stdout or stderr.
 Successful pasted dictations are retained, subject to the selected retention
 window and hard size limits, in `history.json`. Captured audio is never retained
 by default.
+
+## Control commands
+
+The `hex` control commands ([docs/cli.md](cli.md)) drive the running tray app
+as they do on macOS: `status`, `start`, `quit`, `restart`, `dictation
+start|stop|cancel|toggle` (with `stop --print`), `paste-last`, `settings`,
+`model`, `window`, `vocabulary`, `history clear`, `check-for-updates`,
+`launch-at-login` (the Run key), `onboarding reset`, `logs`, and `commands
+init|check`, `annotate`, `meetings record|stop|copy-last`, `history`, and
+`mcp`. They reach it through its local API (`local-api.json` in
+`%APPDATA%\hex` and the bearer-authenticated `POST /control`). Dictation commands go
+to the listener's own loop as a shortcut press would, and `annotate`
+start, stop, cancel, and status wait for its capture host. `history`,
+`meetings`, and `mcp` work as on macOS. `hex restart`
+quits, waits for the drain, and starts `hex app --hidden` again.
 
 ## Custom Transformations
 
@@ -198,7 +216,8 @@ fixtures without starting anything: `hex app -- --snap out.png --scene modes`.
 ```ts
 hex app
 ├── named event already held -> signal it (the running app shows its window) -> exit
-└── becomes the app                                   // windows_rune::open
+└── becomes the app                                   // windows::rune::open
+    ├── the local API's POST /control -> control::host::answer
     ├── runtime thread: WindowsDesktopHost (listener, model preparation, OpenCode, transformations, updater), publishes every 250 ms
     ├── main thread: rune::App's winit loop and the window; rune::Tray runs on its own thread
     ├── --hidden -> windowless start; close -> hide (keep_running)
@@ -214,7 +233,7 @@ hex app
   sidebar footer holds Check for updates, and Download update for unmanaged
   installs. Shortcuts are recorded by
   polling the keyboard with the listener's hook suspended, because modifier-only chords never reach the window as key events.
-- Models are prepared in-process through `transcription_preparation`; the
+- Models are prepared in-process through `transcription/preparation`; the
   runtime saves the selection when it is ready and restarts the listener.
 - Enable on launch waits until first-run setup has recorded completion.
 - The dictation HUD is a Rune overlay (`rune_hud.rs`, shared with Linux): a
@@ -287,9 +306,9 @@ current-user startup registry, UI Automation, and Windows capture APIs.
 | Text replacements | Implemented in the Windows Modes pane using the shared phrase-boundary replacement engine |
 | Application picker in Modes | Implemented; lists Start menu shortcuts, App Paths, and apps with an open window, with each executable's icon; "Choose a file…" opens the native dialog through `rune::FileDialogs` |
 | Interface language | Implemented on every OS; English, Polish, Chinese, Japanese, German, Spanish, and Ukrainian |
-| Resident tray and Launch at login | Implemented |
+| Resident tray and Launch at login | Implemented; the tray menu (shared with Linux) has Paste last dictation, the speech-model picker, and the recording state |
 | Application modes with per-mode corrections, OpenCode rewriting, and transformations | Implemented on the shared ordered processing policy; global and contextual profiles persist their own corrections, model, reasoning variant, deadline, and ordered built-in/TypeScript transformations, while modes match by application name — physical end-to-end paste/UI validation remains |
-| Recognition hints for Whisper-family models | Implemented |
+| Vocabulary as Whisper and Qwen3-ASR's context prompt | Implemented |
 | Release microphone while idle | Implemented; mutually exclusive with audio pre-roll, as documented in Settings |
 | While-dictating audio control (mute other apps or pause media) | Implemented via WASAPI session volumes and GSMTC |
 | Signed automatic self-update for managed installs | Implemented for x64 and ARM64; the same ed25519 key and `https://anoma.ly/hex/files` origin as Linux, one feed per architecture, activating into a user-local versions directory. Checks 10 s after launch and every 6 h (or Check for updates); a staged update shows Restart to update in the tray menu and the window's sidebar footer, and the tray tooltip says an update is available. Source builds keep the GitHub release link (Download update); CI test builds never check |
@@ -307,8 +326,9 @@ Linux use.
 The Windows window uses the shared design system
 ([design-system.md](design-system.md)): the same Rune panes as macOS and
 Linux under the native title bar. Mode processing, OpenCode rewriting, and transformations run
-through the same `dictation_processor` and `personal_commands` modules as
-macOS; Windows reaches OpenCode through the `opencode2 api` CLI. Like macOS,
+through the same `dictation/processor` and `personal_commands` modules as
+macOS, and Windows reaches the running OpenCode service the same way: its
+registration file and loopback HTTP, never a CLI. Like macOS,
 an unset OpenCode model tries the ranked recommended models before the
 OpenCode default.
 Remaining panes should be added only with their complete Windows behavior;

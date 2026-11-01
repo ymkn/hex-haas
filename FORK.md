@@ -5,7 +5,7 @@
 - Fork: https://github.com/ymkn/hex-haas
 - 上流: https://github.com/anomalyco/hex
 - 改修ブランチ: `haas`
-- ベース: 公式 `v3.0.0` (`7b05b5fd1fa0e3b9c333209cd1644d9603693d5c`)
+- ベース: 公式 `v3.1.1`（`v3.0.0` `7b05b5fd1fa0e3b9c333209cd1644d9603693d5c` に `v3.1.1` をマージ）
 - `dev` は上流用として残し、個人の変更は `haas` にだけコミットします。
 
 Haasは speech.cpp v0.10.0 の常駐worker経由で動きます。Whisperなど既存モデルは元の認識処理を使います。15秒以内の音声は分割せず、Haas自身の句読点出力を保持します。詳細・制約・検証結果は [docs/haas-ja.md](docs/haas-ja.md) を参照してください。
@@ -13,7 +13,7 @@ Haasは speech.cpp v0.10.0 の常駐worker経由で動きます。Whisperなど�
 Haas対応以外の使い方は通常のHexと同じで、ログイン時起動も通常どおり使えます。保存先のディレクトリ名だけを `hex` から `hex-haas` に変えています。
 
 - 設定・履歴・ログ・モデル: `%APPDATA%\hex-haas`
-- `hex.config.ts`・実験設定: `~/.config/hex-haas`
+- `hex.config.ts`: `~/.config/hex-haas`
 
 `dist/haas/hex.exe` を直接起動できます。専用の環境変数や起動先切り替えは不要です。ローカルビルドのため、公式のローカルビルドと同じく自動更新は行いません。
 
@@ -60,7 +60,7 @@ git merge --no-ff $target
 
 競合したら、`git status` に表示されるファイルで公式の変更とHaas対応を両立させ、対象ファイルを `git add` して `git merge --continue` します。マージ前がcleanで、取り込み自体を中止する場合のみ `git merge --abort` を使います。`reset --hard` やforce-pushは通常の更新に必要ありません。
 
-特に `transcription_models`、`local_transcriber`、`experiments`、`app_paths`、`Cargo.toml` の変更を確認してください。上流のファイル移動やAPI変更には手動適応が必要です。公式のRune/native依存ピンは、単に「最新」という理由で個別に変えず、選んだ上流との互換性を検証します。
+特に `transcription/models`、`transcription/local_transcriber`、`labs`、`app_paths`、`Cargo.toml` の変更を確認してください。上流のファイル移動やAPI変更には手動適応が必要です（v3.1.1では `experiments` が廃止され `labs` になり、`transcription_models` や `windows_login_item` はディレクトリーへ移動しました）。公式のRune/native依存ピンは、単に「最新」という理由で個別に変えず、選んだ上流との互換性を検証します。
 
 ```powershell
 ./scripts/build-haas.ps1 -Check

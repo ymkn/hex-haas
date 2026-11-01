@@ -25,7 +25,7 @@ use super::controls::{
 use super::lists::{list_row, source_list};
 use super::platform::Os;
 use crate::app_settings::IndicatorPosition;
-use crate::desktop_i18n::tr;
+use crate::desktop::i18n::tr;
 use crate::feedback::{self, Audition, Cue, SoundSet};
 use crate::rune_hud::{BOTTOM_OFFSET, TOP_OFFSET};
 
@@ -317,7 +317,6 @@ fn stage(ui: &Ui, p: Paint) -> El {
     let sounding = ui.sound_sets.sounding();
     let chips = Cue::ALL
         .into_iter()
-        .filter(|&cue| cue != Cue::Error || ui.platform.caps.error_sound)
         .map(|cue| chip(p, set, cue, sounding == Some(cue)));
     col()
         .key("stage")
@@ -425,7 +424,7 @@ fn screen(ui: &Ui, p: Paint) -> El {
     let y = match (position, mac) {
         (IndicatorPosition::Bottom, true) => SCREEN_HEIGHT - 24.0 - height + inset,
         (IndicatorPosition::Bottom, false) => SCREEN_HEIGHT - BOTTOM_OFFSET - height,
-        (_, true) => MENU_BAR + crate::hud_placement::TOP_OFFSET as f32 - inset,
+        (_, true) => MENU_BAR + crate::rune_hud::hud_placement::TOP_OFFSET as f32 - inset,
         (_, false) => TOP_OFFSET,
     };
     screen.child(hud.absolute(0.0, y))

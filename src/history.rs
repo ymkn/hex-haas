@@ -73,6 +73,8 @@ pub enum HistoryKind {
     VoiceAction,
     /// `hex dictation stop --print`: never pasted, so Paste Last skips it.
     Printed,
+    /// Dictate without processing: pasted as heard, with no step run.
+    Raw,
 }
 
 impl HistoryKind {
@@ -82,12 +84,13 @@ impl HistoryKind {
             Self::Send => "Send",
             Self::VoiceAction => "Voice Action",
             Self::Printed => "Printed",
+            Self::Raw => "Raw",
         }
     }
 }
 
 /// Bounded record of the post-processing that shaped the final text.
-pub type HistoryProcessing = crate::events::DictationProcessing;
+pub type HistoryProcessing = crate::desktop::events::DictationProcessing;
 
 /// One retained successful result.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -157,7 +160,6 @@ struct LoadedHistory {
 
 /// Read one atomic file snapshot without recovery, pruning writes, or workers.
 /// Opening once pins the old or new inode while the app replaces the file.
-#[cfg(target_os = "macos")]
 pub fn read_snapshot(path: &std::path::Path) -> io::Result<Vec<HistoryEntry>> {
     use std::io::Read;
     // Text can expand sixfold when JSON-escaped, plus bounded metadata.
@@ -520,7 +522,7 @@ impl History {
     }
 }
 
-pub use crate::events::now_ms;
+pub use crate::desktop::events::now_ms;
 
 fn truncated(text: &str, max_bytes: usize) -> String {
     text[..text.floor_char_boundary(max_bytes)].to_string()

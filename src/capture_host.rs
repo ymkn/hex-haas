@@ -1,10 +1,11 @@
-//! The `capture` experiment (macOS and Linux): Scrawl's capture engine, the
-//! `scrawl-capture` crate, hosted inside Hex. Step 3 of
+//! The `capture` experiment (macOS, Linux, and Windows): Scrawl's capture
+//! engine, the `scrawl-capture` crate, hosted inside Hex. Step 3 of
 //! `docs/plans/capture-in-hex.md`. Everything here is shared; what differs
-//! by OS is the engine's own platform adapter (ScreenCaptureKit, or the
-//! portal, PipeWire and VA-API), where the audio timeline comes from
-//! (`DictationAudio` on macOS, the Linux listener's [`ListenerTimeline`]),
-//! "While dictating" ([`Environment`]), the transcriber, and the clipboard.
+//! by OS is the engine's own platform adapter (ScreenCaptureKit; the portal,
+//! PipeWire and VA-API; or Windows.Graphics.Capture), where the audio
+//! timeline comes from (`DictationAudio` on macOS, the Linux and Windows
+//! listeners' [`ListenerTimeline`]), "While dictating" ([`Environment`]),
+//! the transcriber, and the clipboard.
 //!
 //! The engine records the screen and writes the bundle; Hex owns the
 //! microphone and the model. A capture copies audio from the dictation
@@ -32,6 +33,7 @@
 
 use std::fs;
 use std::fs::DirBuilder;
+#[cfg(unix)]
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -54,20 +56,23 @@ use scrawl_capture::transcribe::AppleTranscriber;
 use scrawl_capture::transcribe::Transcriber;
 
 use crate::audio::CaptureInstant;
+#[cfg(target_os = "macos")]
+pub use crate::audio::recording_environment::RecordingEnvironmentController as Environment;
+#[cfg(target_os = "macos")]
+use crate::audio::recording_environment::RecordingEnvironmentSession as Quiet;
 use crate::control::{
     ControlReply, ScrawlCaptureAction, ScrawlCaptureOutcome, ScrawlCaptureReport,
     ScrawlCaptureState,
 };
 use crate::dictation::StreamingResampler;
 #[cfg(target_os = "macos")]
-use crate::dictation_audio::DictationAudio;
-#[cfg(target_os = "macos")]
-pub use crate::recording_environment::RecordingEnvironmentController as Environment;
-#[cfg(target_os = "macos")]
-use crate::recording_environment::RecordingEnvironmentSession as Quiet;
-use crate::transcription_engine::TranscriptionEngine;
-use crate::transcription_models::{ModelRuntime, TranscriptionModelId};
+use crate::dictation::audio::DictationAudio;
+use crate::transcription::engine::TranscriptionEngine;
+use crate::transcription::models::{ModelRuntime, TranscriptionModelId};
 
+// `hex annotate`'s folder commands; Windows has no control transport for
+// them yet.
+#[cfg_attr(target_os = "windows", allow(dead_code))]
 mod library;
 mod permissions;
 mod routing;
@@ -85,10 +90,10 @@ pub use permissions::{
 pub use routing::CaptureRoute;
 pub use routing::{RouteAnswer, RouteDelivery, RouteDest};
 #[cfg(target_os = "macos")]
-pub use screen_access::{ScreenAccess, screen_access, screen_access_now};
+pub use screen_access::{ScreenAccess, invalidate_screen_access, screen_access, screen_access_now};
 #[cfg(target_os = "macos")]
 pub use sink::CaptureSink;
-#[cfg(target_os = "linux")]
+#[cfg(not(target_os = "macos"))]
 pub use sink::ListenerTimeline;
 pub use sink::{CaptureAudio, CaptureSinkClosed};
 
@@ -99,12 +104,30 @@ pub use sink::{CaptureAudio, CaptureSinkClosed};
 pub struct Environment;
 
 #[cfg(target_os = "linux")]
-type Quiet = crate::linux_audio_control::AudioSuppressor;
+type Quiet = crate::linux::audio_control::AudioSuppressor;
 
 #[cfg(target_os = "linux")]
 impl Environment {
     fn begin_capture(&self, behavior: crate::app_settings::RecordingAudioBehavior) -> Quiet {
         let quiet = Quiet::new(behavior);
+        quiet.suppress();
+        quiet
+    }
+}
+
+/// "While dictating" for a capture on Windows: its own suppressor, made when
+/// the capture starts and restoring what it changed when dropped.
+#[cfg(target_os = "windows")]
+#[derive(Clone, Default)]
+pub struct Environment;
+
+#[cfg(target_os = "windows")]
+type Quiet = crate::windows::audio_control::AudioSuppressor;
+
+#[cfg(target_os = "windows")]
+impl Environment {
+    fn begin_capture(&self, behavior: crate::app_settings::RecordingAudioBehavior) -> Quiet {
+        let quiet = Quiet::start(behavior);
         quiet.suppress();
         quiet
     }
@@ -131,6 +154,9 @@ pub const SHORTCUT_DEBOUNCE: Duration = Duration::from_millis(400);
 /// Retention passes over the captures folder.
 const RETENTION_FIRST: Duration = Duration::from_secs(90);
 const RETENTION_EVERY: Duration = Duration::from_secs(60 * 60);
+/// How often a recording capture's collector looks whether its screen source
+/// gave up.
+const SCREEN_CHECK: Duration = Duration::from_millis(100);
 /// How long captures wait to try again after the host failed to start.
 const START_RETRY: Duration = Duration::from_secs(60);
 
@@ -278,6 +304,11 @@ trait Recording: Send {
     fn input(&self) -> Option<InputSink> {
         None
     }
+    /// Why its screen source gave up before the stop (Linux: the portal's
+    /// picker was cancelled), if it did: the capture then fails.
+    fn failure(&self) -> Option<String> {
+        None
+    }
 }
 
 /// A stopped capture, waiting to be written.
@@ -322,6 +353,10 @@ impl Recording for scrawl_capture::capture::Capture {
 
     fn input(&self) -> Option<InputSink> {
         Some(scrawl_capture::capture::Capture::input(self).clone())
+    }
+
+    fn failure(&self) -> Option<String> {
+        scrawl_capture::capture::Capture::screen_failure(self)
     }
 }
 
@@ -457,6 +492,16 @@ pub fn capsule_pill() -> Option<[f32; 4]> {
         .unwrap_or_else(|error| error.into_inner())
 }
 
+/// The engine's units per overlay point: Windows' targets, windows, and
+/// pointer are physical pixels, and the overlays (on the primary display)
+/// lay out in its points; elsewhere both are points.
+pub fn pixels_per_point() -> f64 {
+    #[cfg(target_os = "windows")]
+    return scrawl_capture::win::primary_monitor().map_or(1.0, |monitor| monitor.scale);
+    #[cfg(not(target_os = "windows"))]
+    1.0
+}
+
 /// Whether a click lands on the capsule's pill, which takes it, rather than
 /// the app beneath. The panel's place comes from the window list, reread at
 /// most every 250 ms (scrolls come in bursts); it only moves between
@@ -561,7 +606,7 @@ fn hex_engine_config() -> EngineConfig {
 static DICTATION_ENGINE: Mutex<Option<Weak<TranscriptionEngine>>> = Mutex::new(None);
 
 /// Points captures at the listener's new engine after a model change.
-#[cfg(target_os = "linux")]
+#[cfg(not(target_os = "macos"))]
 pub fn use_engine(engine: &Arc<TranscriptionEngine>) {
     *DICTATION_ENGINE
         .lock()
@@ -668,7 +713,7 @@ pub struct TimedWord {
 #[cfg(target_os = "macos")]
 fn transcribe_words(
     engine: &Weak<TranscriptionEngine>,
-    selection: &crate::transcription_models::TranscriptionSelection,
+    selection: &crate::transcription::models::TranscriptionSelection,
     samples: Vec<f32>,
 ) -> Result<(String, Vec<TimedWord>)> {
     let transcript = crate::parakeet::transcribe_with_words(engine, selection, samples)?;
@@ -684,20 +729,20 @@ fn transcribe_words(
     Ok((transcript.text, words))
 }
 
-/// The clip's text and words, as one foreground request on the Linux
-/// listener's engine: after the dictation already sent, never inside a live
-/// stream. Its model is whatever the listener has loaded.
-#[cfg(target_os = "linux")]
+/// The clip's text and words, as one foreground request on the Linux or
+/// Windows listener's engine: after the dictation already sent, never inside
+/// a live stream. Its model is whatever the listener has loaded.
+#[cfg(not(target_os = "macos"))]
 fn transcribe_words(
     engine: &Weak<TranscriptionEngine>,
-    _selection: &crate::transcription_models::TranscriptionSelection,
+    _selection: &crate::transcription::models::TranscriptionSelection,
     samples: Vec<f32>,
 ) -> Result<(String, Vec<TimedWord>)> {
     if samples.is_empty() {
         return Ok((String::new(), Vec::new()));
     }
     let (send, transcript) = mpsc::sync_channel(1);
-    let offline: crate::transcription_engine::Offline = Box::new(move |model, samples| {
+    let offline: crate::transcription::engine::Offline = Box::new(move |model, samples| {
         let (text, words) = model
             .transcribe_words(&samples)
             .map_err(|error| format!("{error:#}"))?;
@@ -754,7 +799,7 @@ const WORD_LAGS: &[(TranscriptionModelId, &str, WordLag)] = &[(
 )];
 
 fn word_lag(model: TranscriptionModelId) -> Option<&'static WordLag> {
-    let ModelRuntime::Gguf(artifact) = crate::transcription_models::definition(model).runtime
+    let ModelRuntime::Gguf(artifact) = crate::transcription::models::definition(model).runtime
     else {
         return None;
     };
@@ -800,15 +845,22 @@ fn corrected_words(words: Vec<TimedWord>, lag: Option<&WordLag>) -> Vec<WordTimi
 
 /// Creates `dir` and missing parents owner-only, and makes `dir` itself
 /// owner-only if it already existed.
+/// On Windows the folder inherits the profile's ACL, which is the user's.
 fn private_dirs(dir: &Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
+    let mut builder = DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    builder.mode(0o700);
+    builder
         .create(dir)
         .wrap_err_with(|| format!("could not create {}", dir.display()))?;
-    fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
-        .wrap_err_with(|| format!("could not restrict {}", dir.display()))
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
+            .wrap_err_with(|| format!("could not restrict {}", dir.display()))?;
+    }
+    Ok(())
 }
 
 /// A fresh owner-only `<captures>/<unix ms>.scrawl` folder; never adopts one
@@ -833,7 +885,11 @@ fn new_bundle_dir(captures_dir: &Path) -> Result<PathBuf> {
             n => format!("{stamp}-{n}.scrawl"),
         };
         let dir = captures_dir.join(name);
-        match DirBuilder::new().mode(0o700).create(&dir) {
+        #[cfg_attr(not(unix), allow(unused_mut))]
+        let mut builder = DirBuilder::new();
+        #[cfg(unix)]
+        builder.mode(0o700);
+        match builder.create(&dir) {
             Ok(()) => return Ok(dir),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => {
@@ -849,7 +905,11 @@ fn new_bundle_dir(captures_dir: &Path) -> Result<PathBuf> {
 
 /// Makes everything in `dir` owner-only. Scrawl writes its manifest, audio,
 /// and frames `0600`, but the movie, the window log, and folders still get
-/// the process umask.
+/// the process umask. Windows files inherit the folder's ACL.
+#[cfg(not(unix))]
+fn restrict_bundle(_: &Path) {}
+
+#[cfg(unix)]
 fn restrict_bundle(dir: &Path) {
     use std::os::unix::fs::PermissionsExt;
     let mut pending = vec![dir.to_path_buf()];
@@ -1543,9 +1603,10 @@ impl CaptureHost {
     }
 
     /// The Annotate key went down (Linux: the portal's Activated, or the
-    /// X11 grab's press). Nothing recording, it starts one; recording, it
-    /// waits to see whether this is a tap or a hold ([`Self::annotate_up`]).
-    #[cfg(target_os = "linux")]
+    /// X11 grab's press; Windows: the keyboard hook). Nothing recording, it
+    /// starts one; recording, it waits to see whether this is a tap or a
+    /// hold ([`Self::annotate_up`]).
+    #[cfg(not(target_os = "macos"))]
     pub fn annotate_down(&mut self, audio: &impl AudioTimeline) {
         match self.shortcut_activity(CaptureInstant::now(), audio) {
             ShortcutActivity::Recording { elapsed } if elapsed < SHORTCUT_DEBOUNCE => {}
@@ -1558,7 +1619,7 @@ impl CaptureHost {
 
     /// The Annotate key came up: a tap stops the recording, a hold only
     /// stops drawing.
-    #[cfg(target_os = "linux")]
+    #[cfg(not(target_os = "macos"))]
     pub fn annotate_up(&mut self, audio: &impl AudioTimeline) {
         if annotate_key_up() == KeyUp::Tap {
             self.shortcut(ShortcutAction::Finish, audio);
@@ -1692,8 +1753,9 @@ impl CaptureHost {
         }
     }
 
-    /// Ends a capture whose engine failed to start: its collector exited on
-    /// its own and settled the failure. Finishes an iPhone capture whose
+    /// Ends a capture whose engine failed to start, or whose screen source
+    /// gave up while it recorded: its collector exited on its own and
+    /// settled the failure. Finishes an iPhone capture whose
     /// mirror ended on its own (unplugged, never found, or no camera
     /// access): what it recorded is written, or why it recorded nothing
     /// fails it.
@@ -2326,17 +2388,23 @@ struct LiveInput(Arc<Mutex<InputState>>);
 
 static SHARED_INPUT: Mutex<Option<LiveInput>> = Mutex::new(None);
 
+/// The recording capture's [`InkSource`], kept apart from [`LiveInput`]'s
+/// lock: the `capture-input` thread holds that lock while a pen release ends
+/// its stroke ([`end_stroke`]), which reads the pointer from here, so reading
+/// it through that lock deadlocked the thread and, with it, every view that
+/// asks for the ink.
+static INK: Mutex<Option<InkSource>> = Mutex::new(None);
+
+fn set_ink(source: Option<InkSource>) {
+    *INK.lock().unwrap_or_else(|error| error.into_inner()) = source;
+}
+
 /// The recording capture's ink, laser, and pointer, for the ink overlay to
 /// draw: `None` until its engine started, and once it ended.
 pub fn ink_source() -> Option<InkSource> {
-    let shared = SHARED_INPUT
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    let state = shared.as_ref()?.state();
-    state.target.as_ref().map(|target| InkSource {
-        telemetry: target.sink.telemetry().clone(),
-        t0: target.t0,
-    })
+    INK.lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone()
 }
 
 /// Where a recording capture keeps its strokes, and its clock.
@@ -2401,6 +2469,7 @@ impl LiveInput {
         let mut state = self.state();
         state.recording = bundle.map(Path::to_path_buf);
         state.target = None;
+        set_ink(None);
         TAP_RECORDING.store(false, Ordering::Release);
         let dropped = DROPPED_INPUT.swap(0, Ordering::Relaxed);
         if dropped > 0 {
@@ -2423,6 +2492,10 @@ impl LiveInput {
         if state.recording.as_deref() != Some(bundle) {
             return;
         }
+        set_ink(Some(InkSource {
+            telemetry: sink.telemetry().clone(),
+            t0,
+        }));
         state.target = Some(InputTarget {
             bundle: bundle.to_path_buf(),
             sink,
@@ -2442,6 +2515,7 @@ impl LiveInput {
             .is_some_and(|target| target.bundle == bundle)
         {
             state.target = None;
+            set_ink(None);
             TAP_RECORDING.store(false, Ordering::Release);
             reset_drawing();
         }
@@ -2527,6 +2601,10 @@ pub enum CaptureControl {
     /// Drawing on or off, or a recording that draws (`hex annotate draw`).
     #[cfg(target_os = "linux")]
     Draw,
+    /// A `hex annotate start|stop|cancel|status` that waits for the host's
+    /// answer on the sender.
+    #[cfg(not(target_os = "macos"))]
+    Reply(ScrawlCaptureAction, SyncSender<ControlReply>),
 }
 
 /// Hands `control` to the listener without waiting for it.
@@ -2545,12 +2623,13 @@ pub fn send_to_listener(control: CaptureControl) -> Result<()> {
         .map_err(|error| eyre!(error))
 }
 
-/// The Linux listener's queue of capsule commands, while one listens.
-#[cfg(target_os = "linux")]
+/// The Linux or Windows listener's queue of capsule commands, while one
+/// listens.
+#[cfg(not(target_os = "macos"))]
 static LISTENER: Mutex<Option<SyncSender<CaptureControl>>> = Mutex::new(None);
 
 /// Hands `control` to the listener without waiting for it.
-#[cfg(target_os = "linux")]
+#[cfg(not(target_os = "macos"))]
 pub fn send_to_listener(control: CaptureControl) -> Result<()> {
     LISTENER
         .lock()
@@ -2562,7 +2641,7 @@ pub fn send_to_listener(control: CaptureControl) -> Result<()> {
 }
 
 /// Makes the calling listener the one capsule commands reach.
-#[cfg(target_os = "linux")]
+#[cfg(not(target_os = "macos"))]
 pub fn listen_for_controls() -> Receiver<CaptureControl> {
     let (send, receive) = mpsc::sync_channel(16);
     *LISTENER.lock().unwrap_or_else(|error| error.into_inner()) = Some(send);
@@ -2570,10 +2649,10 @@ pub fn listen_for_controls() -> Receiver<CaptureControl> {
 }
 
 impl ShortcutActivity {
-    /// What a press asks for on Linux while nothing records: it records at
-    /// once. A press while recording is a tap or a hold, decided when the
-    /// key comes up ([`CaptureHost::annotate_up`]).
-    #[cfg(target_os = "linux")]
+    /// What a press asks for on Linux and Windows while nothing records: it
+    /// records at once. A press while recording is a tap or a hold, decided
+    /// when the key comes up ([`CaptureHost::annotate_up`]).
+    #[cfg(not(target_os = "macos"))]
     pub fn on_press(self) -> ShortcutAction {
         match self {
             Self::Free => ShortcutAction::Record,
@@ -3103,6 +3182,16 @@ fn hand_off(how: HandOff, bundle: &Path) -> anyhow::Result<()> {
     }
 }
 
+/// Windows pastes with the engine's own Ctrl+V into the app in front: the
+/// contact sheet, then the summary (a terminal gets the sheet's path).
+#[cfg(target_os = "windows")]
+fn hand_off(how: HandOff, bundle: &Path) -> anyhow::Result<()> {
+    match how {
+        HandOff::Paste => scrawl_capture::handoff::paste_bundle_image_and_text(bundle),
+        HandOff::Inspect => inspect(bundle),
+    }
+}
+
 fn inspect(bundle: &Path) -> anyhow::Result<()> {
     scrawl_capture::handoff::load_bundle(bundle).and_then(|(dir, loaded)| {
         scrawl_capture::handoff::open_path(&dir.join(loaded.contact_sheet))
@@ -3120,16 +3209,16 @@ fn summary(bundle: &Path) -> anyhow::Result<String> {
 /// for as long as it lives, so a copied capture stays pasteable.
 #[cfg(target_os = "linux")]
 fn with_linux_paster(
-    use_it: impl FnOnce(&mut crate::linux_paste::LinuxPaster) -> Result<()>,
+    use_it: impl FnOnce(&mut crate::linux::paste::LinuxPaster) -> Result<()>,
 ) -> anyhow::Result<()> {
-    static PASTER: Mutex<Option<crate::linux_paste::LinuxPaster>> = Mutex::new(None);
+    static PASTER: Mutex<Option<crate::linux::paste::LinuxPaster>> = Mutex::new(None);
     let mut paster = PASTER.lock().unwrap_or_else(|error| error.into_inner());
     if paster.is_none() {
         let shift = crate::app_settings::AppSettings::load()
             .map(|settings| settings.paste_with_shift)
             .unwrap_or(false);
         *paster = Some(
-            crate::linux_paste::LinuxPaster::new(
+            crate::linux::paste::LinuxPaster::new(
                 Arc::default(),
                 Arc::new(AtomicBool::new(shift)),
                 Default::default(),
@@ -3152,6 +3241,8 @@ fn copy_to_clipboard(bundle: &Path) {
     #[cfg(target_os = "linux")]
     let copied =
         summary(bundle).and_then(|summary| with_linux_paster(|paster| paster.copy(&summary)));
+    #[cfg(target_os = "windows")]
+    let copied = scrawl_capture::handoff::copy_bundle_to_clipboard(bundle);
     if let Err(error) = copied {
         tracing::warn!(error = format!("{error:#}"), "could not copy the capture");
     }
@@ -3194,14 +3285,36 @@ fn collect(
         }
     };
     let mut timeline = Timeline::new(t0);
-    for chunk in chunks {
+    let mut checked = Instant::now();
+    loop {
+        let chunk = match chunks.recv_timeout(SCREEN_CHECK) {
+            Ok(chunk) => Some(chunk),
+            Err(mpsc::RecvTimeoutError::Timeout) => None,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        };
         match chunk {
-            CaptureAudio::Samples {
+            Some(CaptureAudio::Samples {
                 samples,
                 sample_rate,
                 captured_through,
-            } => timeline.push(&samples, sample_rate, captured_through),
-            CaptureAudio::Gap { from, through } => timeline.gap(from, through),
+            }) => timeline.push(&samples, sample_rate, captured_through),
+            Some(CaptureAudio::Gap { from, through }) => timeline.gap(from, through),
+            None => {}
+        }
+        // A screen source that gave up (the portal's picker cancelled) ends
+        // the capture, as an engine that never started does: the listener's
+        // next reap clears it, so dictation and the shortcut work again.
+        if checked.elapsed() >= SCREEN_CHECK {
+            checked = Instant::now();
+            if let Some(error) = capture.failure() {
+                tracing::error!(error, "the capture's screen source failed");
+                input.detach(&bundle);
+                drop(chunks);
+                capture.cancel();
+                remove_bundle(&bundle);
+                lock(outcomes).fail(bundle, error);
+                return;
+            }
         }
     }
     input.detach(&bundle);
@@ -3403,7 +3516,7 @@ pub fn replay(wavs: &[PathBuf]) -> Result<PathBuf> {
     let mut samples = Vec::new();
     let mut sample_rate = None;
     for wav in wavs {
-        let (audio, rate) = crate::voice_filter::read_wav_mono_f32(wav)
+        let (audio, rate) = crate::audio::voice_filter::read_wav_mono_f32(wav)
             .map_err(|error| eyre!("{}: {error}", wav.display()))?;
         if *sample_rate.get_or_insert(rate) != rate {
             return Err(eyre!(
@@ -3519,6 +3632,26 @@ impl AudioTimeline for WavTimeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A pen release on the `capture-input` thread ends its stroke while
+    /// that thread holds the input target's lock; reading the ink must not
+    /// take that lock again (#572: Windows hung on the first stroke).
+    #[test]
+    fn ending_a_stroke_while_the_input_target_is_locked_does_not_deadlock() {
+        let live = LiveInput::shared().expect("the capture-input thread starts");
+        let (done, finished) = mpsc::channel();
+        let held = thread::spawn(move || {
+            let _state = live.state();
+            end_stroke();
+            let _ = ink_source();
+            let _ = done.send(());
+        });
+        assert!(
+            finished.recv_timeout(Duration::from_secs(5)).is_ok(),
+            "ending a stroke under the input lock deadlocked"
+        );
+        held.join().expect("the thread finishes");
+    }
 
     /// The capsule is one 640×424 panel above everything, but only its pill
     /// takes clicks: a click elsewhere on the panel, or under the
@@ -3845,6 +3978,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn mode(path: &Path) -> u32 {
         use std::os::unix::fs::PermissionsExt;
         fs::metadata(path).unwrap().permissions().mode() & 0o777
@@ -3961,8 +4095,11 @@ mod tests {
         assert_eq!(words[1]["text"], "there");
         assert_eq!(words[1]["t0"], 550);
         assert_eq!(manifest["audio"], "audio.wav");
+        #[cfg(unix)]
         assert_eq!(mode(&dir), 0o700);
+        #[cfg(unix)]
         assert_eq!(mode(&bundle), 0o700);
+        #[cfg(unix)]
         for entry in fs::read_dir(&bundle).unwrap() {
             let entry = entry.unwrap();
             let expected = if entry.file_type().unwrap().is_dir() {
@@ -4008,6 +4145,63 @@ mod tests {
         assert!(audio.open.lock().unwrap().is_none(), "the sink is closed");
         // The next start is a fresh capture.
         assert!(report(host.control(ScrawlCaptureAction::Start, &audio)).changed);
+        host.shutdown(&audio);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A screen source that gives up after the engine started (GNOME's
+    /// screen-share picker cancelled) fails the capture on its own, so it
+    /// no longer counts as recording and dictation works again (#681).
+    #[test]
+    fn a_screen_source_that_gives_up_ends_the_capture() {
+        struct GivesUp;
+        impl CaptureEngine for GivesUp {
+            fn start(&self, start: Start) -> anyhow::Result<Box<dyn Recording>> {
+                Ok(Box::new(GaveUp {
+                    dir: start.bundle_dir.unwrap(),
+                }))
+            }
+
+            fn phones(&self) -> anyhow::Result<Vec<String>> {
+                Ok(Vec::new())
+            }
+        }
+        struct GaveUp {
+            dir: PathBuf,
+        }
+        impl Recording for GaveUp {
+            fn cancel(self: Box<Self>) {
+                let _ = fs::remove_dir_all(&self.dir);
+            }
+
+            fn stop(self: Box<Self>) -> Box<dyn Sealed> {
+                panic!("a capture whose screen gave up is never stopped")
+            }
+
+            fn failure(&self) -> Option<String> {
+                Some("the screen share was cancelled".into())
+            }
+        }
+
+        let dir = temp_dir("gave-up");
+        let audio = FakeTimeline::default();
+        let mut host = CaptureHost::with(Arc::new(GivesUp), Some(dir.clone())).unwrap();
+        let bundle = report(host.control(ScrawlCaptureAction::Start, &audio))
+            .bundle
+            .unwrap();
+        let last = wait_for_last(&mut host, &audio, &bundle, true);
+        assert_eq!(last.stage, "failed");
+        assert!(!bundle.exists());
+        let mut recording = true;
+        for _ in 0..500 {
+            recording = host.recording_since(&audio).is_some();
+            if !recording {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!recording, "the failed capture still counts as recording");
+        assert!(audio.open.lock().unwrap().is_none(), "the sink is closed");
         host.shutdown(&audio);
         fs::remove_dir_all(dir).unwrap();
     }
@@ -4540,8 +4734,8 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn a_capture_stays_quiet_until_it_stops_is_cancelled_or_hex_quits() {
-        use crate::recording_environment::Effect::Mute;
-        use crate::recording_environment::observed::{
+        use crate::audio::recording_environment::Effect::Mute;
+        use crate::audio::recording_environment::observed::{
             self,
             Event::{Held, Restored},
         };

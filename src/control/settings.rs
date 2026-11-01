@@ -22,6 +22,14 @@ pub struct SettingValue {
     pub choices: Vec<String>,
     pub writable: bool,
     pub about: String,
+    /// False where this OS's Hex lacks what the setting needs ([`needs`]):
+    /// it is kept, but does nothing here and `set` refuses it.
+    #[serde(default = "available")]
+    pub available: bool,
+}
+
+fn available() -> bool {
+    true
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -101,16 +109,19 @@ const fn read_only(key: &'static str, kind: Kind, about: &'static str, why: &'st
 const UNIT: Kind = Kind::Number { min: 0.0, max: 1.0 };
 const MODEL_CHANGE: &str = "change the transcription model with `hex model use`";
 
+/// Choice keys whose values are numbers in settings.json.
+const NUMERIC_CHOICES: [&str; 2] = ["meetings.calendar.lead_minutes", "labs.unload_idle_minutes"];
+
 const KEYS: &[Key] = &[
     key(
         "keyboard_model_switching.enabled",
         Kind::Bool,
-        "Switch the model when the keyboard input source changes (macOS)",
+        "Labs: switch the model when the keyboard input source changes (macOS, Windows, X11)",
     ),
     key(
         "keyboard_model_switching.mappings",
         Kind::Json,
-        "Input-source IDs mapped to a model and language; absent sources don't switch (macOS)",
+        "Input-source IDs mapped to a model and language; absent sources don't switch (macOS, Windows, X11)",
     ),
     key(
         "release_microphone_while_idle",
@@ -148,7 +159,7 @@ const KEYS: &[Key] = &[
     key(
         "avoid_bluetooth_microphone",
         Kind::Bool,
-        "System default records from the Mac's microphone, not a Bluetooth headset's (macOS)",
+        "System default records from the built-in or another wired microphone, not a Bluetooth headset's",
     ),
     key(
         "recording_audio_behavior",
@@ -158,12 +169,12 @@ const KEYS: &[Key] = &[
     key(
         "recording_duck_volume",
         UNIT,
-        "Fraction of original output volume while lowering audio (macOS), from 0 to 1",
+        "Fraction of original output volume while lowering audio, from 0 to 1",
     ),
     key(
         "pause_browser_media",
         Kind::Bool,
-        "Also pause a playing browser tab while dictating (macOS, with Pause media)",
+        "Labs: also pause a playing browser tab while dictating (macOS, with Pause media)",
     ),
     key(
         "double_tap_lock",
@@ -190,6 +201,19 @@ const KEYS: &[Key] = &[
         Kind::Shortcut(HotkeySlot::PasteLast),
         "The paste-last-dictation shortcut; none turns it off",
     ),
+    optional(
+        "raw_dictation_hotkey",
+        Kind::Shortcut(HotkeySlot::RawDictation),
+        "Dictate without processing: dictates and pastes the words as heard, skipping \
+         the Output steps; none (the default) turns it off",
+    ),
+    optional(
+        "second_dictation_hotkey",
+        Kind::Shortcut(HotkeySlot::SecondDictation),
+        "Labs: another shortcut that dictates like dictation_hotkey, such as a key on an \
+         external keyboard (macOS, with labs.second_dictation_shortcut); none (the default) \
+         turns it off",
+    ),
     key(
         "show_dock_icon",
         Kind::Bool,
@@ -207,15 +231,10 @@ const KEYS: &[Key] = &[
         "The dictation language",
         MODEL_CHANGE,
     ),
-    key(
-        "transcription.recognition_hints",
-        Kind::Text,
-        "Names and terms the model should expect (models that support hints)",
-    ),
     read_only(
         "transcription_recents",
         Kind::Json,
-        "Recently used models, each with its language and hints",
+        "Recently used models, each with its language",
         "Hex records these as you switch models",
     ),
     key(
@@ -239,9 +258,109 @@ const KEYS: &[Key] = &[
         "How long dictation history is kept",
     ),
     key(
+        "labs.live_text",
+        Kind::Bool,
+        "Labs: provisional words beside the HUD while dictating",
+    ),
+    key(
+        "labs.live_chapters",
+        Kind::Bool,
+        "Labs: chapter meeting transcripts while recording",
+    ),
+    key(
+        "labs.playground",
+        Kind::Bool,
+        "Labs: the scene and story browser in the window",
+    ),
+    key(
+        "labs.vocabulary_biasing",
+        Kind::Bool,
+        "Labs: bias Parakeet transcription toward the vocabulary",
+    ),
+    key(
+        "labs.mouse_shortcuts",
+        Kind::Bool,
+        "Labs: record mouse buttons as shortcuts (macOS)",
+    ),
+    key(
+        "labs.unload_idle",
+        Kind::Bool,
+        "Labs: unload the speech model when idle, freeing its memory",
+    ),
+    key(
+        "labs.unload_idle_minutes",
+        Kind::Choice(&["5", "15", "30", "60"]),
+        "Minutes unused before Labs › Unload model when idle unloads the model",
+    ),
+    key(
+        "labs.restore_shortcut_default",
+        Kind::Bool,
+        "Labs: offer Restore default beside the Paste last dictation shortcut",
+    ),
+    key(
+        "labs.keep_on_clipboard",
+        Kind::Bool,
+        "Labs: leave the dictation on the clipboard after pasting instead of restoring what was there (macOS)",
+    ),
+    key(
+        "labs.copy_only",
+        Kind::Bool,
+        "Labs: put the dictation on the clipboard instead of pasting it (macOS)",
+    ),
+    key(
+        "labs.spoken_formatting",
+        Kind::Bool,
+        "Labs: turn spoken \"new line\", \"new paragraph\", and \"open/close quote\" into line breaks and quotation marks",
+    ),
+    key(
+        "labs.spoken_symbols",
+        Kind::Bool,
+        "Labs: turn spoken \"comma\", \"colon\", \"hashtag\", \"underscore\", and similar words into symbols joined to their words",
+    ),
+    key(
+        "labs.filler_words",
+        Kind::Bool,
+        "Labs: remove filler words such as um and uh from dictations, without an AI model",
+    ),
+    key(
+        "labs.subtitle_export",
+        Kind::Bool,
+        "Labs: export meeting transcripts as SRT or VTT subtitles with hex meetings show --srt|--vtt",
+    ),
+    key(
+        "labs.second_dictation_shortcut",
+        Kind::Bool,
+        "Labs: second_dictation_hotkey dictates like the dictation shortcut (macOS)",
+    ),
+    key(
+        "labs.smart_spacing",
+        Kind::Bool,
+        "Labs: add a space before a dictation pasted right after a word (macOS)",
+    ),
+    key(
+        "labs.picker_sort_filter",
+        Kind::Bool,
+        "Labs: sort the Local transcription picker by recommendation, size, or name, and show only models for the saved language",
+    ),
+    key(
+        "labs.sided_modifier_chords",
+        Kind::Bool,
+        "Labs: the shortcut recorder keeps which side each modifier of a modifier-only chord is on, such as Right Command + Right Option (macOS)",
+    ),
+    key(
+        "labs.tap_or_hold",
+        Kind::Bool,
+        "Labs: in Toggle mode, a press held past the hold threshold dictates until it lifts; a short tap still starts and stops (macOS)",
+    ),
+    key(
+        "labs.benchmark_details",
+        Kind::Bool,
+        "Labs: the Local transcription picker shows each model's raw error rate (WER or CER), benchmark, source, and conditions",
+    ),
+    key(
         "meetings.enabled",
         Kind::Bool,
-        "Meetings (beta): call detection, recording, and transcripts",
+        "Labs: Meetings (beta), call detection, recording, and transcripts",
     ),
     optional(
         "meetings.output_folder",
@@ -254,6 +373,11 @@ const KEYS: &[Key] = &[
         "Title and summarize meetings with Apple Intelligence",
     ),
     key(
+        "meetings.summarize_with_opencode",
+        Kind::Bool,
+        "Title and summarize meetings with the OpenCode model (sends the transcript to it)",
+    ),
+    key(
         "meetings.show_recording_indicator",
         Kind::Bool,
         "Show the floating recording indicator during meetings",
@@ -262,6 +386,11 @@ const KEYS: &[Key] = &[
         "meetings.recording_indicator_corner",
         Kind::Choice(&["top_right", "top_left", "bottom_right", "bottom_left"]),
         "Screen corner of the meeting recording indicator",
+    ),
+    optional(
+        "meetings.retention",
+        Kind::Choice(&["day", "week", "month", "forever"]),
+        "How long finished meetings are kept before they move to the Trash; none keeps new meetings 24 hours and older ones until you choose",
     ),
     key(
         "meetings.providers",
@@ -292,7 +421,7 @@ const KEYS: &[Key] = &[
     key(
         "experimental.hex_microphone",
         Kind::Bool,
-        "The experimental Hex Microphone virtual device",
+        "Labs: the Voice Filter and its Hex Microphone virtual input",
     ),
     key(
         "experimental.hex_microphone_mode",
@@ -332,7 +461,7 @@ const KEYS: &[Key] = &[
     key(
         "share_dictation_shortcut",
         Kind::Bool,
-        "Let other apps see the dictation shortcut too (Windows)",
+        "Labs: let other apps see the dictation shortcut too (Windows)",
     ),
     optional(
         "ui_language",
@@ -406,6 +535,48 @@ const RETENTION_DAYS: Kind = Kind::Integer { min: 1, max: 3650 };
 #[cfg(not(hex_capture))]
 const CAPTURE_KEYS: &[Key] = &[];
 
+/// Settings that act only where Hex has a capability (by its
+/// `rune_ui::capabilities` name), the same one that shows their row in the
+/// window. The first matching prefix decides.
+const NEEDS: &[(&str, &str)] = &[
+    ("meetings.calendar.", "calendar"),
+    ("meetings.", "meetings"),
+    ("labs.live_chapters", "meetings"),
+    ("labs.subtitle_export", "meetings"),
+    ("experimental.hex_microphone", "fun"),
+    ("show_dock_icon", "dock_icon"),
+    ("keyboard_model_switching.", "keyboard_model_switching"),
+    ("enable_on_launch", "listener_control"),
+    ("share_dictation_shortcut", "share_shortcut"),
+];
+
+/// The capability `key` needs, if any.
+fn needs(key: &str) -> Option<&'static str> {
+    NEEDS
+        .iter()
+        .find(|(prefix, _)| key == *prefix || key.starts_with(prefix))
+        .map(|(_, capability)| *capability)
+}
+
+/// Why `hex settings set` refuses `name` on this OS, if it does.
+pub fn unavailable(name: &str) -> Option<ControlError> {
+    if let Some(feature) = crate::labs::Feature::for_settings_key(name)
+        && !feature.shipped()
+    {
+        return Some(ControlError::new(
+            "unsupported",
+            format!("`{name}` belongs to a Labs feature that only dev builds have"),
+        ));
+    }
+    let capability = needs(name).filter(|capability| !crate::rune_ui::capability(capability))?;
+    Some(ControlError::new(
+        "unsupported",
+        format!(
+            "`{name}` does nothing on this OS: it needs {capability}, which Hex has only elsewhere"
+        ),
+    ))
+}
+
 /// Every key, in registry order.
 fn keys() -> impl Iterator<Item = &'static Key> {
     KEYS.iter().chain(CAPTURE_KEYS)
@@ -413,7 +584,7 @@ fn keys() -> impl Iterator<Item = &'static Key> {
 
 /// Settings `hex settings` never shows: Hex's own bookkeeping.
 #[cfg(test)]
-const INTERNAL: &[&str] = &["migrations"];
+const INTERNAL: &[&str] = &["migrations", "mouse_shortcut_notice"];
 
 /// Settings another `hex` command edits instead (`hex vocabulary`).
 #[cfg(test)]
@@ -449,6 +620,31 @@ impl Change {
     }
 }
 
+/// Deprecated: recognition hints merged into the vocabulary. `get` reads
+/// the vocabulary's terms, comma-separated, and `set` adds names to it;
+/// `list` leaves it out.
+const RECOGNITION_HINTS: &str = "transcription.recognition_hints";
+
+fn recognition_hints(settings: &AppSettings) -> SettingValue {
+    SettingValue {
+        key: RECOGNITION_HINTS.into(),
+        value: Value::String(
+            settings
+                .vocabulary
+                .iter()
+                .map(|entry| entry.term.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+        ),
+        kind: Kind::Text.name().into(),
+        choices: Vec::new(),
+        writable: true,
+        about: "Deprecated: the vocabulary's terms; setting it adds names to the vocabulary                 (use `hex vocabulary`)"
+            .into(),
+        available: true,
+    }
+}
+
 /// Every setting, in registry order.
 pub fn list(settings: &AppSettings) -> Vec<SettingValue> {
     let json = serde_json::to_value(settings).unwrap_or(Value::Null);
@@ -457,6 +653,9 @@ pub fn list(settings: &AppSettings) -> Vec<SettingValue> {
 
 /// One setting, or every setting under a prefix such as `meetings`.
 pub fn get(settings: &AppSettings, name: &str) -> Result<Vec<SettingValue>, ControlError> {
+    if name == RECOGNITION_HINTS {
+        return Ok(vec![recognition_hints(settings)]);
+    }
     let json = serde_json::to_value(settings).unwrap_or(Value::Null);
     let prefix = format!("{name}.");
     let found: Vec<_> = keys()
@@ -495,9 +694,7 @@ fn value_of(key: &Key, json: &Value) -> SettingValue {
             Ok(Some(binding)) => Value::String(format_hotkey(&binding)),
             _ => Value::Null,
         },
-        Kind::Choice(_) if key.key == "meetings.calendar.lead_minutes" => {
-            Value::String(raw.to_string())
-        }
+        Kind::Choice(_) if NUMERIC_CHOICES.contains(&key.key) => Value::String(raw.to_string()),
         _ => raw,
     };
     SettingValue {
@@ -510,6 +707,7 @@ fn value_of(key: &Key, json: &Value) -> SettingValue {
         },
         writable: key.read_only.is_none(),
         about: key.about.into(),
+        available: needs(key.key).is_none_or(crate::rune_ui::capability),
     }
 }
 
@@ -525,6 +723,17 @@ pub fn apply(
     raw: &str,
     shortcuts: &ShortcutRules,
 ) -> Result<Change, ControlError> {
+    if name == RECOGNITION_HINTS {
+        let mut candidate = settings.clone();
+        crate::dictation::vocabulary::fold_hints(&mut candidate.vocabulary, raw);
+        return Ok(Change {
+            settings: candidate,
+            effects: Vec::new(),
+            message: "Added the names to the vocabulary (transcription.recognition_hints is \
+                      deprecated; use `hex vocabulary`)"
+                .into(),
+        });
+    }
     let key = keys()
         .find(|key| key.key == name)
         .ok_or_else(|| unknown(name))?;
@@ -563,17 +772,32 @@ pub fn apply(
                 ));
             }
         }
-        "dictation_hotkey" | "paste_last_hotkey" | "capture.hotkey" => {
+        "dictation_hotkey"
+        | "paste_last_hotkey"
+        | "raw_dictation_hotkey"
+        | "second_dictation_hotkey"
+        | "capture.hotkey" => {
             let Kind::Shortcut(slot) = key.kind else {
                 unreachable!("shortcut keys have the shortcut kind");
             };
             let binding = match slot {
                 HotkeySlot::Dictation => Some(&candidate.dictation_hotkey),
                 HotkeySlot::PasteLast => candidate.paste_last_hotkey.as_ref(),
+                HotkeySlot::RawDictation => candidate.raw_dictation_hotkey.as_ref(),
+                HotkeySlot::SecondDictation => candidate.second_dictation_hotkey.as_ref(),
                 #[cfg(hex_capture)]
                 HotkeySlot::Capture => Some(&candidate.capture.hotkey),
             };
             if let Some(binding) = binding {
+                if cfg!(target_os = "macos")
+                    && !candidate.labs.mouse_shortcuts
+                    && binding.key.as_ref().is_some_and(HotkeyKey::is_mouse)
+                {
+                    return Err(invalid(
+                        name,
+                        "mouse buttons need Labs › Mouse shortcuts: hex labs on mouse-shortcuts",
+                    ));
+                }
                 (shortcuts.rule)(slot, binding).map_err(|why| invalid(name, &why))?;
                 if settings.hotkey_in_use(slot, binding) {
                     return Err(ControlError::new(
@@ -594,15 +818,6 @@ pub fn apply(
                 choice
                     .validate()
                     .map_err(|error| invalid(name, &error.to_string()))?;
-            }
-        }
-        "transcription.recognition_hints" => {
-            let model = crate::transcription_models::definition(candidate.transcription.model);
-            if !model.supports_recognition_hints {
-                return Err(invalid(
-                    name,
-                    &format!("{} doesn't take recognition hints", model.name),
-                ));
             }
         }
         "dictation_processing.default_mode" => {
@@ -637,6 +852,92 @@ pub fn apply(
         settings: candidate,
         effects,
         message,
+    })
+}
+
+/// Validates every `key: value` in `values` against `settings` and returns
+/// the settings to save, all or none (`hex settings apply`, the Home Manager
+/// module). Values are JSON: booleans, numbers, `null` for `none`, objects
+/// and arrays for json settings, text for the rest. `transcription.model`
+/// and `transcription.language` select a model, as `hex model use` would,
+/// without needing it installed. Keys that depend on each other (a
+/// double-tap-only start and its shortcut) apply in any order.
+pub fn apply_all(
+    settings: &AppSettings,
+    values: &serde_json::Map<String, Value>,
+    shortcuts: &ShortcutRules,
+) -> Result<Change, ControlError> {
+    let mut candidate = settings.clone();
+    let model = values.get("transcription.model");
+    let language = values.get("transcription.language");
+    if model.is_some() || language.is_some() {
+        let text = |name: &str, value: Option<&Value>| match value {
+            None => Ok(None),
+            Some(Value::String(text)) => Ok(Some(text.clone())),
+            Some(_) => Err(invalid(name, "expected text")),
+        };
+        let model = text("transcription.model", model)?
+            .unwrap_or_else(|| candidate.transcription.model.as_str().to_owned());
+        let language = text("transcription.language", language)?;
+        candidate.transcription = super::model_selection(&candidate, &model, language.as_deref())?;
+    }
+    let mut pending = Vec::new();
+    for (name, value) in values {
+        if matches!(
+            name.as_str(),
+            "transcription.model" | "transcription.language"
+        ) {
+            continue;
+        }
+        if let Some(error) = unavailable(name) {
+            return Err(error);
+        }
+        if name == RECOGNITION_HINTS {
+            let Value::String(text) = value else {
+                return Err(invalid(name, "expected text"));
+            };
+            pending.push((name.as_str(), text.clone()));
+            continue;
+        }
+        let key = keys()
+            .find(|key| key.key == name)
+            .ok_or_else(|| unknown(name))?;
+        let raw = match (key.kind, value) {
+            (Kind::Json, value) => value.to_string(),
+            (_, Value::String(text)) => text.clone(),
+            (_, Value::Null) => "none".into(),
+            (_, value) => value.to_string(),
+        };
+        pending.push((name.as_str(), raw));
+    }
+    let mut effects = Vec::new();
+    while !pending.is_empty() {
+        let tried = pending.len();
+        let mut failed = Vec::new();
+        let mut first_error = None;
+        for (name, raw) in pending.drain(..) {
+            match apply(&candidate, name, &raw, shortcuts) {
+                Ok(change) => {
+                    candidate = change.settings;
+                    effects.extend(change.effects);
+                }
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                    failed.push((name, raw));
+                }
+            }
+        }
+        if let Some(error) = first_error
+            && failed.len() == tried
+        {
+            return Err(error);
+        }
+        pending = failed;
+    }
+    Ok(Change {
+        settings: candidate,
+        effects,
+        message: format!("Applied {} settings", values.len()),
     })
 }
 
@@ -689,6 +990,10 @@ fn parse(key: &Key, raw: &str, shortcuts: &ShortcutRules) -> Result<Value, Contr
             Ok(if name == "meetings.calendar.lead_minutes" {
                 let minutes: u8 = choice.parse().expect("lead choices are numbers");
                 debug_assert!(CALENDAR_LEAD_MINUTES.contains(&minutes));
+                Value::from(minutes)
+            } else if name == "labs.unload_idle_minutes" {
+                let minutes: u32 = choice.parse().expect("idle choices are numbers");
+                debug_assert!(crate::app_settings::UNLOAD_IDLE_MINUTES.contains(&minutes));
                 Value::from(minutes)
             } else {
                 Value::String((*choice).into())
@@ -884,12 +1189,17 @@ mod tests {
     /// `OWN_COMMAND` if another `hex` command edits it).
     #[test]
     fn every_persisted_setting_has_a_cli_key() {
-        // Lists left empty are left out of the file; fill them so they count.
+        // Lists left empty and unchosen options are left out of the file;
+        // fill them so they count.
         let settings = AppSettings {
-            vocabulary: vec![crate::vocabulary::VocabularyEntry {
+            vocabulary: vec![crate::dictation::vocabulary::VocabularyEntry {
                 term: "Rune".into(),
                 sounds_like: vec!["roon".into()],
             }],
+            meetings: crate::app_settings::MeetingSettings {
+                retention: Some(crate::app_settings::MeetingRetention::Day),
+                ..Default::default()
+            },
             ..Default::default()
         };
         let json = serde_json::to_value(settings).unwrap();
@@ -917,6 +1227,21 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), keys().count(), "a key is listed twice");
+    }
+
+    #[test]
+    fn settings_name_real_capabilities_and_keys() {
+        let capabilities = crate::rune_ui::capabilities();
+        for (prefix, capability) in NEEDS {
+            assert!(
+                capabilities.contains_key(*capability),
+                "`{prefix}` needs `{capability}`, which is no capability"
+            );
+            assert!(
+                keys().any(|key| key.key == *prefix || key.key.starts_with(prefix)),
+                "`{prefix}` names no setting"
+            );
+        }
     }
 
     #[cfg(hex_capture)]
@@ -965,7 +1290,7 @@ mod tests {
                 .mappings
                 .get("com.apple.keylayout.Spanish"),
             Some(&crate::app_settings::KeyboardModelChoice {
-                model: crate::transcription_models::TranscriptionModelId::ParakeetV3,
+                model: crate::transcription::models::TranscriptionModelId::ParakeetV3,
                 language: "es".into(),
             })
         );
@@ -1001,6 +1326,35 @@ mod tests {
         let retention = get(&settings, "history_retention").unwrap();
         assert_eq!(retention[0].value, Value::String("week".into()));
         assert_eq!(retention[0].choices.len(), 5);
+    }
+
+    #[test]
+    fn recognition_hints_alias_the_vocabulary() {
+        let settings = AppSettings {
+            vocabulary: vec![crate::dictation::vocabulary::VocabularyEntry {
+                term: "Rune".into(),
+                sounds_like: Vec::new(),
+            }],
+            ..Default::default()
+        };
+        let change = apply(&settings, RECOGNITION_HINTS, "rune, Kaffar", &rules()).unwrap();
+        let terms: Vec<_> = change
+            .settings
+            .vocabulary
+            .iter()
+            .map(|entry| entry.term.as_str())
+            .collect();
+        assert_eq!(terms, ["Rune", "Kaffar"]);
+        let read = get(&change.settings, RECOGNITION_HINTS).unwrap();
+        assert_eq!(read[0].value, Value::String("Rune, Kaffar".into()));
+        assert!(
+            list(&settings)
+                .iter()
+                .all(|value| value.key != RECOGNITION_HINTS)
+        );
+        let values = serde_json::json!({ RECOGNITION_HINTS: "Rodolfo" });
+        let applied = apply_all(&settings, values.as_object().unwrap(), &rules()).unwrap();
+        assert_eq!(applied.settings.vocabulary.len(), 2);
     }
 
     #[test]
@@ -1184,5 +1538,41 @@ mod tests {
         assert!(change.settings.double_tap_only);
         let change = apply(&change.settings, "double_tap_lock", "off", &rules()).unwrap();
         assert!(!change.settings.double_tap_only);
+    }
+
+    #[test]
+    fn many_settings_apply_together_or_not_at_all() {
+        let settings = AppSettings {
+            dictation_hotkey: parse_hotkey("option", rules().key_named).unwrap(),
+            ..AppSettings::default()
+        };
+        let values = |json: &str| serde_json::from_str::<serde_json::Map<_, _>>(json).unwrap();
+        let change = apply_all(
+            &settings,
+            &values(
+                r#"{"double_tap_only": true, "double_tap_lock": true,
+                    "dictation_hotkey": "option+space", "sound_effect_volume": 0.4,
+                    "microphone": null, "transcription.model": "parakeet_v3",
+                    "transcription.language": "de"}"#,
+            ),
+            &rules(),
+        )
+        .unwrap();
+        assert!(change.settings.double_tap_only);
+        assert_eq!(
+            format_hotkey(&change.settings.dictation_hotkey),
+            "option+space"
+        );
+        assert_eq!(change.settings.sound_effect_volume, 0.4);
+        assert_eq!(change.settings.transcription.model.as_str(), "parakeet_v3");
+        assert_eq!(change.settings.transcription.language, "de");
+
+        for refused in [
+            r#"{"sound_effects": false, "no_such_setting": 1}"#,
+            r#"{"sound_effects": false, "sound_effect_volume": 7}"#,
+            r#"{"transcription.model": "no_such_model"}"#,
+        ] {
+            assert!(apply_all(&settings, &values(refused), &rules()).is_err());
+        }
     }
 }

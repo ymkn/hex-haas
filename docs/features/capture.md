@@ -1,13 +1,14 @@
-# Annotate (macOS and Linux)
+# Annotate (macOS, Linux, and Windows)
 
 Annotate is Scrawl's capture engine hosted inside Hex (code and settings keep
 the name `capture`), steps 3 to 5 of
 [the plan](../plans/capture-in-hex.md). It runs the real
 `scrawl-capture` crate, imported into `crates/capture`: it records the active
-display with ScreenCaptureKit, or on Linux the screen-cast portal and
-PipeWire (`capture.linux`), (or a cabled iPhone through `scrawl-helper`'s
+display with ScreenCaptureKit, on Linux the screen-cast portal and
+PipeWire (`capture.linux`), on Windows Windows.Graphics.Capture
+(`capture.windows`), (or a cabled iPhone through `scrawl-helper`'s
 mirror) and narration from Hex's microphone, takes ink and clicks (Shift on
-macOS, or the Annotate key held or the pen), transcribes the narration with word timestamps on
+macOS and Windows, or the Annotate key held or the pen), transcribes the narration with word timestamps on
 Hex's loaded model, writes a Scrawl bundle into Scrawl's captures folder,
 copies it to the clipboard, and sends it to an OpenCode session with Scrawl's
 router (`crates/router`), run in Hex's process. Settings › Annotate (under
@@ -17,12 +18,13 @@ Rune overlays.
 
 ```ts
 Turn it on                               // capture.gate
-├── On by default in every macOS and Linux build (capture.enabled); the
-│   `annotate-on-by-default` migration turns it on once for older settings
+├── On by default in every macOS, Linux, and Windows build, stable included
+│   (capture.enabled); the `annotate-on-by-default` migration turns it on
+│   once for older settings
 │   └── macOS bundles sign scrawl-helper beside `hex`; validate-app.sh requires it
-├── Windows -> not compiled; no pane, no `hex annotate`
 ├── Nothing is asked at launch: Screen Recording (macOS) at the first capture,
-│   the portal's dialog (Linux) at the first Screen capture
+│   the portal's dialog (Linux) at the first Screen capture; Windows asks
+│   nothing
 ├── A start without a permission it needs (macOS: Screen Recording unless
 │   iPhone, then Microphone, then Accessibility; capture_host::permissions)
 │   -> refused with code `permission`, no error tone, and the capsule's
@@ -34,23 +36,31 @@ Draw                                     // capture.draw (capture_host::drawing)
 │   while it records, the pointer draws with no click until it comes up
 │   (macOS: CaptureShortcut tells the tap from the hold at release; Linux:
 │   the portal's Activated/Deactivated or the X11 grab's press and release,
-│   linux_input Capture/CaptureUp -> CaptureHost::annotate_down/up)
+│   linux/input Capture/CaptureUp; Windows: the keyboard hook's
+│   HotkeyAction::Capture/CaptureUp -> CaptureHost::annotate_down/up)
 ├── The capsule's pen -> on until clicked again, or the key is tapped, or
 │   held and let go (Action::Pen -> capture_host::toggle_pen). Like a real
 │   pen it inks only between mouse-down and mouse-up (capture_host::
 │   pen_button; Linux: the overlay's drag, macOS: the tap's buttons); moving
 │   with the button up draws nothing, and clicks still never reach the app
+│   └── Releasing the button ends the stroke on the `capture-input` thread;
+│       the pointer it reads (capture_host::ink_source) has its own lock, so
+│       it never re-takes the input target's lock that thread holds (#572:
+│       Windows hung on the first stroke). Check: capture_host
+│       ending_a_stroke_while_the_input_target_is_locked_does_not_deadlock;
+│       not observed on a Windows PC
 ├── Esc while drawing -> stops drawing, never the recording (recognition.rs
-│   on macOS; Escape bound through the portal or grab on Linux, and the
-│   overlay's own key handler where it gets the keyboard)
-├── macOS -> Shift held alone still draws, as in Scrawl
+│   on macOS; Escape bound through the portal or grab on Linux; the keyboard
+│   hook on Windows, when no dictation takes it; and the overlay's own key
+│   handler where it gets the keyboard)
+├── macOS and Windows -> Shift held alone still draws, as in Scrawl
 ├── While drawing -> the ink overlay takes the pointer with a pen cursor, so
 │   clicks never reach the app; the capsule stays clickable above it (macOS:
 │   its level; Linux: the overlay leaves a hole over the capsule's pill).
 │   Every move draws ink; there are no pins and no undo
 ├── `hex annotate draw` (Linux) -> the pen on or off, for desktops without
 │   the portal (it starts a recording drawing)
-├── Default key: ⌥⇧S on macOS; F9 on Linux, a single key one hand holds
+├── Default key: ⌥⇧S on macOS; F9 on Linux and Windows, a single key one hand holds
 │   while the other moves the mouse (F10 is GTK's menu key, F11 full screen,
 │   F12 often a dropdown terminal). Saved bindings stay.
 │   Check: capture_host the_shortcut_records_once_its_keys_come_up; none
@@ -60,7 +70,21 @@ Draw                                     // capture.draw (capture_host::drawing)
 └── Linux recordings show the overlay itself (Wayland can't leave it out)
 
 On Linux                                 // capture.linux
-├── Source -> the ScreenCast portal (zbus): Screen asks the desktop once and
+├── X11 session (DISPLAY set, WAYLAND_DISPLAY empty; never XWayland) ->
+│   Screen and Area are read from the X server itself (scrawl_capture::
+│   linux::x11): MIT-SHM GetImage each frame (plain GetImage without SHM),
+│   the pointer blended in from XFixes, 30 fps to x264 through ffmpeg. No
+│   portal and no dialog, so i3 and other desktops without a ScreenCast
+│   backend record (#690, @nefthy). Screen is the RandR monitor under the
+│   pointer; Area is `hex annotate start --area X,Y,W,H` (pixels), clipped to
+│   the screen. Hex's own overlays show in it. A Window still goes through
+│   the portal's picker and, without one, fails saying to record the screen
+│   or an area. Can't open the display, an unusual pixel depth, or no
+│   ffmpeg/x264 -> the capture fails at once with why in the capsule, never
+│   a capture without a picture. Check: x11 areas_are_clipped…; a headless
+│   Xvnc + i3 session on apollo with no ScreenCast portal recorded an
+│   800x500 Area (154 frames, 5.1 s) and the 1920x1080 screen (153 frames)
+├── Wayland -> the ScreenCast portal (zbus): Screen asks the desktop once and
 │   keeps its restore token (<support>/screencast-token), so later captures
 │   start without a dialog; Window shows the desktop's picker every time (the
 │   capsule's Window chip goes straight to it); the cursor is embedded
@@ -75,6 +99,11 @@ On Linux                                 // capture.linux
 │   pass: radeonsi crashes past it)
 ├── Reading movies back (keyframes, probe, audio) -> `ffmpeg`/`ffprobe`
 ├── Missing PipeWire, ffmpeg, or a picker answer -> that capture fails with why
+│   └── The screen-share picker cancelled (or the stream never starting) after
+│       the capture started -> its collector notices within 100 ms, cancels
+│       it, and settles `failed`; the listener's next reap ends it, so the
+│       shortcut and dictation work again (#681). Check: capture_host
+│       a_screen_source_that_gives_up_ends_the_capture; not observed on GNOME
 ├── Narration -> the listener's microphone through ListenerTimeline (each
 │   stream anchored to the monotonic clock); released-while-idle microphones
 │   open for the capture
@@ -82,7 +111,7 @@ On Linux                                 // capture.linux
 ├── Copy -> the summary text through Hex's Linux clipboard (wl-copy or the
 │   X11 clipboard), as the Mac copies it
 ├── Paste -> as the Mac: the contact sheet (image/png), then the summary,
-│   each with Hex's own Ctrl+V (linux_paste). An app that takes no image (a
+│   each with Hex's own Ctrl+V (linux/paste). An app that takes no image (a
 │   terminal) gets only the summary, which names the contact sheet; the Mac
 │   pastes a terminal the sheet's path instead
 ├── Finished capsule -> "Copied" with Paste (accent), Inspect, and Send to…;
@@ -91,23 +120,51 @@ On Linux                                 // capture.linux
 ├── Shortcuts -> F9 (tap to start and stop, hold to draw) through the
 │   GlobalShortcuts portal ("Annotate") or X11 grabs. There is no separate
 │   draw shortcut and no send-to list shortcut on any OS
-├── While it records, dictation and Voice Action start nothing (the portal
+├── While it records, dictation starts nothing (the portal
 │   or grab already took their keys, so nothing reaches the app)
 ├── Pane -> no Screen Recording row, no transcriber choice, no "Show in screen
 │   recordings" (the portal asks; Wayland can't keep overlays out)
-├── Sending -> OpenCode's sessions from its service registration
-│   (service.json, HTTP) and prompts through the `opencode2` CLI Hex's
-│   dictation processor finds; the capsule's rows are clicked (no keyboard).
+├── Sending -> OpenCode's sessions and prompts over HTTP to the running
+│   service its registration names (service.json); nothing is started, and
+│   with no service the send says "OpenCode isn't running". The capsule's
+│   rows are clicked (no keyboard).
 │   See capture.send: everything goes inline, so a remote server works
-└── Gaps: no Area (Wayland gives Hex no pointer to aim it), no iPhone, no
+└── Gaps: no Area on Wayland (it gives Hex no pointer to aim it; X11 takes
+    `--area`), no area picker on screen, no iPhone, no
     laser or click log outside draw mode, no window log, `hex capture status`
     unsupported, choosing another folder only through settings.json
 
+On Windows                               // capture.windows
+├── Source -> the engine's Windows.Graphics.Capture recorder (win/media.rs):
+│   Screen, Window (the picker lists windows), and Area; no permission asked
+├── Units -> the engine's targets, windows, and pointer are physical pixels;
+│   the picker and ink overlays sit on the primary display and lay out in its
+│   points, converted with capture_host::pixels_per_point (mixed-DPI displays:
+│   the primary's scale applies everywhere)
+├── Narration -> the listener's microphone through ListenerTimeline, fed by
+│   windows/dictation; released-while-idle microphones open for the capture
+├── Words -> one foreground job on the listener's engine (its loaded model)
+├── Input -> windows/input's low-level hooks: the Annotate key (F9; tap to
+│   start and stop, hold to draw), Escape while drawing, and while a capture
+│   records every pointer move, click, wheel turn, and modifier change
+│   (capture_host::report_input, as the macOS tap): Shift alone inks, the
+│   laser follows the pointer, clicks are logged. Injected events are skipped
+├── While it records, dictation starts nothing
+├── While dictating -> General's setting through windows/audio_control, one
+│   suppressor per capture, restored when it ends
+├── Copy and paste -> the engine's own clipboard and Ctrl+V (handoff): the
+│   contact sheet, then the summary
+├── Pane -> no Screen Recording row, no transcriber choice
+└── Gaps: no `hex annotate` (Windows has no control transport yet), no
+    iPhone, keys pressed in the app are not logged. Checked only by
+    cross-compiling (`cargo xwin clippy`, x86_64 and aarch64); never run on
+    a Windows machine
+
 Settings › Annotate                      // capture.pane
 ├── Capture with Hex (capture.enabled, default off) -> off: no host, shortcut,
-│   input, retention, or folder, as with the experiment off
+│   input, retention, or folder
 │   └── On while the shortcut collides -> refused, the shortcut row says why
-├── Shortcut (capture.hotkey, default ⌥⇧S, F9 on Linux) -> same keycap and recorder as dictation;
+├── Shortcut (capture.hotkey, default ⌥⇧S, F9 on Linux and Windows) -> same keycap and recorder as dictation;
 │   a key is required; refused when it overlaps dictation or paste
 ├── How it works (on) -> start (tap), draw (hold, no click; Shift too on
 │   macOS), the capsule's pen with Esc, stop (tap again), and send, each
@@ -121,10 +178,12 @@ Settings › Annotate                      // capture.pane
 │   ├── granted in System Settings but unusable until Hex relaunches ->
 │   │   "Turns on when Hex restarts" and Restart Hex, never Allow over a switch
 │   │   already on
-│   └── Allow -> rechecks, then the onboarding permission guide over System
-│       Settings' list (PermissionKind::ScreenRecording), as for Input
-│       Monitoring; flips on the next read. Never part of onboarding
-│       (macOS also asks at the first capture). Check: rune_ui::scrawl tests
+│   ├── Returned from System Settings still untrusted -> "Still grey? Fix it"
+│   │   (`ScreenCapture` reset on running bundle + retired IDs, re-prompt + guide)
+│   └── Allow -> clears retired Hex IDs, rechecks, then opens the permission
+│       guide over System Settings' list (PermissionKind::ScreenRecording); flips
+│       on the next read. Never part of onboarding (macOS also asks at the first
+│       capture). Check: rune_ui::scrawl tests
 ├── Show in screen recordings (capture.show_overlays_in_recordings, default
 │   off; also the menu bar's Show Hex in Screen Recordings checkmark) -> see
 │   capture.own-windows; applies at once, to open windows and a recording capture
@@ -137,7 +196,7 @@ Settings › Annotate                      // capture.pane
 └── No iPhone pairing row: ScrawlKit pairing needs the ingest server, which Hex
     doesn't run. A cabled iPhone needs no row (capture.phone)
 
-First launch with the experiment on      // capture.import
+First launch with Annotate on            // capture.import
 ├── ~/.config/scrawl/config.json -> transcriber (apple; else Parakeet), capturesDir,
 │   retention, read once (migration `scrawl-capture-settings`); token not used
 ├── Scrawl's router settings -> capture.routing, read once (migration
@@ -165,9 +224,9 @@ While a capture records                  // capture.quiet
 │   assertion, and it never counts as an intentional dictation
 ├── Stop, cancel, discard, failed start, captures off, quit -> released; a
 │   switch carries it to the next capture without restoring in between
-├── Dictation and Voice Action shortcuts -> start nothing while it records
-│   (macOS: recognition.rs swallows them in the tap; Linux: linux_dictation
-│   ignores Start and VoiceStart). Nothing leaks to the app in front
+├── Dictation shortcut -> starts nothing while it records
+│   (macOS: recognition.rs swallows it in the tap; Linux: linux/dictation
+│   ignores Start). Nothing leaks to the app in front
 └── Dictation that began before the capture -> each effect is held from the first session that
     wants it to the last, so neither unmutes or resumes what the other still
     holds; a While dictating change mid-capture composes too (the capture keeps
@@ -565,9 +624,8 @@ What a send carries                      // capture.send (router opencode::send_
 │   left out). Nothing in it depends on the bundle's folder, so an OpenCode
 │   server on another machine reads all of it; the text only names where it
 │   was recorded
-├── A body past 64 KiB goes to the local service over HTTP (service.json),
-│   not `opencode2 api --data`: one argument can't pass 128 KiB on Linux. A
-│   service that isn't up is started by one small `opencode2 api` call first
+├── Every request goes to the running local service over HTTP
+│   (service.json); a service that isn't up is never started
 ├── With an agent host (routing's agentHost) the bundle is synced there and
 │   the contact sheet goes as a `file://` part instead; SSH can't carry the
 │   images
@@ -658,8 +716,8 @@ audio.
 
 `hex dev capture-replay <wav>…` (debug, with the feature) runs the same
 capture host on a fresh transcription engine with the selected model, feeding
-WAV files instead of the microphone, and prints the bundle path. It needs the
-experiment on too, and records the screen meanwhile.
+WAV files instead of the microphone, and prints the bundle path. It needs
+Annotate on too, and records the screen meanwhile.
 
 Sources: [capture_host.rs](../../src/capture_host.rs), the tap in
 [suppression.rs](../../src/suppression.rs), the shortcut and Escape in
@@ -667,7 +725,7 @@ Sources: [capture_host.rs](../../src/capture_host.rs), the tap in
 [app_settings.rs](../../src/app_settings.rs), the pane in
 [rune_ui/scrawl.rs](../../src/rune_ui/scrawl.rs), the input rules in
 [hosted_input.rs](../../crates/capture/src/hosted_input.rs), the sink in
-[dictation_audio.rs](../../src/dictation_audio.rs),
+[dictation/audio.rs](../../src/dictation/audio.rs),
 `transcribe_with_words` in [parakeet.rs](../../src/parakeet.rs), routing in
 [capture_host/routing.rs](../../src/capture_host/routing.rs), the CLI's reads in
 [capture_host/library.rs](../../src/capture_host/library.rs), the phone finish
@@ -676,12 +734,10 @@ control commands in [control.rs](../../src/control.rs).
 
 Checks:
 
-- Gate: `capture_exists_only_where_it_has_a_host` in
-  [experiments.rs](../../src/experiments.rs);
-  `the_host_is_absent_while_the_experiment_is_off` in capture_host.rs;
+- Gate: `the_host_is_absent_while_the_experiment_is_off` in capture_host.rs;
   [test-app-identity.sh](../../scripts/test-app-identity.sh) for the
   release-path refusals.
-- Sink, in dictation_audio.rs: `capture_sink_shares_the_timeline_with_dictation`,
+- Sink, in dictation/audio.rs: `capture_sink_shares_the_timeline_with_dictation`,
   `a_full_capture_sink_drops_audio_as_a_gap_and_never_stalls_dictation`,
   `capture_sink_records_microphone_gaps`,
   `capture_sink_holds_a_released_microphone_open_until_it_closes`,
@@ -690,11 +746,12 @@ Checks:
 - Words, in parakeet.rs: `chunked_word_transcription_keeps_word_times_across_chunks`
   and `word_transcription_is_a_foreground_request_on_the_shared_engine`;
   `foreground_work_waits_for_an_open_stream_instead_of_interrupting_it` in
-  [transcription_engine.rs](../../src/transcription_engine.rs).
+  [transcription/engine.rs](../../src/transcription/engine.rs).
 - Host, in capture_host.rs (a fake engine that writes through Scrawl's real
   `finalize_capture_bundle_with_flags`, without a screen):
   `controls_are_idempotent_and_stop_writes_a_scrawl_bundle`,
   `an_engine_that_cannot_start_leaves_nothing_behind`,
+  `a_screen_source_that_gives_up_ends_the_capture`,
   `scrawls_engine_claims_nothing_machine_wide`,
   `the_timeline_resamples_pads_gaps_and_ends_at_the_stop`,
   `a_pending_gap_and_a_stalled_tail_come_back_from_the_closed_sink`,

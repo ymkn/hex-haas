@@ -13,10 +13,10 @@ use crate::control::{
     ControlReply, ControlResponse, FeatureReport, ListenerReport, MeetingReport, ModelReport, Pane,
     PermissionReport, StatusReport, WindowReport, settings,
 };
-use crate::desktop_host::{DesktopAction, DesktopUpdateStatus};
+use crate::desktop::host::{DesktopAction, DesktopUpdateStatus};
+use crate::desktop::onboarding::PermissionState;
 use crate::meeting::MeetingRequest;
-use crate::meeting_watcher::{ControllerEvent, MeetingMenuState};
-use crate::onboarding::PermissionState;
+use crate::meeting::watcher::{ControllerEvent, MeetingMenuState};
 use crate::recognition::RecognitionControl;
 use crate::rune_ui::story_link::{self, StoryLink};
 use crate::rune_ui::{Destination, Ui};
@@ -72,7 +72,7 @@ impl Pump {
                 spawn(move || {
                     let capture = capture_snapshot(&runtime);
                     let answer = control::check_quit(&meeting, capture, force).and_then(|()| {
-                        if restart && !crate::onboarding::spawn_relaunch() {
+                        if restart && !crate::desktop::onboarding::spawn_relaunch() {
                             return Err(ControlError::new(
                                 "unsupported",
                                 "only an installed Hex.app can restart itself; quit it and open \
@@ -101,9 +101,10 @@ impl Pump {
             ControlCommand::Dictation {
                 action,
                 print: true,
+                raw,
             } => {
                 background(reply, move || {
-                    control::check_print(action, true)?;
+                    control::check_flags(action, true, raw)?;
                     listener_ready(&runtime)?;
                     let (print, printed) = control::PrintReply::channel();
                     // The listener answers once the recording stopped; only
@@ -111,6 +112,7 @@ impl Pump {
                     match ask(&runtime, |reply| RecognitionControl::Capture {
                         action,
                         print: Some(print),
+                        raw: false,
                         reply,
                     })? {
                         ControlReply::Done { .. } => {
@@ -121,12 +123,14 @@ impl Pump {
                 });
                 None
             }
-            ControlCommand::Dictation { action, .. } => {
+            ControlCommand::Dictation { action, raw, .. } => {
                 background(reply, move || {
+                    control::check_flags(action, false, raw)?;
                     listener_ready(&runtime)?;
                     ask(&runtime, |reply| RecognitionControl::Capture {
                         action,
                         print: None,
+                        raw,
                         reply,
                     })
                 });
@@ -226,6 +230,9 @@ impl Pump {
             ControlCommand::SettingsSet { key, value } => {
                 Some(reply_with(self.set_setting(&key, &value)))
             }
+            ControlCommand::SettingsApply { values } => {
+                Some(reply_with(self.apply_settings(&values)))
+            }
             ControlCommand::ModelList => {
                 Some(reply_with(load().map(|settings| ControlReply::Models {
                     models: control::model_infos(&settings.transcription),
@@ -238,8 +245,8 @@ impl Pump {
                     Ok(selection) => selection,
                     Err(error) => return Some(error.into()),
                 };
-                let definition = crate::transcription_models::definition(selection.model);
-                if !crate::transcription_models::is_installed(definition, &selection.language) {
+                let definition = crate::transcription::models::definition(selection.model);
+                if !crate::transcription::models::is_installed(definition, &selection.language) {
                     return Some(ControlReply::error(
                         "not-installed",
                         format!(
@@ -259,8 +266,8 @@ impl Pump {
                     Ok(selection) => selection,
                     Err(error) => return Some(error.into()),
                 };
-                let definition = crate::transcription_models::definition(selection.model);
-                if crate::transcription_models::is_installed(definition, &selection.language) {
+                let definition = crate::transcription::models::definition(selection.model);
+                if crate::transcription::models::is_installed(definition, &selection.language) {
                     return start_model_use(runtime, selection, reply);
                 }
                 Some(reply_with(
@@ -290,7 +297,7 @@ impl Pump {
                         let _ = runtime.send(Request::CancelModel);
                         ControlReply::done(format!(
                             "Stopped preparing {}",
-                            crate::transcription_models::definition(model).name
+                            crate::transcription::models::definition(model).name
                         ))
                     }
                 })
@@ -442,16 +449,34 @@ impl Pump {
     /// Saves one setting as the window would, then lets the runtime, the
     /// listener, and an open window adopt it.
     fn set_setting(&mut self, key: &str, value: &str) -> Result<ControlReply, ControlError> {
+        if let Some(error) = settings::unavailable(key) {
+            return Err(error);
+        }
         let before = load()?;
-        let rules = settings::ShortcutRules {
-            key_named: |name| crate::rune_ui::hotkey_key_named(name).map_err(str::to_owned),
-            rule: |slot, binding| {
-                crate::rune_ui::shortcut_rule(slot, binding).map_err(str::to_owned)
-            },
-        };
-        let change = settings::apply(&before, key, value, &rules)?;
-        if !change.changed(&before) {
-            return Ok(ControlReply::unchanged(format!("{key} is already {value}")));
+        let change = settings::apply(&before, key, value, &crate::rune_ui::shortcut_rules())?;
+        self.commit(&before, change, || format!("{key} is already {value}"))
+    }
+
+    fn apply_settings(
+        &mut self,
+        values: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<ControlReply, ControlError> {
+        let before = load()?;
+        let change = settings::apply_all(&before, values, &crate::rune_ui::shortcut_rules())?;
+        self.commit(&before, change, || {
+            "Every setting already has its value".into()
+        })
+    }
+
+    /// Saves a validated change, reloads it, and carries out its effects.
+    fn commit(
+        &mut self,
+        before: &AppSettings,
+        change: settings::Change,
+        unchanged: impl FnOnce() -> String,
+    ) -> Result<ControlReply, ControlError> {
+        if !change.changed(before) {
+            return Ok(ControlReply::unchanged(unchanged()));
         }
         change
             .settings
@@ -472,7 +497,7 @@ impl Pump {
                     crate::app_settings::set_dock_icon_visible(
                         crate::app_settings::dock_icon_visible(
                             change.settings.show_dock_icon,
-                            crate::status_item::installed(),
+                            crate::macos_rune::status_item::installed(),
                         ),
                     );
                 }
@@ -618,7 +643,7 @@ fn clear_history(runtime: &RuntimeHandle) -> Result<ControlReply, ControlError> 
 /// The signed app's `SMAppService` registration; an open Settings window
 /// picks the change up on its next status poll.
 fn launch_at_login(enabled: Option<bool>) -> Result<ControlReply, ControlError> {
-    use crate::login_item::LoginItemStatus;
+    use crate::desktop::login_item::LoginItemStatus;
 
     let describe = |status| match status {
         LoginItemStatus::Enabled => "on",
@@ -627,7 +652,7 @@ fn launch_at_login(enabled: Option<bool>) -> Result<ControlReply, ControlError> 
             "waiting for approval in System Settings › General › Login Items"
         }
     };
-    let before = crate::login_item::set_now(None)
+    let before = crate::desktop::login_item::set_now(None)
         .map_err(|error| ControlError::new("failed", format!("{error:#}")))?;
     let Some(enabled) = enabled else {
         return Ok(ControlReply::unchanged(format!(
@@ -653,7 +678,7 @@ fn launch_at_login(enabled: Option<bool>) -> Result<ControlReply, ControlError> 
             "only an installed Hex.app can launch at login",
         ));
     }
-    let after = crate::login_item::set_now(Some(enabled)).map_err(|error| {
+    let after = crate::desktop::login_item::set_now(Some(enabled)).map_err(|error| {
         ControlError::new(
             "failed",
             format!("couldn't change launch at login: {error:#}"),
@@ -667,7 +692,7 @@ fn launch_at_login(enabled: Option<bool>) -> Result<ControlReply, ControlError> 
 
 /// What `hex model use` asks the runtime: the installed-only path, which
 /// verifies the model on disk and never downloads or repairs it.
-fn use_request(selection: crate::transcription_models::TranscriptionSelection) -> Request {
+fn use_request(selection: crate::transcription::models::TranscriptionSelection) -> Request {
     Request::UseInstalledSelection(selection)
 }
 
@@ -675,7 +700,7 @@ fn use_request(selection: crate::transcription_models::TranscriptionSelection) -
 /// the waiter. An idempotent manual choice still cancels automatic work.
 fn start_model_use(
     runtime: RuntimeHandle,
-    selection: crate::transcription_models::TranscriptionSelection,
+    selection: crate::transcription::models::TranscriptionSelection,
     reply: &SyncSender<ControlResponse>,
 ) -> Option<ControlReply> {
     if let Err(error) = runtime.send(use_request(selection.clone())) {
@@ -688,9 +713,9 @@ fn start_model_use(
 /// Waits for an already-admitted installed-model choice without blocking AppKit.
 fn wait_for_model(
     runtime: &RuntimeHandle,
-    selection: crate::transcription_models::TranscriptionSelection,
+    selection: crate::transcription::models::TranscriptionSelection,
 ) -> Result<ControlReply, ControlError> {
-    let name = crate::transcription_models::definition(selection.model).name;
+    let name = crate::transcription::models::definition(selection.model).name;
     let matches = |settings: &AppSettings| {
         super::same_model_and_language(&settings.transcription, &selection)
     };
@@ -814,8 +839,8 @@ fn status(
     let open = window.is_visible();
     let settings = &published.settings;
     let selection = &settings.transcription;
-    let definition = crate::transcription_models::definition(selection.model);
-    let setup = crate::onboarding::status(selection);
+    let definition = crate::transcription::models::definition(selection.model);
+    let setup = crate::desktop::onboarding::status(selection);
     Ok(ControlReply::Status(Box::new(StatusReport {
         app_version: crate::VERSION.into(),
         pid: std::process::id(),
@@ -827,6 +852,7 @@ fn status(
             } else {
                 published.listener.status.clone()
             },
+            shortcuts: Vec::new(),
         },
         capture,
         meeting,
@@ -834,7 +860,7 @@ fn status(
             id: selection.model.as_str().into(),
             name: definition.name.into(),
             language: selection.language.clone(),
-            installed: crate::transcription_models::is_installed(definition, &selection.language),
+            installed: crate::transcription::models::is_installed(definition, &selection.language),
             preparing: published
                 .preparation
                 .model
@@ -860,21 +886,9 @@ fn status(
             open,
             pane: open.then(|| current_pane(window)).flatten(),
         },
-        update: match published.update_status {
-            DesktopUpdateStatus::Checking | DesktopUpdateStatus::Downloading => "checking",
-            DesktopUpdateStatus::Available
-            | DesktopUpdateStatus::ReadyToRestart
-            | DesktopUpdateStatus::SwitchAvailable { .. }
-            | DesktopUpdateStatus::PackageUpdate { .. } => "available",
-            DesktopUpdateStatus::Unavailable
-            | DesktopUpdateStatus::Managed
-            | DesktopUpdateStatus::Failed => "unavailable",
-            DesktopUpdateStatus::Current
-            | DesktopUpdateStatus::SourceBuild
-            | DesktopUpdateStatus::PackageManager => "current",
-        }
-        .into(),
-        experiments: crate::experiments::active_names(),
+        update: control::update_label(&published.update_status).into(),
+        labs: crate::labs::active_names(settings),
+        capabilities: crate::rune_ui::capabilities(),
     })))
 }
 
@@ -884,8 +898,8 @@ mod tests {
     use std::sync::{Arc, mpsc};
     use std::time::Duration;
 
-    use crate::transcription_models::{TranscriptionModelId, TranscriptionSelection};
-    use crate::transcription_preparation::TranscriptionPreparation;
+    use crate::transcription::models::{TranscriptionModelId, TranscriptionSelection};
+    use crate::transcription::preparation::TranscriptionPreparation;
 
     #[test]
     fn model_use_prepares_the_exact_selection_installed_only() {
@@ -901,7 +915,7 @@ mod tests {
         ));
         let mut runtime = super::super::Runtime {
             settings: Default::default(),
-            keyboard_switcher: crate::keyboard_model_switching::Switcher::new(
+            keyboard_switcher: crate::transcription::keyboard_model_switching::Switcher::new(
                 Default::default(),
                 None,
             ),
@@ -913,7 +927,6 @@ mod tests {
         let selection = TranscriptionSelection {
             model: TranscriptionModelId::WhisperLargeV3Turbo,
             language: "de".into(),
-            recognition_hints: "Kit Langton".into(),
         };
         runtime.handle(super::use_request(selection.clone()));
         // installed_only: verify what's on disk, never download or repair.

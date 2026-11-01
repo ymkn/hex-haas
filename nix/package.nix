@@ -88,7 +88,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
     lockFile = ../Cargo.lock;
     outputHashes = {
       "transcribe-rs-0.3.11" = "sha256-MJJiug3LfbKsuHcL2+LJk95+j5kk/MWzb5ihdBlHLmE=";
-      "rune-0.0.1" = "sha256-OqC4BH9uJlqtZaOgKFu+A21uOTyXPKQU0b1EfbNhops=";
+      "rune-0.0.1" = "sha256-XEljDZevuap9UW96MCA/kdMtBBsjPmXYi5rai1DOVFQ=";
       "transcribe-cpp-sys-0.4.1" = "sha256-AP8+t4baAzjOVJo76vodPoWv8lrFLR2tsXvsrbMFeSk=";
     };
   };
@@ -132,8 +132,10 @@ rustPlatform.buildRustPackage (finalAttrs: {
   '';
 
   postInstall = ''
-    install -Dm644 ${../packaging/hex.desktop} $out/share/applications/hex.desktop
-    substituteInPlace $out/share/applications/hex.desktop \
+    install -Dm644 ${../packaging/anomaly.hex.desktop} $out/share/applications/anomaly.hex.desktop
+    mkdir -p $out/share/icons
+    cp -R ${../packaging/linux/icons/hicolor} $out/share/icons/hicolor
+    substituteInPlace $out/share/applications/anomaly.hex.desktop \
       --replace-fail '@HEX_BIN@' "$out/bin/hex"
   '';
 

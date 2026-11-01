@@ -11,8 +11,13 @@
 //!
 //! The Sounds sheet draws its preview of the HUD with the same [`Painter`].
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) mod dot_scope;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) mod hud_placement;
 #[cfg(target_os = "macos")]
 mod macos;
+pub(crate) mod spring;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -22,11 +27,11 @@ use rune::compose::{Compositor, Frame};
 use rune::{Cx, El, OverlayHandle, OverlayOptions, OverlaySpec, ScreenEdge, el};
 
 use crate::app_settings::IndicatorPosition;
-use crate::dictation_indicator::{DictationIndicatorEvent, DotFrame, IndicatorModel};
+use crate::dictation::indicator::{DictationIndicatorEvent, DotFrame, IndicatorModel};
+use crate::rune_hud::dot_scope::MAX_DOTS;
 #[cfg(not(target_os = "macos"))]
-use crate::dot_scope::PLATE_HEIGHT;
-use crate::dot_scope::{self, MAX_DOTS};
-use crate::hud_placement::{ISLAND_INSET, ISLAND_PAD, Island, Layout};
+use crate::rune_hud::dot_scope::PLATE_HEIGHT;
+use crate::rune_hud::hud_placement::{ISLAND_INSET, ISLAND_PAD, Island, Layout};
 use crate::rune_ui::live_text::Spot;
 
 #[cfg(target_os = "macos")]
@@ -71,10 +76,40 @@ pub(crate) struct HudSender {
     overlay: OverlayHandle<Hud>,
     #[cfg(target_os = "macos")]
     animating: Arc<AtomicBool>,
+    #[cfg(target_os = "windows")]
+    watch: Arc<Mutex<Watch>>,
 }
+
+/// What Windows checks of the HUD: Rune can show the overlay without
+/// Windows ever drawing it (#510), so a show must also present a frame.
+#[cfg(target_os = "windows")]
+#[derive(Default)]
+struct Watch {
+    position: IndicatorPosition,
+    /// The overlay failure last logged, so each is logged once.
+    logged: Option<String>,
+    described: bool,
+    /// A dictation's start awaiting the HUD's first frame: when, and the
+    /// frames presented before it.
+    pending: Option<(Instant, u64)>,
+    /// The last start presented nothing.
+    unpresented: Option<String>,
+}
+
+/// How long a started HUD has to present its first frame.
+#[cfg(target_os = "windows")]
+const FIRST_FRAME: std::time::Duration = std::time::Duration::from_millis(1500);
 
 impl HudSender {
     pub(crate) fn send(&self, event: HudEvent) {
+        #[cfg(target_os = "windows")]
+        if matches!(event, HudEvent::Started) {
+            let presents = self.overlay.surface_stats().totals.presents;
+            let mut watch = self.watch.lock().unwrap_or_else(|error| error.into_inner());
+            if watch.position != IndicatorPosition::Hidden && watch.pending.is_none() {
+                watch.pending = Some((Instant::now(), presents));
+            }
+        }
         self.overlay.update(move |hud, _| hud.handle(event));
     }
 
@@ -87,8 +122,60 @@ impl HudSender {
 
     #[cfg(not(target_os = "macos"))]
     pub(crate) fn set_position(&self, position: IndicatorPosition) {
+        #[cfg(target_os = "windows")]
+        {
+            self.watch
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .position = position;
+        }
         self.overlay
             .update(move |hud, _| hud.set_position(position));
+    }
+
+    /// Whether the HUD ever presented a frame.
+    #[cfg(target_os = "windows")]
+    pub(crate) fn presented(&self) -> bool {
+        self.overlay.surface_stats().totals.presents > 0
+    }
+
+    /// Why Windows could not show the HUD, for Settings: Rune's reason, or a
+    /// started HUD that presented no frame. Logged as an error the first time
+    /// each reason is seen; what draws the HUD is logged once it exists.
+    #[cfg(target_os = "windows")]
+    pub(crate) fn failure(&self) -> Option<String> {
+        let mut watch = self.watch.lock().unwrap_or_else(|error| error.into_inner());
+        let surface = self.overlay.surface_description();
+        if !watch.described
+            && let Some(surface) = &surface
+        {
+            tracing::info!(%surface, "dictation HUD surface");
+            watch.described = true;
+        }
+        if let Some((at, before)) = watch.pending
+            && at.elapsed() >= FIRST_FRAME
+        {
+            watch.pending = None;
+            let presents = self.overlay.surface_stats().totals.presents;
+            watch.unpresented = (presents == before).then(|| {
+                format!(
+                    "shown but presented no frame in {} ms; surface: {}",
+                    FIRST_FRAME.as_millis(),
+                    surface.as_deref().unwrap_or("none")
+                )
+            });
+        }
+        let reason = self
+            .overlay
+            .failure()
+            .or_else(|| watch.unpresented.clone())?;
+        if watch.logged.as_deref() != Some(reason.as_str()) {
+            tracing::error!(%reason, "dictation HUD can't show");
+            watch.logged = Some(reason.clone());
+        }
+        Some(format!(
+            "The recording HUD can't show ({reason}). Dictation still works."
+        ))
     }
 
     /// The overlay, to ask whether the platform could show it.
@@ -113,7 +200,11 @@ pub(crate) struct Hud {
     /// Whether the compositor wants the display's frames.
     animating: Arc<AtomicBool>,
     #[cfg(target_os = "macos")]
-    placed: Option<crate::hud_placement::Placed>,
+    placed: Option<crate::rune_hud::hud_placement::Placed>,
+    /// The position the overlay was last placed for, while it stays on that
+    /// display; a capture's start or a hide picks the display again.
+    #[cfg(not(target_os = "macos"))]
+    edge_placed: Option<IndicatorPosition>,
 }
 
 impl Hud {
@@ -121,6 +212,10 @@ impl Hud {
         #[cfg(target_os = "macos")]
         if let HudEvent::ConfigureDotScope(_) = event {
             self.placed = None;
+        }
+        #[cfg(not(target_os = "macos"))]
+        if let HudEvent::Started = event {
+            self.edge_placed = None;
         }
         self.model.handle(event, Instant::now(), self.reduce);
         self.animating.store(true, Ordering::Release);
@@ -166,7 +261,12 @@ impl Hud {
                 IndicatorPosition::Bottom => (ScreenEdge::Bottom, BOTTOM_OFFSET),
                 _ => (ScreenEdge::Top, TOP_OFFSET),
             };
-            overlay.place(edge, margin);
+            // Placing picks the display again (`display`), so the HUD
+            // never moves mid-capture when the pointer does.
+            if self.edge_placed != Some(self.position) {
+                overlay.place(edge, margin);
+                self.edge_placed = Some(self.position);
+            }
             // The plate sits in the middle of the window.
             let past_plate = margin + (WINDOW.1 + PLATE_HEIGHT) / 2.0 + LIVE_TEXT_GAP;
             set_live_text(Spot::Edge(edge, past_plate));
@@ -178,6 +278,10 @@ impl Hud {
     }
 
     fn hide(&mut self) {
+        #[cfg(not(target_os = "macos"))]
+        {
+            self.edge_placed = None;
+        }
         if std::mem::take(&mut self.shown)
             && let Some(overlay) = &self.this
         {
@@ -206,6 +310,8 @@ pub(crate) fn install<S: 'static>(app: &mut rune::App<S>) -> HudSender {
         .options(OverlayOptions {
             // The first press never waits on the panel or its pipeline.
             prewarm: cfg!(target_os = "macos"),
+            #[cfg(not(target_os = "macos"))]
+            display: display(),
             ..OverlayOptions::default()
         })
         // The shaders write display (sRGB-encoded) values.
@@ -225,6 +331,8 @@ pub(crate) fn install<S: 'static>(app: &mut rune::App<S>) -> HudSender {
             animating: animating.clone(),
             #[cfg(target_os = "macos")]
             placed: None,
+            #[cfg(not(target_os = "macos"))]
+            edge_placed: None,
         },
     );
     let this = overlay.clone();
@@ -233,7 +341,30 @@ pub(crate) fn install<S: 'static>(app: &mut rune::App<S>) -> HudSender {
         overlay,
         #[cfg(target_os = "macos")]
         animating,
+        #[cfg(target_os = "windows")]
+        watch: Arc::default(),
     }
+}
+
+/// The display the HUD and live text appear on, picked at each capture's
+/// start: the one under the pointer, as on macOS (#486). Windows and X11 read
+/// the pointer and pick its monitor; a layer-shell surface pins no output, so
+/// the compositor puts it on the focused one. GNOME (whose HUD runs on
+/// XWayland, blind to the pointer over Wayland windows) and KDE keep the
+/// primary display.
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn display() -> rune::DisplayTarget {
+    #[cfg(target_os = "linux")]
+    if std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|desktops| {
+        desktops.split(':').any(|desktop| {
+            ["GNOME", "KDE"]
+                .iter()
+                .any(|d| desktop.eq_ignore_ascii_case(d))
+        })
+    }) {
+        return rune::DisplayTarget::Primary;
+    }
+    rune::DisplayTarget::UnderPointer
 }
 
 fn view(_: &Hud, _: &mut Cx<Hud>) -> El {
@@ -459,6 +590,16 @@ impl Painter {
     pub(crate) const FEATURES: wgpu::Features = wgpu::Features::IMMEDIATES;
 
     pub(crate) fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Painter {
+        Self::with_color_space(device, format, format.is_srgb())
+    }
+
+    /// Rune's isolated layers may be linear float targets rather than sRGB
+    /// textures; the compositor supplies their blend space explicitly.
+    pub(crate) fn with_color_space(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        linear: bool,
+    ) -> Painter {
         let immediates = device.features().contains(wgpu::Features::IMMEDIATES)
             && device.limits().max_immediate_size >= DOT_UNIFORM_BYTES;
         let source = include_str!("rune_hud.wgsl");
@@ -520,7 +661,7 @@ impl Painter {
             immediate_size: if immediates { DOT_UNIFORM_BYTES } else { 0 },
         });
         // Display values; a linear target decodes them.
-        let constants = [("linear_target", f64::from(u8::from(format.is_srgb())))];
+        let constants = [("linear_target", f64::from(u8::from(linear)))];
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("dot_scope_fragment"),
             layout: Some(&pipeline_layout),
@@ -619,11 +760,22 @@ impl Painter {
             occlusion_query_set: None,
             multiview_mask: None,
         });
+        self.draw_slot(&mut pass, target, uniforms);
+    }
+
+    /// Draw inside Rune's effect-slot pass, preserving its painter order and
+    /// the containing layer's opacity.
+    pub(crate) fn draw_slot(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        target: Target,
+        uniforms: &DotUniforms,
+    ) {
         let [x, y, width, height] = target.viewport;
         pass.set_viewport(x, y, width, height, 0.0, 1.0);
         let [cx, cy, cw, ch] = target.clip;
         pass.set_scissor_rect(cx, cy, cw, ch);
-        self.draw_in(&mut pass, uniforms);
+        self.draw_in(pass, uniforms);
     }
 }
 

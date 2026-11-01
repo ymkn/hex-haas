@@ -1,4 +1,4 @@
-//! Dot scope's HUD as playground stories (the `playground` experiment, ⇧⌘D,
+//! Dot scope's HUD as playground stories (Labs, ⇧⌘D,
 //! group Prototypes › HUD). The HUD is a Rune overlay of its
 //! own, not a view in the window, so a story can't draw it: each one drives the real
 //! HUD at the top of the screen through the same events dictation sends,
@@ -11,8 +11,8 @@ use rune_kit::{Button, ButtonVariant, ControlSize, SegmentedControl, Switch};
 use super::controls::{DESCRIPTION, Paint};
 use super::hud_lab::DOT_SCOPE_GROUPS;
 use super::lists::{group_label, slider_in};
-use crate::dictation_indicator::DictationIndicatorEvent as Event;
-use crate::dot_scope::{self, KNOBS, Placement, Processing, Tuning};
+use crate::dictation::indicator::DictationIndicatorEvent as Event;
+use crate::rune_hud::dot_scope::{self, KNOBS, Placement, Processing, Tuning};
 
 const SIDE_W: f32 = 240.0;
 /// Leaves room under the side column for the story's triggers.

@@ -7,8 +7,10 @@ to the CPU. The window still needs a Vulkan driver, even with CPU
 inference; `vulkan-icd-loader` alone is not a driver. Install a driver for your GPU
 or a software Vulkan driver. See the Wayland requirements below.
 
+x86_64 machines need a 2013 or newer processor with AVX2 (Intel Haswell / AMD Excavator or later); on an older processor Hex shows a message and quits instead of starting.
+
 Linux opens the same window as macOS and Windows: Settings, Modes,
-and History. Website mode rules and meetings are macOS-only.
+and History. Meetings are macOS-only.
 Paste on Wayland uses `wtype` where the compositor offers the virtual keyboard
 protocol (wlroots compositors, niri) and the desktop's RemoteDesktop portal
 elsewhere (KDE, GNOME). Shortcuts are general: the desktop's GlobalShortcuts portal when it has one, otherwise
@@ -26,9 +28,11 @@ workers, sounds, paste, History, the recording pill, and the window. The window
 is optional: closing it stops neither dictation nor a model download, and
 launching Hex again opens it. When the desktop has a tray (a
 StatusNotifierItem host, such as Waybar, KDE, or Omarchy's bar), Hex shows a
-tray icon: click it to open the window, or use its menu's **Show Hex** and
-**Quit Hex**. Without a tray, quit with **Quit Hex** at the bottom of the
-window's sidebar, the launcher's **Quit Hex** action, or `hex quit`.
+tray icon: click it to open the window, or use its menu: **Show Hex**,
+**Paste last dictation**, the downloaded speech models, the update once one
+is ready (**Restart to update**), **Enable / Disable Hex**, and **Quit Hex**;
+while Hex records or transcribes, the menu and tooltip say so. Without a
+tray, quit with **Quit Hex** at the bottom of the window's sidebar, the launcher's **Quit Hex** action, or `hex quit`.
 
 The window opens at 980×760 logical pixels and floats on tiling window
 managers with no window rule: it maps with its minimum size equal to its
@@ -42,16 +46,23 @@ and Windows use.
 ```sh
 hex                             # open the window, starting Hex if needed
 hex start                       # start Hex in the background; no window
-hex status                      # query the running Hex, not an old log entry
-hex quit                        # finish accepted work, release the microphone, exit
-hex restart                     # restart the systemd unit in this desktop's environment
+hex status [--json]             # query the running Hex, not an old log entry
+hex quit [--force]              # finish accepted work, release the microphone, exit
+hex restart [--force]           # restart the systemd unit in this desktop's environment
                                 # (over SSH: the one it last ran in)
+hex settings set sound_effects off   # every control command (docs/cli.md)
 journalctl --user -u hex.service # diagnostics of the supervised process
 ```
 
-`hex app` is the same as `hex`, `hex app --hidden` the same as `hex start`, and
-`hex stop` the same as `hex quit`; older desktop and autostart entries keep
-working after an update replaces only the executable.
+`hex app` is the same as `hex`, `hex start` runs `hex app --hidden` in the
+background and waits until Hex answers, and `hex stop` is the same as
+`hex quit`; older desktop and autostart entries keep working after an update
+replaces only the executable. `hex quit` and `hex restart` refuse while a
+dictation records or transcribes unless `--force`. Linux runs the same
+control commands as macOS ([docs/cli.md](cli.md)): `settings`, `model`,
+`window`, `vocabulary`, `history clear`, `check-for-updates`, `onboarding
+reset`, `annotate status`, `launch-at-login` (the XDG autostart entry),
+`logs`, `commands init|check`, `history`, `meetings`, and `mcp`.
 
 A launch first asks the running Hex over its socket. If one answers, it
 forwards `Activate` with the launcher's `XDG_ACTIVATION_TOKEN` or
@@ -83,8 +94,9 @@ one (quit it first).
 The socket is owner-only in Hex's data directory, with same-user peer
 credentials, versioned bounded frames, bounded queues, and I/O deadlines. It is
 not a network API or the macOS embedded transcription SDK service. It carries
-only `Activate`, the shortcut commands, `Status`, and `Quit`; shortcut commands
-go straight from the socket to the listener, never through the window.
+`Activate`, `Status`, and Annotate's recording commands. The `hex` control
+commands reach Hex through its local API's `POST /control`; dictation
+commands go straight from there to the listener, never through the window.
 
 For development, run `cargo run --release`. `hex dictate` remains an explicit
 foreground diagnostic listener without the window or HUD and cannot coexist
@@ -92,7 +104,7 @@ with Hex's listener. With
 `HEX_APPLICATION_SUPPORT_DIR` set, launches never start, stop, or restart the
 installed user unit; they forward to the Hex using that data directory or
 become it. `HEX_SYSTEMD_UNIT` names another unit for isolated tests.
-`hex status --lines 40` retains the explicit diagnostic-log view.
+`hex logs -n 40` is the diagnostic-log view (`hex status --lines` is gone).
 
 The window runs on Rune's app lifetime (`rune::App`): Hex starts it without a
 window, each `Activate` opens or focuses it with the forwarded token (on
@@ -141,6 +153,13 @@ The installer verifies the signed release feed, exact artifact size, and
 SHA-256 before installing. It uses no root access. It creates the managed
 version layout, `~/.local/bin/hex`, a desktop launcher, and an XDG autostart
 entry and a `hex.service` user unit. It does not start recording during installation.
+General › **Launch at login** turns that autostart entry on or off
+(`~/.config/autostart/anomaly.hex.desktop`); Hex leaves an entry it did not write alone.
+The launcher entry is `~/.local/share/applications/anomaly.hex.desktop`, named
+for Hex's app id `anomaly.hex`, which its windows also report. Earlier installs
+named both entries `hex.desktop`; Hex and the installer rename Hex's own.
+Its icon is `anomaly.hex`: packages install it in the hicolor theme, and a
+direct install gets it in `~/.local/share/icons/hicolor` when Hex first starts.
 
 Remove the application while preserving logs and settings with:
 
@@ -252,10 +271,21 @@ listener reads at start temporarily stops listening and restores the previous
 running state after the edit.
 
 Modes apply corrections, OpenCode rewriting, and transformations per
-application. On X11, Hex reads the frontmost application from the active
-window's process name (`code`, `firefox`); the application picker lists
-`.desktop` entries. Wayland doesn't report the focused window,
-so the Global mode applies there. Completed dictations are kept in History.
+application or website; the application picker lists `.desktop` entries. On
+X11, Hex reads the focused application from the active window's process name
+(`code`, `chrome`). On Wayland, compositors with the foreign-toplevel protocol
+(wlroots compositors such as Sway, niri, Hyprland) report the activated
+window's app ID, which Hex names by its `.desktop` entry
+(`google-chrome-stable`, `firefox`). GNOME and KDE don't report it, so the
+Global mode applies there.
+
+Website rules read the focused page's address through AT-SPI, the desktop
+accessibility bus, on X11 and Wayland. Firefox exposes it whenever the
+accessibility bus is running. Chrome and other Chromium browsers expose it
+only with accessibility turned on: launch them with
+`--force-renderer-accessibility` (for example in
+`~/.config/chrome-flags.conf`), or run a screen reader. Without it, the
+application rule applies. Completed dictations are kept in History.
 
 **Microphone mode** can release the microphone between dictations; it then opens
 on the shortcut press without pre-roll. **While dictating** can mute the default
@@ -264,6 +294,50 @@ MPRIS media players over D-Bus, once the hold passes 300 ms, so shortcut chords
 and short taps never do; Hex restores only what it changed.
 Cancelling shortcut capture preserves the old binding unless the new binding
 has already been saved; listening resumes only if it was previously running.
+
+### Bluetooth headsets
+
+A Bluetooth headset can't play high-quality audio (A2DP) and use its
+microphone at once. While any application records from the headset's
+microphone, PipeWire (WirePlumber) or the headset switches it to the
+hands-free profile (HFP/HSP): mono, call-quality sound in both directions.
+This is how Bluetooth audio works, not something Hex chooses, and how quickly
+the headset switches back depends on the headset and WirePlumber's settings.
+
+If Hex records from the headset's microphone, the two **Microphone mode**
+choices trade off differently:
+
+- **Release when idle** opens the microphone only when you press the shortcut,
+  so each dictation switches the headset to hands-free and back. Playback
+  drops out or pauses during the switch, and the microphone takes longer to
+  open, so the first words can be lost.
+- **Keep ready** keeps the microphone open, so the headset stays in hands-free
+  mode, with call-quality playback, for as long as Hex listens.
+
+The recommended setup is a separate microphone for input (the laptop's
+built-in microphone or a USB microphone) and the Bluetooth earbuds for output
+only. Pick that microphone in General's **Microphone** list, or make it the
+system's default input (for example with `wpctl set-default`), so nothing
+opens the headset's microphone.
+
+General › Advanced's Bluetooth option (`avoid_bluetooth_microphone`, on by
+default) helps only part of the way:
+
+- It applies only while the microphone is **System default** and the default
+  input is a Bluetooth headset. A Bluetooth microphone you picked in Settings,
+  or `--device`, is always used as named.
+- It needs another hardware input that isn't reported unplugged, and
+  `pactl` (PipeWire's PulseAudio server or PulseAudio) to move the stream.
+  With no other input, Hex records from the headset.
+- On Linux, Hex can only open ALSA's default device, which is the Bluetooth
+  source, and then moves its own stream to the other microphone. The stream
+  is briefly on the headset first, so the headset may still switch to
+  hands-free mode, and Hex doesn't switch its profile back. Forcing the
+  headset's profile is up to your sound settings.
+- It changes only Hex's own recording, never other applications or the
+  system default.
+
+To avoid the switch entirely, use the recommended setup above.
 
 ## Shortcuts
 
@@ -279,15 +353,23 @@ dictation rules:
   any it refused. A desktop may keep an older binding when you record a new
   shortcut (KDE does); where its portal supports it, **Desktop shortcuts >
   Open** shows the desktop's own dialog for Hex's shortcuts, and Settings
-  follows what you choose there. The portal identifies Hex by its installed
-  `hex.desktop` entry and by inspecting the Hex process. A downloaded
-  executable has no entry, so Hex writes a minimal
-  `~/.local/share/applications/hex.desktop` that runs it (a managed install
-  replaces it); if the portal still can't find it, restart the portal with
+  follows what you choose there. The portal identifies Hex by its app id
+  `anomaly.hex`, its installed `anomaly.hex.desktop` entry, and by inspecting
+  the Hex process. A downloaded executable has no entry, so Hex writes a minimal
+  `~/.local/share/applications/anomaly.hex.desktop` that runs it (a managed
+  install replaces it); if the portal still can't find it, restart the portal with
   `systemctl --user restart xdg-desktop-portal`. Run `hex service` directly:
   a setgid wrapper such as `newgrp`, once used to grant input-device access,
   makes the portal refuse Hex. The desktop delivers the keys to Hex, not to the
-  focused application.
+  focused application. On GNOME, new setups dictate with Ctrl+Alt+Space, because GNOME keeps
+  Alt+Space for the window menu; Settings warns when a shortcut uses a key GNOME
+  keeps for itself. Keys you change in GNOME Settings › Keyboard work at once,
+  and Hex's Settings and `hex status --json` show them. Annotate's shortcut (F9
+  by default) sits under the dictation shortcut in General. **Disable** (General or the tray) keeps Hex disabled
+  across restarts until you enable it again. On GNOME, Disable also removes
+  Hex's entries from Settings › Keyboard › Global Shortcuts; Enable then asks
+  you to approve them again. Hex also removes the duplicate list that versions
+  before `anomaly.hex` left under the id `hex`.
 - **Hyprland** has the portal but takes every shortcut without a key, so
   nothing happens until you bind one in your config, and the key Settings
   records is not used. Hex can't tell whether your config binds it. Prefer
@@ -315,6 +397,7 @@ hex dictation stop      # bind to the same key's release: stop and transcribe
 hex dictation toggle    # one key: start, then stop and transcribe
 hex dictation cancel    # discard the recording
 hex paste-last          # paste the last dictation again
+hex dictation toggle --raw  # dictate without processing: paste the words as heard
 ```
 
 For example, hold-to-dictate on F9 in Sway, and a toggle in any desktop that
@@ -399,8 +482,14 @@ is left holding the transcript, and Hex's log says why. When automatic paste
 fails, the transcript stays on the clipboard for Ctrl+V. Nothing confirms the
 target read the paste, so a target stalled past the delay can paste the
 restored clipboard instead (see [#24](https://github.com/anomalyco/hex/issues/24)).
-On Wayland, restoring needs the compositor's `wlr-data-control` protocol
-(wlroots compositors, niri, Hyprland, KDE); without it the transcript stays.
+On Wayland, restoring needs the compositor's `ext-data-control` protocol
+(KDE Plasma 6, recent wlroots compositors) or `wlr-data-control` (wlroots
+compositors, niri, Hyprland); without either the transcript stays.
+
+On GNOME, Hex pastes through the RemoteDesktop portal, and GNOME shows its
+remote-control indicator while that session is open. Hex closes it 15 seconds
+after the last paste and reopens it at the next one with the grant you
+approved, so you're asked only once.
 
 ## Native Wayland Requirements
 

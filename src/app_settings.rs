@@ -1,6 +1,8 @@
 use std::fs;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
+#[cfg(test)]
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use std::sync::{OnceLock, RwLock};
 
 use color_eyre::eyre::{Result, eyre};
@@ -10,7 +12,10 @@ use objc2::MainThreadMarker;
 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
 use serde::{Deserialize, Serialize};
 
-use crate::transcription_models::{TranscriptionModelId, TranscriptionSelection};
+use crate::transcription::models::{TranscriptionModelId, TranscriptionSelection};
+
+mod lenient;
+use lenient::{decode_leniently, legacy_recognition_hints};
 
 static RECORDING_DUCK_VOLUME: AtomicU32 = AtomicU32::new(0.2_f32.to_bits());
 static RECORDING_AUDIO_BEHAVIOR: AtomicU8 = AtomicU8::new(0);
@@ -21,8 +26,12 @@ static MEETINGS_ENABLED: AtomicBool = AtomicBool::new(false);
 static PAUSE_BROWSER_MEDIA: AtomicBool = AtomicBool::new(false);
 static HEX_MICROPHONE_ENABLED: AtomicBool = AtomicBool::new(false);
 static MEETING_NOTES_ENABLED: AtomicBool = AtomicBool::new(true);
+static MEETING_NOTES_OPENCODE: AtomicBool = AtomicBool::new(false);
 static MEETING_INDICATOR_ENABLED: AtomicBool = AtomicBool::new(true);
 static MEETING_INDICATOR_CORNER: AtomicU8 = AtomicU8::new(0);
+/// [`MeetingRetention::encode`]d; [`RETENTION_UNSET`] until settings apply.
+static MEETING_RETENTION: AtomicU8 = AtomicU8::new(RETENTION_UNSET);
+const RETENTION_UNSET: u8 = u8::MAX;
 static MEETING_OUTPUT_FOLDER: OnceLock<RwLock<Option<PathBuf>>> = OnceLock::new();
 static MEETING_PROVIDERS: OnceLock<RwLock<Vec<MeetingProviderChoice>>> = OnceLock::new();
 static CALENDAR_SETTINGS: OnceLock<RwLock<CalendarSettings>> = OnceLock::new();
@@ -33,6 +42,8 @@ static HOTKEYS: OnceLock<RwLock<RuntimeHotkeys>> = OnceLock::new();
 #[cfg(target_os = "macos")]
 static PASTE_KEY_CODE: OnceLock<u16> = OnceLock::new();
 static HOTKEY_CAPTURE_ACTIVE: AtomicBool = AtomicBool::new(false);
+/// Distinct names for the tests' settings folders.
+#[cfg(test)]
 static SETTINGS_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static TRANSCRIPTION_SELECTION: OnceLock<RwLock<RuntimeTranscriptionSelection>> = OnceLock::new();
 static MICROPHONE_SELECTION: OnceLock<RwLock<RuntimeMicrophoneSelection>> = OnceLock::new();
@@ -648,7 +659,8 @@ impl<'de> Deserialize<'de> for HotkeyBinding {
 }
 
 impl Default for HotkeyBinding {
-    /// Option on macOS, Ctrl+Space on Windows, Alt+Space on Linux.
+    /// Option on macOS, Ctrl+Space on Windows, Alt+Space on Linux, and
+    /// Ctrl+Alt+Space on GNOME, whose window menu takes Alt+Space (#723).
     fn default() -> Self {
         #[cfg(target_os = "macos")]
         let binding = Self {
@@ -658,12 +670,21 @@ impl Default for HotkeyBinding {
         #[cfg(target_os = "windows")]
         let binding = Self::chord(HotkeyModifiers::control(), "space");
         #[cfg(target_os = "linux")]
-        let binding = Self::chord(HotkeyModifiers::option(), "space");
+        let binding = Self::linux_dictation_default(crate::linux::portal::gnome());
         binding
     }
 }
 
 impl HotkeyBinding {
+    #[cfg(target_os = "linux")]
+    fn linux_dictation_default(gnome: bool) -> Self {
+        if gnome {
+            Self::chord(HotkeyModifiers::control_option(), "space")
+        } else {
+            Self::chord(HotkeyModifiers::option(), "space")
+        }
+    }
+
     /// Modifiers plus a key identified by name (Windows and Linux).
     #[cfg_attr(target_os = "macos", allow(dead_code))]
     fn chord(modifiers: HotkeyModifiers, key: &str) -> Self {
@@ -1011,16 +1032,22 @@ pub struct RuntimeHotkeys {
     pub paste_meeting: Option<RuntimeHotkey>,
     /// The capture shortcut, while captures are on (`cfg(hex_capture)`).
     pub capture: Option<RuntimeHotkey>,
+    /// Dictate without processing, while it is bound.
+    pub raw_dictation: Option<RuntimeHotkey>,
+    /// Labs › Second dictation shortcut (macOS), while it is on and bound.
+    pub second_dictation: Option<RuntimeHotkey>,
 }
 
 impl RuntimeHotkeys {
     /// Every shortcut Hex matches, for suppression and chord evidence.
-    pub fn all(self) -> [Option<RuntimeHotkey>; 4] {
+    pub fn all(self) -> [Option<RuntimeHotkey>; 6] {
         [
             Some(self.dictation),
             self.paste_last,
             self.paste_meeting,
             self.capture,
+            self.raw_dictation,
+            self.second_dictation,
         ]
     }
 }
@@ -1033,6 +1060,8 @@ impl Default for RuntimeHotkeys {
             paste_meeting: crate::DEVELOPER_FEATURES_ENABLED
                 .then(|| HotkeyBinding::paste_meeting_default().runtime()),
             capture: None,
+            raw_dictation: None,
+            second_dictation: None,
         }
     }
 }
@@ -1079,6 +1108,10 @@ pub struct MeetingSettings {
     /// Title meetings and write a two-sentence summary with Apple
     /// Intelligence when it is available.
     pub summarize_with_apple_intelligence: bool,
+    /// Title meetings and write a two-sentence summary with the OpenCode
+    /// model, which sends the transcript to it. On a Mac, only when Apple
+    /// Intelligence is unavailable or off.
+    pub summarize_with_opencode: bool,
     /// Show the floating recording indicator while a meeting is recording.
     pub show_recording_indicator: bool,
     /// Screen corner the floating recording indicator snaps to after dragging.
@@ -1091,6 +1124,68 @@ pub struct MeetingSettings {
     /// Reminders before calendar meetings (macOS). Off until the user
     /// connects a calendar.
     pub calendar: CalendarSettings,
+    /// How long finished meetings are kept before they move to the Trash.
+    /// `None` until the user chooses: meetings recorded since the default
+    /// began are kept 24 hours, and older ones stay. Left out of the file
+    /// while unchosen: a build from before it can't read `null` (#744).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retention: Option<MeetingRetention>,
+}
+
+/// How long a finished meeting is kept, counted from when it ended.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MeetingRetention {
+    Day,
+    Week,
+    Month,
+    Forever,
+}
+
+impl MeetingRetention {
+    pub const ALL: [Self; 4] = [Self::Day, Self::Week, Self::Month, Self::Forever];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Day => "24 hours",
+            Self::Week => "7 days",
+            Self::Month => "30 days",
+            Self::Forever => "Forever",
+        }
+    }
+
+    pub const fn max_age_ms(self) -> Option<u64> {
+        const DAY_MS: u64 = 24 * 60 * 60 * 1_000;
+        match self {
+            Self::Day => Some(DAY_MS),
+            Self::Week => Some(7 * DAY_MS),
+            Self::Month => Some(30 * DAY_MS),
+            Self::Forever => None,
+        }
+    }
+
+    /// The default for meetings recorded since it began.
+    pub const DEFAULT: Self = Self::Day;
+
+    const fn encode(retention: Option<Self>) -> u8 {
+        match retention {
+            Some(Self::Day) => 0,
+            Some(Self::Week) => 1,
+            Some(Self::Month) => 2,
+            Some(Self::Forever) => 3,
+            None => 4,
+        }
+    }
+
+    const fn decode(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::Day),
+            1 => Some(Self::Week),
+            2 => Some(Self::Month),
+            3 => Some(Self::Forever),
+            _ => None,
+        }
+    }
 }
 
 /// The connected calendar and its meeting reminders.
@@ -1193,10 +1288,12 @@ impl Default for MeetingSettings {
             enabled: false,
             output_folder: None,
             summarize_with_apple_intelligence: true,
+            summarize_with_opencode: false,
             show_recording_indicator: true,
             recording_indicator_corner: MeetingIndicatorCorner::TopRight,
             providers: Vec::new(),
             calendar: CalendarSettings::default(),
+            retention: None,
         }
     }
 }
@@ -1219,7 +1316,7 @@ impl MeetingSettings {
 #[serde(default)]
 pub struct ExperimentalSettings {
     pub hex_microphone: bool,
-    pub hex_microphone_mode: crate::voice_filter::VoiceFilterMode,
+    pub hex_microphone_mode: crate::audio::voice_filter::VoiceFilterMode,
     pub hex_microphone_comfort_noise: bool,
     pub hex_microphone_strength: f32,
 }
@@ -1228,27 +1325,114 @@ impl Default for ExperimentalSettings {
     fn default() -> Self {
         Self {
             hex_microphone: false,
-            hex_microphone_mode: crate::voice_filter::VoiceFilterMode::Muffled,
+            hex_microphone_mode: crate::audio::voice_filter::VoiceFilterMode::Muffled,
             hex_microphone_comfort_noise: true,
             hex_microphone_strength: 1.0,
         }
     }
 }
 
-impl ExperimentalSettings {
-    /// [`voice_filter_enabled`] with this setting.
-    pub fn voice_filter_enabled(&self, experiment: bool, driver_installed: bool) -> bool {
-        voice_filter_enabled(self.hex_microphone, experiment, driver_installed)
+/// The `labs` switches (`crate::labs`), every one off by default. Labs
+/// features that already had a home keep it: `meetings.enabled`,
+/// `experimental.hex_microphone`, `paste_with_shift`,
+/// `keyboard_model_switching.enabled`, `pause_browser_media`, and
+/// `share_dictation_shortcut`. An older
+/// `labs.enabled` master switch is read and ignored.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default)]
+pub struct LabsSettings {
+    /// Live text beside the HUD while dictating.
+    pub live_text: bool,
+    /// Live chapters while a meeting records.
+    pub live_chapters: bool,
+    /// The playground in the window.
+    pub playground: bool,
+    /// Parakeet transcription biased toward the vocabulary.
+    pub vocabulary_biasing: bool,
+    /// Mouse buttons may be recorded as shortcuts (macOS, issue 209).
+    pub mouse_shortcuts: bool,
+    /// The engine unloads the speech model after `unload_idle_minutes`
+    /// unused (issue 442).
+    pub unload_idle: bool,
+    /// 5, 15 (the default), 30, or 60.
+    pub unload_idle_minutes: u32,
+    /// Paste last dictation's row offers its default shortcut back
+    /// (issue 613).
+    pub restore_shortcut_default: bool,
+    /// A pasted dictation stays on the clipboard instead of the previous
+    /// clipboard coming back (macOS, issue 200).
+    pub keep_on_clipboard: bool,
+    /// A dictation is put on the clipboard and never pasted (macOS,
+    /// issue 629).
+    pub copy_only: bool,
+    /// Spoken "new line", "new paragraph", and "open/close quote" become
+    /// line breaks and quotation marks (issue 630).
+    pub spoken_formatting: bool,
+    /// Filler words such as "um" and "uh" are removed from dictations
+    /// (issue 631).
+    pub filler_words: bool,
+    /// `hex meetings show --srt|--vtt` exports a meeting transcript as
+    /// timed subtitles (macOS, issue 633).
+    pub subtitle_export: bool,
+    /// `second_dictation_hotkey` dictates like the dictation shortcut
+    /// (macOS, issue 627).
+    pub second_dictation_shortcut: bool,
+    /// A pasted dictation gets one leading space when the character before
+    /// the cursor is one a space belongs after (macOS, issue 632).
+    pub smart_spacing: bool,
+    /// Spoken punctuation and symbol words ("comma", "hashtag",
+    /// "underscore") become characters joined to their words (issue 678).
+    pub spoken_symbols: bool,
+    /// The Local transcription picker offers a sort (Recommended, Size,
+    /// Name) and a "Supports the saved language" toggle (issue 645).
+    pub picker_sort_filter: bool,
+    /// The shortcut recorder keeps the side of each modifier in a
+    /// modifier-only chord, such as Right ⌘ + Right ⌥ (macOS, issue 710).
+    pub sided_modifier_chords: bool,
+    /// In Toggle mode, a press held past the hold threshold dictates until
+    /// it lifts; a short tap still starts and stops (macOS, issue 711).
+    pub tap_or_hold: bool,
+    /// The Local transcription picker shows each model's raw error rate
+    /// (WER or CER), its benchmark, source, and conditions (issue 647).
+    pub benchmark_details: bool,
+}
+
+/// The idle times Labs › Unload model when idle offers, in minutes.
+pub const UNLOAD_IDLE_MINUTES: [u32; 4] = [5, 15, 30, 60];
+
+impl Default for LabsSettings {
+    fn default() -> Self {
+        Self {
+            live_text: false,
+            live_chapters: false,
+            playground: false,
+            vocabulary_biasing: false,
+            mouse_shortcuts: false,
+            unload_idle: false,
+            unload_idle_minutes: 15,
+            restore_shortcut_default: false,
+            keep_on_clipboard: false,
+            copy_only: false,
+            spoken_formatting: false,
+            filler_words: false,
+            subtitle_export: false,
+            second_dictation_shortcut: false,
+            smart_spacing: false,
+            spoken_symbols: false,
+            picker_sort_filter: false,
+            sided_modifier_chords: false,
+            tap_or_hold: false,
+            benchmark_details: false,
+        }
     }
 }
 
-/// Whether the Voice Filter is on: its pane shows and the listener streams
-/// the Hex Microphone. The setting (or `HEX_EXPERIMENTAL_MIC`), the
-/// `voice-filter` experiment, or an installed driver each turn it on, so a
-/// driver apps already use keeps receiving audio.
-pub fn voice_filter_enabled(setting: bool, experiment: bool, driver_installed: bool) -> bool {
-    crate::experiments::is_dev_build()
-        && (setting || env_hex_experimental_mic() || experiment || driver_installed)
+/// Whether the Voice Filter runs: the listener streams the Hex Microphone
+/// and Hex watches its driver. Its Labs toggle (`experimental.hex_microphone`,
+/// or `HEX_EXPERIMENTAL_MIC`) or an installed driver turns it on, so a driver
+/// apps already use keeps receiving audio.
+pub fn voice_filter_enabled(setting: bool, driver_installed: bool) -> bool {
+    setting || env_hex_experimental_mic() || driver_installed
 }
 
 pub fn env_hex_experimental_mic() -> bool {
@@ -1379,7 +1563,7 @@ impl Default for DictationPostProcessing {
     }
 }
 
-/// Annotate: Scrawl's captures inside Hex, on macOS and Linux
+/// Annotate: Scrawl's captures inside Hex, on macOS, Linux, and Windows
 /// (`capture_host`). On by default; off means no capture work at all.
 #[cfg(hex_capture)]
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1535,7 +1719,7 @@ impl CaptureTranscriber {
     pub const ALL: [Self; 2] = [Self::Parakeet, Self::Apple];
 }
 
-pub use crate::text_replacements::TextReplacement;
+pub use crate::dictation::text_replacements::TextReplacement;
 
 impl RecordingAudioBehavior {
     pub const ALL: [Self; 4] = [Self::Mute, Self::PauseMedia, Self::Duck, Self::DoNothing];
@@ -1586,10 +1770,10 @@ pub struct AppSettings {
     pub sound_theme: crate::feedback::SoundSet,
     pub microphone: Option<String>,
     /// System default records from the built-in microphone, else another
-    /// real input, rather than a Bluetooth default (macOS).
+    /// real input, rather than a Bluetooth default.
     pub avoid_bluetooth_microphone: bool,
     pub recording_audio_behavior: RecordingAudioBehavior,
-    /// Fraction of the original output volume while ducking (macOS).
+    /// Fraction of the original output volume while ducking.
     pub recording_duck_volume: f32,
     /// With Pause media on macOS, also pause a browser that is audibly playing.
     pub pause_browser_media: bool,
@@ -1606,6 +1790,13 @@ pub struct AppSettings {
     )]
     pub retired_edit_hotkey: Option<serde_json::Value>,
     pub paste_last_hotkey: Option<HotkeyBinding>,
+    /// Dictate without processing: records like the dictation shortcut and
+    /// pastes the transcript as heard. Unbound by default.
+    pub raw_dictation_hotkey: Option<HotkeyBinding>,
+    /// Labs › Second dictation shortcut: another shortcut that dictates
+    /// exactly as `dictation_hotkey` does (macOS). Unbound by default and
+    /// ignored while its Labs toggle is off.
+    pub second_dictation_hotkey: Option<HotkeyBinding>,
     pub show_dock_icon: bool,
     pub transcription: TranscriptionSelection,
     pub transcription_recents: Vec<TranscriptionSelection>,
@@ -1629,6 +1820,8 @@ pub struct AppSettings {
     pub capture_from_other_build: Option<serde_json::Value>,
     #[serde(default)]
     pub experimental: ExperimentalSettings,
+    /// The Labs features' own switches (`crate::labs`).
+    pub labs: LabsSettings,
     /// Start listening when Hex opens (Windows and Linux, where the
     /// listener can be off).
     pub enable_on_launch: bool,
@@ -1637,16 +1830,20 @@ pub struct AppSettings {
     /// Let other apps see the dictation shortcut's key presses too
     /// (Windows), so a push-to-talk key can drive both.
     pub share_dictation_shortcut: bool,
+    /// A mouse-button shortcut went back to its default because Labs ›
+    /// Mouse shortcuts is off; the window says so once, then clears it.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub mouse_shortcut_notice: bool,
     /// The interface language code; `None` follows the system language.
     pub ui_language: Option<String>,
     pub indicator_position: IndicatorPosition,
     pub updates: UpdateSettings,
-    /// The shared vocabulary (`crate::vocabulary`). Left out of the file
+    /// The shared vocabulary (`crate::dictation::vocabulary`). Left out of the file
     /// while empty, so settings without one stay as they were.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub vocabulary: Vec<crate::vocabulary::VocabularyEntry>,
+    pub vocabulary: Vec<crate::dictation::vocabulary::VocabularyEntry>,
     /// How readily transcription swaps heard words for a vocabulary term.
-    pub vocabulary_boost: crate::vocabulary::VocabularyBoost,
+    pub vocabulary_boost: crate::dictation::vocabulary::VocabularyBoost,
     /// One-time settings changes already applied. A file that predates a
     /// change lacks its ID, so the change runs once on the next load; new
     /// settings start with every ID because they need none.
@@ -1672,9 +1869,14 @@ const MIGRATIONS: &[&str] = &[
     STREAMING_ENGLISH_MIGRATION,
     ANNOTATE_DEFAULT_MIGRATION,
     ANOMALY_IDENTITY_MIGRATION,
+    MEETING_RETENTION_DEFAULT_MIGRATION,
 ];
 #[cfg(not(hex_capture))]
-const MIGRATIONS: &[&str] = &[STREAMING_ENGLISH_MIGRATION, ANOMALY_IDENTITY_MIGRATION];
+const MIGRATIONS: &[&str] = &[
+    STREAMING_ENGLISH_MIGRATION,
+    ANOMALY_IDENTITY_MIGRATION,
+    MEETING_RETENTION_DEFAULT_MIGRATION,
+];
 /// Scrawl's settings were read into `capture` once. Left out of
 /// `MIGRATIONS` so new settings import them too.
 #[cfg(hex_capture)]
@@ -1683,6 +1885,9 @@ const SCRAWL_IMPORT_MIGRATION: &str = "scrawl-capture-settings";
 /// migration, as it came after the first import.
 #[cfg(hex_capture)]
 const SCRAWL_ROUTING_IMPORT_MIGRATION: &str = "scrawl-routing-settings";
+/// Meeting retention first saved `forever` as its default; that default is
+/// now unchosen (24 hours for new meetings, older ones kept).
+const MEETING_RETENTION_DEFAULT_MIGRATION: &str = "meeting-retention-default";
 
 fn deserialize_retired_value<'de, D>(
     deserializer: D,
@@ -1712,6 +1917,8 @@ impl Default for AppSettings {
             dictation_hotkey: HotkeyBinding::default(),
             retired_edit_hotkey: None,
             paste_last_hotkey: Some(HotkeyBinding::paste_last_default()),
+            raw_dictation_hotkey: None,
+            second_dictation_hotkey: None,
             show_dock_icon: true,
             transcription: default_transcription(),
             transcription_recents: Vec::new(),
@@ -1725,14 +1932,16 @@ impl Default for AppSettings {
             #[cfg(not(hex_capture))]
             capture_from_other_build: None,
             experimental: ExperimentalSettings::default(),
+            labs: LabsSettings::default(),
             enable_on_launch: true,
             paste_with_shift: false,
             share_dictation_shortcut: false,
+            mouse_shortcut_notice: false,
             ui_language: None,
             indicator_position: IndicatorPosition::default(),
             updates: UpdateSettings::default(),
             vocabulary: Vec::new(),
-            vocabulary_boost: crate::vocabulary::VocabularyBoost::default(),
+            vocabulary_boost: crate::dictation::vocabulary::VocabularyBoost::default(),
             migrations: MIGRATIONS.iter().map(|id| id.to_string()).collect(),
             text_replacements: Vec::new(),
         }
@@ -1759,14 +1968,13 @@ pub struct KeyboardModelChoice {
 impl KeyboardModelChoice {
     /// The picker's downloadable models only; Apple Speech is never mapped.
     pub fn validate(&self) -> Result<()> {
-        let model = crate::transcription_models::validate(&TranscriptionSelection {
+        let model = crate::transcription::models::validate(&TranscriptionSelection {
             model: self.model,
             language: self.language.clone(),
-            recognition_hints: String::new(),
         })?;
         match model.runtime {
-            crate::transcription_models::ModelRuntime::Gguf(_) => Ok(()),
-            crate::transcription_models::ModelRuntime::AppleSpeech => {
+            crate::transcription::models::ModelRuntime::Gguf(_) => Ok(()),
+            crate::transcription::models::ModelRuntime::AppleSpeech => {
                 Err(eyre!("{} can't be switched to by input source", model.name))
             }
         }
@@ -1776,7 +1984,7 @@ impl KeyboardModelChoice {
 /// A new install starts with the model recommended for the person's
 /// language, so first-run setup can download it without asking.
 fn default_transcription() -> TranscriptionSelection {
-    crate::transcription_models::recommended_selection(&crate::desktop_i18n::preferred_language())
+    crate::transcription::models::recommended_selection(&crate::desktop::i18n::preferred_language())
 }
 
 impl AppSettings {
@@ -1785,15 +1993,14 @@ impl AppSettings {
             return self.transcription.clone();
         }
         if let Some(selection) = self.transcription_recents.iter().rev().find(|selection| {
-            selection.model == id && crate::transcription_models::validate(selection).is_ok()
+            selection.model == id && crate::transcription::models::validate(selection).is_ok()
         }) {
             return selection.clone();
         }
-        let model = crate::transcription_models::definition(id);
+        let model = crate::transcription::models::definition(id);
         TranscriptionSelection {
             model: id,
             language: model.language_for(&self.transcription.language).into(),
-            recognition_hints: String::new(),
         }
     }
 
@@ -1808,7 +2015,8 @@ impl AppSettings {
         let mut seen = std::collections::HashSet::new();
         self.transcription_recents.reverse();
         self.transcription_recents.retain(|selection| {
-            crate::transcription_models::validate(selection).is_ok() && seen.insert(selection.model)
+            crate::transcription::models::validate(selection).is_ok()
+                && seen.insert(selection.model)
         });
         self.transcription_recents.reverse();
     }
@@ -1822,7 +2030,7 @@ impl AppSettings {
         selection: TranscriptionSelection,
         save: impl FnOnce(&Self) -> Result<()>,
     ) -> Result<()> {
-        crate::transcription_models::validate(&selection)?;
+        crate::transcription::models::validate(&selection)?;
         let mut candidate = self.clone();
         candidate.remember_transcription(selection);
         self.commit_with(candidate, save)
@@ -1952,6 +2160,22 @@ impl AppSettings {
         }
     }
 
+    /// The saved `labs` switches, read without loading, normalizing, or
+    /// writing anything else.
+    pub fn saved_labs() -> LabsSettings {
+        #[derive(Deserialize)]
+        struct File {
+            #[serde(default)]
+            labs: LabsSettings,
+        }
+        path()
+            .ok()
+            .and_then(|path| fs::read(path).ok())
+            .and_then(|data| serde_json::from_slice::<File>(&data).ok())
+            .map(|file| file.labs)
+            .unwrap_or_default()
+    }
+
     /// The saved `updates.channel`, read without loading, normalizing, or
     /// writing anything else, so the updater thread never races a save.
     pub fn saved_update_channel() -> Option<UpdateChannel> {
@@ -1967,16 +2191,24 @@ impl AppSettings {
     pub(crate) fn load_from(path: &std::path::Path) -> Result<Self> {
         match fs::read(path) {
             Ok(data) => {
-                let mut settings: Self = serde_json::from_slice(&data)?;
+                let (mut settings, dropped) = decode_leniently(&data)?;
                 let loaded = serde_json::to_value(&settings)?;
-                settings.validate_recording_duck_volume()?;
+                let hints = legacy_recognition_hints(&data);
+                if let Err(error) = settings.validate_recording_duck_volume() {
+                    tracing::warn!(%error, "using the default recording_duck_volume");
+                    settings.recording_duck_volume = Self::default().recording_duck_volume;
+                }
                 settings.dictation_processing.default_mode.name = "Global".into();
                 settings.repair_bare_primary_clicks();
+                #[cfg(target_os = "macos")]
+                settings.repair_mouse_shortcuts();
                 settings.normalize_double_tap_settings();
                 settings.migrate_legacy_replacements();
                 settings.normalize_mode_application_names();
                 settings.migrate_disabled_transcription_model();
-                settings.clear_unsupported_recognition_hints();
+                for hints in &hints {
+                    crate::dictation::vocabulary::fold_hints(&mut settings.vocabulary, hints);
+                }
                 settings.apply_one_time_migrations();
                 settings.normalize_transcription_recents();
                 // A model that is gone, or a language it lost, maps to nothing.
@@ -1984,8 +2216,15 @@ impl AppSettings {
                     .keyboard_model_switching
                     .mappings
                     .retain(|_, choice| choice.validate().is_ok());
-                crate::transcription_models::validate(&settings.transcription)?;
-                if serde_json::to_value(&settings)? != loaded
+                if let Err(error) = crate::transcription::models::validate(&settings.transcription)
+                {
+                    tracing::warn!(%error, "using the default transcription model");
+                    settings.transcription = Self::default().transcription;
+                }
+                // A value this build can't read may be a newer build's, so
+                // the file is rewritten only once it reads in full.
+                if dropped.is_empty()
+                    && (!hints.is_empty() || serde_json::to_value(&settings)? != loaded)
                     && let Err(error) = settings.write_to(path)
                 {
                     tracing::warn!(%error, "could not persist normalized settings");
@@ -2002,10 +2241,6 @@ impl AppSettings {
         self.write_to(&path)?;
         self.apply_runtime();
         Ok(())
-    }
-
-    pub(crate) fn refresh_runtime(&self) {
-        self.apply_runtime();
     }
 
     fn validate_recording_duck_volume(&self) -> Result<()> {
@@ -2026,11 +2261,9 @@ impl AppSettings {
         #[cfg(target_os = "macos")]
         if !path.exists() {
             // Saving new preferences does not imply onboarding completion.
-            crate::onboarding::record_pending_at(parent)?;
+            crate::desktop::onboarding::record_pending_at(parent)?;
         }
-        let temporary = settings_temporary_path(path);
-        fs::write(&temporary, serde_json::to_vec_pretty(self)?)?;
-        fs::rename(temporary, path)?;
+        crate::durable::write(path, &serde_json::to_vec_pretty(self)?)?;
         Ok(())
     }
 
@@ -2047,7 +2280,7 @@ impl AppSettings {
         crate::feedback::set_enabled(self.sound_effects);
         crate::feedback::set_volume(self.sound_effect_volume.clamp(0.0, 1.0));
         crate::feedback::set_sound_set(self.sound_theme);
-        crate::desktop_i18n::apply(self.ui_language.as_deref());
+        crate::desktop::i18n::apply(self.ui_language.as_deref());
         INDICATOR_POSITION.store(self.indicator_position as u8, Ordering::Relaxed);
         RECORDING_DUCK_VOLUME.store(self.recording_duck_volume.to_bits(), Ordering::Relaxed);
         RECORDING_AUDIO_BEHAVIOR.store(self.recording_audio_behavior.encoded(), Ordering::Relaxed);
@@ -2061,7 +2294,11 @@ impl AppSettings {
             self.shortcut_mode == crate::dictation::ShortcutMode::Toggle,
             Ordering::Relaxed,
         );
-        MEETINGS_ENABLED.store(self.meetings.available(), Ordering::Release);
+        MEETINGS_ENABLED.store(
+            self.meetings.available() && crate::labs::Feature::Meetings.shipped(),
+            Ordering::Release,
+        );
+        crate::labs::apply(&self.labs);
         #[cfg(hex_capture)]
         {
             *CAPTURE_SETTINGS
@@ -2077,7 +2314,7 @@ impl AppSettings {
             CAPSULE_FLOW.store(flow as u8, Ordering::Release);
         }
         HEX_MICROPHONE_ENABLED.store(self.experimental.hex_microphone, Ordering::Release);
-        crate::hex_microphone::sync_from_settings(
+        crate::audio::hex_microphone::sync_from_settings(
             self.experimental.hex_microphone_mode,
             self.experimental.hex_microphone_comfort_noise,
             self.experimental.hex_microphone_strength,
@@ -2086,9 +2323,14 @@ impl AppSettings {
             self.meetings.summarize_with_apple_intelligence,
             Ordering::Release,
         );
+        MEETING_NOTES_OPENCODE.store(self.meetings.summarize_with_opencode, Ordering::Release);
         MEETING_INDICATOR_ENABLED.store(self.meetings.show_recording_indicator, Ordering::Release);
         MEETING_INDICATOR_CORNER.store(
             self.meetings.recording_indicator_corner as u8,
+            Ordering::Release,
+        );
+        MEETING_RETENTION.store(
+            MeetingRetention::encode(self.meetings.retention),
             Ordering::Release,
         );
         *MEETING_OUTPUT_FOLDER
@@ -2111,8 +2353,8 @@ impl AppSettings {
         set_transcription_selection(&self.transcription);
         set_microphone_selection(self.microphone.as_deref());
         #[cfg(target_os = "macos")]
-        crate::config::update_dictation_profiles(&self.dictation_processing);
-        crate::vocabulary::apply(&self.vocabulary, self.vocabulary_boost);
+        crate::dictation::config::update_dictation_profiles(&self.dictation_processing);
+        crate::dictation::vocabulary::apply(&self.vocabulary, self.vocabulary_boost);
     }
 
     /// Mode activations saved while Finder showed filename extensions carry a
@@ -2127,7 +2369,8 @@ impl AppSettings {
         for mode in modes {
             let mut mode_migrated = false;
             for application in &mut mode.applications {
-                let normalized = crate::context::strip_bundle_extension(application).to_owned();
+                let normalized =
+                    crate::dictation::context::strip_bundle_extension(application).to_owned();
                 if normalized != *application {
                     *application = normalized;
                     mode_migrated = true;
@@ -2164,17 +2407,24 @@ impl AppSettings {
     /// so a later choice, such as switching back, sticks.
     fn apply_one_time_migrations(&mut self) {
         self.apply_one_time_migrations_with(|model| {
-            crate::transcription_models::is_installed(model, "en")
+            crate::transcription::models::is_installed(model, "en")
         });
     }
 
     fn apply_one_time_migrations_with(
         &mut self,
-        installed: impl Fn(&crate::transcription_models::ModelDefinition) -> bool,
+        installed: impl Fn(&crate::transcription::models::ModelDefinition) -> bool,
     ) {
         if !self.has_migration(STREAMING_ENGLISH_MIGRATION) {
             self.switch_english_to_streaming_model(installed);
             self.migrations.push(STREAMING_ENGLISH_MIGRATION.into());
+        }
+        if !self.has_migration(MEETING_RETENTION_DEFAULT_MIGRATION) {
+            if self.meetings.retention == Some(MeetingRetention::Forever) {
+                self.meetings.retention = None;
+            }
+            self.migrations
+                .push(MEETING_RETENTION_DEFAULT_MIGRATION.into());
         }
         #[cfg(hex_capture)]
         if !self.has_migration(ANNOTATE_DEFAULT_MIGRATION) {
@@ -2211,7 +2461,7 @@ impl AppSettings {
     /// download.
     fn switch_english_to_streaming_model(
         &mut self,
-        installed: impl Fn(&crate::transcription_models::ModelDefinition) -> bool,
+        installed: impl Fn(&crate::transcription::models::ModelDefinition) -> bool,
     ) {
         if self.transcription.language != "en"
             || self.transcription.model == TranscriptionModelId::ParakeetUnifiedEnglish
@@ -2219,20 +2469,15 @@ impl AppSettings {
             return;
         }
         let model =
-            crate::transcription_models::definition(TranscriptionModelId::ParakeetUnifiedEnglish);
+            crate::transcription::models::definition(TranscriptionModelId::ParakeetUnifiedEnglish);
         if !installed(model) {
             return;
         }
         let selection = TranscriptionSelection {
             model: model.id,
             language: "en".into(),
-            recognition_hints: if model.supports_recognition_hints {
-                self.transcription.recognition_hints.clone()
-            } else {
-                String::new()
-            },
         };
-        if crate::transcription_models::validate(&selection).is_err() {
+        if crate::transcription::models::validate(&selection).is_err() {
             return;
         }
         tracing::info!(
@@ -2242,25 +2487,8 @@ impl AppSettings {
         self.remember_transcription(selection);
     }
 
-    /// Recognition hints saved for a model that can't use them (edited by
-    /// hand, or left from another model) are dropped with a warning rather
-    /// than failing the whole settings load.
-    fn clear_unsupported_recognition_hints(&mut self) {
-        let model = crate::transcription_models::definition(self.transcription.model);
-        if model.supports_recognition_hints
-            || self.transcription.recognition_hints.trim().is_empty()
-        {
-            return;
-        }
-        tracing::warn!(
-            model = self.transcription.model.as_str(),
-            "cleared recognition hints the selected model doesn't support"
-        );
-        self.transcription.recognition_hints.clear();
-    }
-
     fn migrate_disabled_transcription_model(&mut self) {
-        if crate::transcription_models::definition(self.transcription.model).available() {
+        if crate::transcription::models::definition(self.transcription.model).available() {
             return;
         }
         tracing::warn!(
@@ -2282,18 +2510,72 @@ impl AppSettings {
             capture: self.capture_on().then(|| self.capture.hotkey.runtime()),
             #[cfg(not(hex_capture))]
             capture: None,
+            raw_dictation: self
+                .raw_dictation_hotkey
+                .as_ref()
+                .map(HotkeyBinding::runtime),
+            second_dictation: self
+                .active_second_dictation_hotkey()
+                .map(HotkeyBinding::runtime),
         }
     }
 
-    /// Annotate is on: dev build and the person hasn't turned it off.
+    /// Labs › Second dictation shortcut's binding while it takes effect:
+    /// macOS, its toggle on, bound, and sharing no key with another active
+    /// shortcut. Otherwise Hex matches, suppresses, and checks nothing for
+    /// it.
+    pub fn active_second_dictation_hotkey(&self) -> Option<&HotkeyBinding> {
+        if !cfg!(target_os = "macos") || !self.labs.second_dictation_shortcut {
+            return None;
+        }
+        self.second_dictation_hotkey
+            .as_ref()
+            .filter(|binding| !self.hotkey_in_use(HotkeySlot::SecondDictation, binding))
+    }
+
+    /// Annotate is on: the person hasn't turned it off.
     #[cfg(hex_capture)]
     pub fn capture_on(&self) -> bool {
-        crate::experiments::is_dev_build() && self.capture.enabled
+        self.capture.enabled
     }
 
     /// A shortcut saved as a bare left click swallowed every click, so its
     /// owner couldn't change it in Settings. Such a shortcut goes back to its
     /// default when settings load.
+    /// With Labs › Mouse shortcuts off, a mouse-button shortcut (issue 209)
+    /// goes back to its default and the window notes it once.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    fn repair_mouse_shortcuts(&mut self) {
+        if self.labs.mouse_shortcuts {
+            return;
+        }
+        let mouse = |binding: &HotkeyBinding| binding.key.as_ref().is_some_and(HotkeyKey::is_mouse);
+        if mouse(&self.dictation_hotkey) {
+            self.dictation_hotkey = HotkeyBinding::default();
+            self.mouse_shortcut_notice = true;
+        }
+        if self.paste_last_hotkey.as_ref().is_some_and(mouse) {
+            self.paste_last_hotkey = Some(HotkeyBinding::paste_last_default());
+            self.mouse_shortcut_notice = true;
+        }
+        if self.raw_dictation_hotkey.as_ref().is_some_and(mouse) {
+            self.raw_dictation_hotkey = None;
+            self.mouse_shortcut_notice = true;
+        }
+        if self.second_dictation_hotkey.as_ref().is_some_and(mouse) {
+            self.second_dictation_hotkey = None;
+            self.mouse_shortcut_notice = true;
+        }
+        #[cfg(hex_capture)]
+        if mouse(&self.capture.hotkey) {
+            self.capture.hotkey = HotkeyBinding::capture_default();
+            self.mouse_shortcut_notice = true;
+        }
+        if self.mouse_shortcut_notice {
+            tracing::info!("reset mouse-button shortcuts: Labs › Mouse shortcuts is off");
+        }
+    }
+
     fn repair_bare_primary_clicks(&mut self) {
         if self.dictation_hotkey.is_bare_primary_click() {
             tracing::warn!("replaced a left-click dictation shortcut with the default");
@@ -2307,17 +2589,28 @@ impl AppSettings {
             tracing::warn!("replaced a left-click paste-last shortcut with the default");
             self.paste_last_hotkey = Some(HotkeyBinding::paste_last_default());
         }
+        if self
+            .raw_dictation_hotkey
+            .as_ref()
+            .is_some_and(HotkeyBinding::is_bare_primary_click)
+        {
+            tracing::warn!("cleared a left-click raw dictation shortcut");
+            self.raw_dictation_hotkey = None;
+        }
+        if self
+            .second_dictation_hotkey
+            .as_ref()
+            .is_some_and(HotkeyBinding::is_bare_primary_click)
+        {
+            tracing::warn!("cleared a left-click second dictation shortcut");
+            self.second_dictation_hotkey = None;
+        }
         #[cfg(hex_capture)]
         if self.capture.hotkey.is_bare_primary_click() {
             tracing::warn!("replaced a left-click capture shortcut with the default");
             self.capture.hotkey = HotkeyBinding::capture_default();
         }
     }
-}
-
-fn settings_temporary_path(path: &std::path::Path) -> PathBuf {
-    let sequence = SETTINGS_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    path.with_extension(format!("json.{}.{}.tmp", std::process::id(), sequence))
 }
 
 pub fn hotkey_conflicts(
@@ -2334,8 +2627,11 @@ pub fn hotkey_conflicts(
 pub enum HotkeySlot {
     Dictation,
     PasteLast,
+    RawDictation,
     #[cfg(hex_capture)]
     Capture,
+    /// Labs › Second dictation shortcut (macOS).
+    SecondDictation,
 }
 
 impl AppSettings {
@@ -2352,6 +2648,18 @@ impl AppSettings {
             && let Some(paste) = &self.paste_last_hotkey
         {
             others.push(paste.clone());
+        }
+        if slot != HotkeySlot::RawDictation
+            && let Some(raw) = &self.raw_dictation_hotkey
+        {
+            others.push(raw.clone());
+        }
+        if slot != HotkeySlot::SecondDictation
+            && cfg!(target_os = "macos")
+            && self.labs.second_dictation_shortcut
+            && let Some(second) = &self.second_dictation_hotkey
+        {
+            others.push(second.clone());
         }
         if cfg!(target_os = "macos") && self.meetings.available() {
             others.push(HotkeyBinding::paste_meeting_default());
@@ -2398,7 +2706,6 @@ pub fn transcription_selection() -> (u64, TranscriptionSelection) {
     (state.revision, state.selection.clone())
 }
 
-#[cfg(target_os = "macos")]
 pub fn recording_duck_volume() -> f32 {
     f32::from_bits(RECORDING_DUCK_VOLUME.load(Ordering::Relaxed))
 }
@@ -2466,15 +2773,22 @@ pub fn meetings_enabled() -> bool {
 
 /// [`voice_filter_enabled`] for the running listener.
 pub fn hex_microphone_enabled() -> bool {
-    voice_filter_enabled(
-        HEX_MICROPHONE_ENABLED.load(Ordering::Acquire),
-        crate::experiments::enabled(crate::experiments::Experiment::VoiceFilter),
-        crate::hex_microphone::driver_bundle_installed(),
-    )
+    crate::labs::Feature::VoiceFilter.shipped()
+        && voice_filter_enabled(
+            HEX_MICROPHONE_ENABLED.load(Ordering::Acquire),
+            crate::audio::hex_microphone::driver_bundle_installed(),
+        )
 }
 
+/// Apple Intelligence may write meeting notes (macOS).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn meeting_notes_enabled() -> bool {
     MEETING_NOTES_ENABLED.load(Ordering::Acquire)
+}
+
+/// The OpenCode model may write meeting notes.
+pub fn meeting_notes_with_opencode() -> bool {
+    MEETING_NOTES_OPENCODE.load(Ordering::Acquire)
 }
 
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -2499,6 +2813,24 @@ pub fn meeting_provider_choices() -> Vec<MeetingProviderChoice> {
 
 /// The connected calendar's reminder settings, as last applied.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+/// [`MeetingSettings::retention`] for the running meeting controller.
+/// The retention the user chose, `None` until they choose. A process that
+/// never loaded settings (`hex mcp`, `hex meetings`) reads it from
+/// `settings.json` without migrating or writing anything.
+pub fn meeting_retention() -> Option<MeetingRetention> {
+    match MEETING_RETENTION.load(Ordering::Acquire) {
+        RETENTION_UNSET if cfg!(test) => None,
+        RETENTION_UNSET => stored_meeting_retention(),
+        value => MeetingRetention::decode(value),
+    }
+}
+
+fn stored_meeting_retention() -> Option<MeetingRetention> {
+    let data = fs::read(path().ok()?).ok()?;
+    let settings: serde_json::Value = serde_json::from_slice(&data).ok()?;
+    serde_json::from_value(settings.get("meetings")?.get("retention")?.clone()).ok()
+}
+
 pub fn calendar_settings() -> CalendarSettings {
     CALENDAR_SETTINGS
         .get_or_init(Default::default)
@@ -2544,7 +2876,6 @@ pub fn save_meeting_provider(choice: MeetingProviderChoice) {
 }
 
 /// Saves the corner the recording capsule was dragged to.
-#[cfg(target_os = "macos")]
 pub fn save_meeting_indicator_corner(corner: MeetingIndicatorCorner) {
     match AppSettings::load() {
         Ok(mut settings) => {
@@ -2690,6 +3021,22 @@ pub fn exists() -> bool {
 mod tests {
     use super::*;
 
+    /// GNOME's window menu takes Alt+Space, so new GNOME setups dictate
+    /// with Ctrl+Alt+Space; it shares no key with Paste last or Annotate.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn gnome_dictates_with_a_key_gnome_leaves_free() {
+        assert_eq!(
+            HotkeyBinding::linux_dictation_default(false).keycaps(),
+            ["Alt", "Space"]
+        );
+        let gnome = HotkeyBinding::linux_dictation_default(true);
+        assert_eq!(gnome.keycaps(), ["Ctrl", "Alt", "Space"]);
+        assert_ne!(gnome, HotkeyBinding::paste_last_default());
+        #[cfg(hex_capture)]
+        assert_ne!(gnome, HotkeyBinding::capture_default());
+    }
+
     /// Annotate is on out of the box, so its shortcut and the rest of the
     /// defaults share no key on any OS.
     #[cfg(hex_capture)]
@@ -2766,35 +3113,81 @@ mod tests {
     }
 
     #[test]
-    fn loading_clears_recognition_hints_the_model_does_not_support() {
-        let dir = TestSettingsDir::new("unsupported-hints");
-        let mut settings = AppSettings {
+    fn loading_folds_saved_recognition_hints_into_the_vocabulary_once() {
+        use crate::dictation::vocabulary::VocabularyEntry;
+        let dir = TestSettingsDir::new("folded-hints");
+        let mut file = serde_json::to_value(AppSettings {
             transcription: TranscriptionSelection {
-                model: TranscriptionModelId::ParakeetUnifiedEnglish,
+                model: TranscriptionModelId::WhisperLargeV3Turbo,
                 language: "en".into(),
-                recognition_hints: "Hex, Rune".into(),
             },
+            vocabulary: vec![VocabularyEntry {
+                term: "Rune".into(),
+                sounds_like: vec!["rune's".into()],
+            }],
             sound_effect_volume: 0.25,
             ..AppSettings::default()
-        };
-        fs::write(&dir.path, serde_json::to_vec(&settings).unwrap()).unwrap();
+        })
+        .unwrap();
+        file["transcription"]["recognition_hints"] = "Hex, rune\nKaffar".into();
+        file["transcription_recents"] = serde_json::json!([
+            {"model": "parakeet_v3", "language": "de", "recognition_hints": "Old; Hex"},
+            {"model": "qwen3_asr06_b", "language": "en", "recognition_hints": "Rodolfo"},
+        ]);
+        fs::write(&dir.path, serde_json::to_vec(&file).unwrap()).unwrap();
         let loaded = AppSettings::load_from(&dir.path).unwrap();
-        assert_eq!(
-            loaded.transcription.model,
-            TranscriptionModelId::ParakeetUnifiedEnglish
-        );
-        assert!(loaded.transcription.recognition_hints.is_empty());
+        let terms: Vec<_> = loaded
+            .vocabulary
+            .iter()
+            .map(|entry| entry.term.as_str())
+            .collect();
+        assert_eq!(terms, ["Rune", "Hex", "Kaffar", "Rodolfo", "Old"]);
+        assert_eq!(loaded.vocabulary[0].sounds_like, ["rune's"]);
         assert_eq!(loaded.sound_effect_volume, 0.25);
+        let written = fs::read_to_string(&dir.path).unwrap();
+        assert!(!written.contains("recognition_hints"));
+        assert_eq!(
+            AppSettings::load_from(&dir.path).unwrap().vocabulary,
+            loaded.vocabulary
+        );
+    }
 
-        let whisper = TranscriptionSelection {
-            model: TranscriptionModelId::WhisperLargeV3Turbo,
-            language: "en".into(),
-            recognition_hints: "Hex, Rune".into(),
+    /// Labs › Second dictation shortcut (issue 627): its binding takes
+    /// effect only on macOS with its toggle on, never sharing a key with
+    /// another shortcut, and the other shortcuts' checks count it.
+    #[test]
+    fn the_second_dictation_shortcut_needs_its_lab_and_its_own_keys() {
+        let function = HotkeyBinding {
+            modifiers: HotkeyModifiers {
+                function: true,
+                ..HotkeyModifiers::default()
+            },
+            key: None,
         };
-        settings.transcription = whisper.clone();
-        fs::write(&dir.path, serde_json::to_vec(&settings).unwrap()).unwrap();
-        let loaded = AppSettings::load_from(&dir.path).unwrap();
-        assert_eq!(loaded.transcription, whisper);
+        let mut settings = AppSettings {
+            second_dictation_hotkey: Some(function.clone()),
+            ..AppSettings::default()
+        };
+        assert!(!settings.labs.second_dictation_shortcut);
+        assert_eq!(settings.runtime_hotkeys().second_dictation, None);
+        assert!(!settings.hotkey_in_use(HotkeySlot::RawDictation, &function));
+
+        settings.labs.second_dictation_shortcut = true;
+        let active = settings.runtime_hotkeys().second_dictation;
+        if cfg!(target_os = "macos") {
+            assert_eq!(active, Some(function.runtime()));
+            assert!(settings.hotkey_in_use(HotkeySlot::RawDictation, &function));
+            assert!(settings.hotkey_in_use(HotkeySlot::Dictation, &function));
+        } else {
+            assert_eq!(active, None);
+        }
+
+        // The dictation shortcut's own keys are refused, and a saved overlap
+        // is dropped rather than matched twice.
+        let dictation = settings.dictation_hotkey.clone();
+        assert!(settings.hotkey_in_use(HotkeySlot::SecondDictation, &dictation));
+        settings.second_dictation_hotkey = Some(dictation);
+        assert_eq!(settings.runtime_hotkeys().second_dictation, None);
     }
 
     #[test]
@@ -2866,24 +3259,45 @@ mod tests {
         let loaded = AppSettings::load_from(&dir.path).unwrap();
         assert_eq!(loaded.dictation_hotkey, HotkeyBinding::default());
 
-        let settings = AppSettings {
+        let mut settings = AppSettings {
             dictation_hotkey: back_button.clone(),
             ..AppSettings::default()
         };
+        // macOS keeps a mouse shortcut only with Labs › Mouse shortcuts on.
+        settings.labs.mouse_shortcuts = true;
         fs::write(&dir.path, serde_json::to_vec(&settings).unwrap()).unwrap();
         let loaded = AppSettings::load_from(&dir.path).unwrap();
         assert_eq!(loaded.dictation_hotkey, back_button);
     }
 
     #[test]
-    fn the_setting_the_experiment_or_an_installed_driver_turns_the_voice_filter_on() {
+    fn the_setting_or_an_installed_driver_turns_the_voice_filter_on_and_labs_never_does() {
         if env_hex_experimental_mic() {
             return;
         }
-        assert!(!voice_filter_enabled(false, false, false));
-        assert!(voice_filter_enabled(true, false, false));
-        assert!(voice_filter_enabled(false, true, false));
-        assert!(voice_filter_enabled(false, false, true));
+        assert!(!voice_filter_enabled(false, false));
+        assert!(voice_filter_enabled(true, false));
+        assert!(voice_filter_enabled(false, true));
+    }
+
+    #[test]
+    fn mouse_shortcuts_go_back_to_their_default_while_their_labs_toggle_is_off() {
+        let mouse = HotkeyBinding {
+            modifiers: HotkeyModifiers::default(),
+            key: HotkeyKey::mouse(3),
+        };
+        let mut settings = AppSettings {
+            dictation_hotkey: mouse.clone(),
+            ..Default::default()
+        };
+        settings.labs.mouse_shortcuts = true;
+        settings.repair_mouse_shortcuts();
+        assert_eq!(settings.dictation_hotkey, mouse);
+        assert!(!settings.mouse_shortcut_notice);
+        settings.labs.mouse_shortcuts = false;
+        settings.repair_mouse_shortcuts();
+        assert_eq!(settings.dictation_hotkey, HotkeyBinding::default());
+        assert!(settings.mouse_shortcut_notice);
     }
 
     #[test]
@@ -3022,19 +3436,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn concurrent_settings_writers_use_distinct_temporary_paths() {
-        let path = PathBuf::from("/tmp/settings.json");
-
-        assert_ne!(
-            settings_temporary_path(&path),
-            settings_temporary_path(&path)
-        );
-    }
-
     fn english(model: TranscriptionModelId) -> String {
         format!(
-            r#"{{"transcription":{{"model":"{}","language":"en","recognition_hints":""}}}}"#,
+            r#"{{"transcription":{{"model":"{}","language":"en"}}}}"#,
             model.as_str()
         )
     }
@@ -3087,7 +3491,7 @@ mod tests {
     #[test]
     fn other_languages_and_auto_keep_their_model() {
         for language in ["de", "auto"] {
-            let model = crate::transcription_models::choices_for_runtime(language)
+            let model = crate::transcription::models::choices_for_runtime(language)
                 .iter()
                 .map(|choice| choice.model.id)
                 .find(|model| *model != TranscriptionModelId::ParakeetUnifiedEnglish)
@@ -3096,7 +3500,7 @@ mod tests {
             fs::write(
                 &dir.path,
                 format!(
-                    r#"{{"transcription":{{"model":"{}","language":"{language}","recognition_hints":""}}}}"#,
+                    r#"{{"transcription":{{"model":"{}","language":"{language}"}}}}"#,
                     model.as_str()
                 ),
             )
@@ -3116,7 +3520,6 @@ mod tests {
             transcription: TranscriptionSelection {
                 model: TranscriptionModelId::ParakeetV3,
                 language: "en".into(),
-                recognition_hints: String::new(),
             },
             ..AppSettings::default()
         };
@@ -3130,7 +3533,7 @@ mod tests {
 
     #[test]
     fn vocabulary_round_trips_and_stays_out_of_files_without_one() {
-        use crate::vocabulary::VocabularyEntry;
+        use crate::dictation::vocabulary::VocabularyEntry;
         // A file from before the vocabulary loads with an empty one and is
         // not rewritten to gain the field.
         let dir = TestSettingsDir::new("vocabulary");
@@ -3151,8 +3554,8 @@ mod tests {
         let filled = AppSettings {
             vocabulary: vec![
                 VocabularyEntry {
-                    term: "Abattoir".into(),
-                    sounds_like: vec!["avatar".into(), "a bat war".into()],
+                    term: "Cappuccino".into(),
+                    sounds_like: vec!["capuchin".into(), "cap a chino".into()],
                 },
                 VocabularyEntry {
                     term: "Rune".into(),
@@ -3167,7 +3570,7 @@ mod tests {
         assert_eq!(
             json["vocabulary"],
             serde_json::json!([
-                {"term": "Abattoir", "sounds_like": ["avatar", "a bat war"]},
+                {"term": "Cappuccino", "sounds_like": ["capuchin", "cap a chino"]},
                 {"term": "Rune"},
             ])
         );
@@ -3200,10 +3603,58 @@ mod tests {
         }
     }
 
+    /// #744: a value this build can't read costs only that setting, and the
+    /// file (perhaps a newer build's) is left as it was.
+    #[test]
+    fn an_unreadable_setting_keeps_its_default_and_the_rest_loads() {
+        let dir = TestSettingsDir::new("lenient");
+        let file = r#"{
+            "sound_effects": false,
+            "history_retention": null,
+            "show_dock_icon": "sometimes",
+            "meetings": {"enabled": true, "retention": "quarterly"},
+            "recording_duck_volume": 7.0
+        }"#;
+        fs::write(&dir.path, file).unwrap();
+        let settings = AppSettings::load_from(&dir.path).unwrap();
+        let defaults = AppSettings::default();
+        assert!(!settings.sound_effects);
+        assert!(settings.meetings.enabled);
+        assert_eq!(settings.history_retention, defaults.history_retention);
+        assert_eq!(settings.show_dock_icon, defaults.show_dock_icon);
+        assert_eq!(settings.meetings.retention, None);
+        assert_eq!(
+            settings.recording_duck_volume,
+            defaults.recording_duck_volume
+        );
+        assert_eq!(
+            fs::read_to_string(&dir.path).unwrap(),
+            file,
+            "not rewritten"
+        );
+
+        // `null` reads as unchosen, and unchosen is never written as `null`,
+        // which 3.1.0 can't read.
+        fs::write(&dir.path, r#"{"meetings": {"retention": null}}"#).unwrap();
+        assert_eq!(
+            AppSettings::load_from(&dir.path)
+                .unwrap()
+                .meetings
+                .retention,
+            None
+        );
+        let saved = serde_json::to_value(AppSettings::default()).unwrap();
+        assert!(saved["meetings"].get("retention").is_none());
+
+        // Only a file that isn't JSON fails.
+        fs::write(&dir.path, "{ not json").unwrap();
+        assert!(AppSettings::load_from(&dir.path).is_err());
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn new_settings_require_onboarding_across_reloads() {
-        use crate::onboarding::{completion_recorded_at, record_completion_at};
+        use crate::desktop::onboarding::{completion_recorded_at, record_completion_at};
         use std::os::unix::fs::PermissionsExt;
 
         let dir = TestSettingsDir::new("new-onboarding");
@@ -3302,7 +3753,9 @@ mod tests {
         let settings = AppSettings::load_from(&dir.path).unwrap();
         settings.write_to(&dir.path).unwrap();
         assert!(!dir.directory.join("onboarding-pending").exists());
-        assert!(crate::onboarding::completion_recorded_at(&dir.directory));
+        assert!(crate::desktop::onboarding::completion_recorded_at(
+            &dir.directory
+        ));
         assert!(dir.directory.join("onboarding-complete").is_file());
     }
 
@@ -3426,9 +3879,8 @@ mod tests {
     fn transcription_selection_round_trips() {
         let settings = AppSettings {
             transcription: TranscriptionSelection {
-                model: crate::transcription_models::TranscriptionModelId::WhisperLargeV3Turbo,
+                model: crate::transcription::models::TranscriptionModelId::WhisperLargeV3Turbo,
                 language: "zh".into(),
-                recognition_hints: "OpenCode, Effect".into(),
             },
             ..AppSettings::default()
         };
@@ -3437,15 +3889,14 @@ mod tests {
         let decoded: AppSettings = serde_json::from_str(&encoded).unwrap();
 
         assert_eq!(decoded.transcription, settings.transcription);
-        assert!(crate::transcription_models::validate(&decoded.transcription).is_ok());
+        assert!(crate::transcription::models::validate(&decoded.transcription).is_ok());
     }
 
     #[test]
-    fn model_switches_remember_language_and_hints_without_changing_other_settings() {
+    fn model_switches_remember_language_without_changing_other_settings() {
         let french = TranscriptionSelection {
             model: TranscriptionModelId::WhisperLargeV3Turbo,
             language: "fr".into(),
-            recognition_hints: "Example project".into(),
         };
         let mut settings = AppSettings {
             show_dock_icon: false,
@@ -3491,7 +3942,6 @@ mod tests {
         let candidate = TranscriptionSelection {
             model: TranscriptionModelId::WhisperLargeV3Turbo,
             language: "fr".into(),
-            recognition_hints: String::new(),
         };
         let error = settings
             .save_transcription_with(candidate.clone(), |next| {
@@ -3522,12 +3972,10 @@ mod tests {
                 TranscriptionSelection {
                     model: TranscriptionModelId::ParakeetV2,
                     language: "fr".into(),
-                    recognition_hints: String::new(),
                 },
                 TranscriptionSelection {
                     model: TranscriptionModelId::WhisperLargeV3Turbo,
                     language: "not-a-language".into(),
-                    recognition_hints: String::new(),
                 },
             ],
             ..Default::default()
@@ -3552,9 +4000,8 @@ mod tests {
     fn automatic_language_selection_round_trips_explicitly() {
         let settings = AppSettings {
             transcription: TranscriptionSelection {
-                model: crate::transcription_models::TranscriptionModelId::WhisperLargeV3Turbo,
-                language: crate::transcription_models::AUTO_LANGUAGE.into(),
-                recognition_hints: String::new(),
+                model: crate::transcription::models::TranscriptionModelId::WhisperLargeV3Turbo,
+                language: crate::transcription::models::AUTO_LANGUAGE.into(),
             },
             ..AppSettings::default()
         };
@@ -3564,15 +4011,14 @@ mod tests {
 
         assert!(encoded.contains(r#""language":"auto""#));
         assert_eq!(decoded.transcription, settings.transcription);
-        assert!(crate::transcription_models::validate(&decoded.transcription).is_ok());
+        assert!(crate::transcription::models::validate(&decoded.transcription).is_ok());
     }
 
     #[test]
     fn disabled_apple_speech_selection_migrates_to_the_default_model() {
-        let mut settings: AppSettings = serde_json::from_str(
-            r#"{"transcription":{"model":"apple_speech","language":"de","recognition_hints":""}}"#,
-        )
-        .unwrap();
+        let mut settings: AppSettings =
+            serde_json::from_str(r#"{"transcription":{"model":"apple_speech","language":"de"}}"#)
+                .unwrap();
 
         settings.migrate_disabled_transcription_model();
         assert_eq!(settings.transcription, TranscriptionSelection::default());

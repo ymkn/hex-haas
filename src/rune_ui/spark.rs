@@ -1,80 +1,148 @@
 //! A sparkle that flips on its vertical axis: four points with curved sides,
-//! bevelled so each point has a lit half and a shaded half, drawn in the
-//! theme's ink. It rests face-on, then turns half a turn with an ease in and
-//! out, which brings it back to the same face. Rune turns shapes only in the
-//! plane, so the turn is projected ahead of time into frames, each shown for
-//! its slot of the loop through a clock-driven opacity cycle: the renderer
-//! flips between them with no view rebuilds. Reduce Motion holds it face-on.
+//! each side rising from its edge to a peak at the centre, drawn in the
+//! theme's ink so the light rolls across each point as it turns. It rests
+//! face-on, then turns half a turn with an ease in and out, which brings it
+//! back to the same face, once per example of the agent card's copy, so the
+//! copy changes as it turns edge-on. Rune turns shapes only in the plane, so
+//! each frame of the turn is rendered here: a smooth-shaded mesh, lit per
+//! pixel and supersampled, so no facet edges or seams show. The window's
+//! poll swaps the frame in from the clock. Reduce Motion holds it face-on.
 
+use std::cell::Cell;
+use std::collections::HashMap;
 use std::f32::consts::PI;
+use std::sync::{Arc, Mutex, OnceLock};
 
-use rune::{Color, Cycle, El, Shape, canvas, col};
+use rune::color::srgb_encode;
+use rune::{Color, El, Pixels, col};
 
 use super::controls::Paint;
 
-/// Seconds for one rest and one flip.
-const PERIOD: f32 = 5.0;
+/// Seconds for one rest and one flip: one example of the card's copy.
+pub(super) const PERIOD: f32 = 3.6;
 /// The share of the loop it rests face-on.
-const REST: f32 = 0.62;
-/// Frames in the flip, the face-on frame included.
-const FRAMES: usize = 57;
-/// How long each flip frame shows, as a share of the loop.
-const STEP: f32 = (1.0 - REST) / FRAMES as f32;
+const REST: f32 = 0.6;
+/// Seconds into the loop it turns edge-on, halfway through the flip.
+pub(super) const EDGE_ON: f32 = PERIOD * (1.0 + REST) / 2.0;
+/// Frames in the flip, the face-on frame included: 60 a second.
+const FRAMES: usize = 86;
 /// How far the side points reach, against the vertical points' 1.
 const REACH: f32 = 0.8;
 /// How close each curved side passes to the centre: the smaller, the
 /// thinner the points.
-const PINCH: f32 = 0.05;
-/// How far the bevel's centre stands out of the sparkle's plane.
-const BEVEL: f32 = 0.22;
+const PINCH: f32 = 0.08;
+/// How far the peak stands out of the sparkle's plane.
+const BEVEL: f32 = 0.25;
 /// Points along each curved side.
-const SAMPLES: usize = 16;
-/// The face-on frame shows through the rest and one flip step; a hair more
-/// so rounding at a boundary never leaves a moment with no frame.
-const RESTING: [(f32, f32); 4] = [
-    (0.0, 1.0),
-    (REST + STEP + 1e-3, 1.0),
-    (REST + STEP + 1e-3, 0.0),
-    (1.0, 0.0),
-];
-/// Every other frame shows for one flip step.
-const TURNING: [(f32, f32); 4] = [
-    (0.0, 1.0),
-    (STEP + 1e-3, 1.0),
-    (STEP + 1e-3, 0.0),
-    (1.0, 0.0),
-];
+const SAMPLES: usize = 24;
+/// How far the normals lean out at the edge.
+const SLOPE: f32 = 0.9;
+/// Rings of the mesh from the peak out to the edge.
+const RINGS: usize = 12;
+/// Samples per pixel along each axis.
+const SUPERSAMPLE: usize = 4;
 
-/// The sparkle, `size` points square.
-pub(super) fn spark(p: Paint, key: &str, size: f32) -> El {
-    let ink = p.text();
-    let ground = p.k.c.bg_base;
-    let frames = (0..FRAMES).map(|frame| {
-        let turn = PI * ease(frame as f32 / FRAMES as f32);
-        canvas(faces(turn, size, ground, ink, p.k.dark))
-            .key(format!("{key}-frame{frame}"))
-            .absolute(0.0, 0.0)
-            .size(size, size)
-            .cycle(cycle(frame))
-    });
-    col().key(key).size(size, size).children(frames)
+/// The sparkle's image, kept across view rebuilds so the poll can turn it.
+#[derive(Default)]
+pub(super) struct Spark {
+    pixels: Pixels,
+    /// How the view last drew it.
+    look: Cell<Option<Look>>,
+    /// The frame the image holds, and for which look.
+    shown: Cell<Option<(Look, usize)>>,
+    /// The clock at the last poll.
+    clock: Cell<f64>,
 }
 
-/// When `frame` shows: the face-on frame from the last flip step through the
-/// rest, every other frame for its own step of the flip.
-fn cycle(frame: usize) -> Cycle {
-    let (phase, stops) = if frame == 0 {
-        (1.0 - STEP, &RESTING)
-    } else {
-        (REST + (frame - 1) as f32 * STEP, &TURNING)
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct Look {
+    dark: bool,
+    /// The image's side in pixels.
+    pixels: u32,
+    reduced: bool,
+}
+
+/// The sparkle, `size` points square.
+pub(super) fn spark(state: &Spark, p: Paint, key: &str, size: f32, reduced: bool) -> El {
+    let look = Look {
+        dark: p.k.dark,
+        pixels: (size / p.hair).round().max(1.0) as u32,
+        reduced,
     };
-    Cycle {
-        period: PERIOD,
-        phase,
-        stops,
-        still: if frame == 0 { 1.0 } else { 0.0 },
-        fps: 1.0 / (STEP * PERIOD),
+    state.look.set(Some(look));
+    show(state, look, frame(look, state.clock.get()));
+    col().key(key).size(size, size).pixels(&state.pixels)
+}
+
+/// Shows the frame for `clock`; returns how long until the image next
+/// changes.
+pub(super) fn poll(state: &Spark, clock: f64) -> f64 {
+    state.clock.set(clock);
+    if let Some(look) = state.look.get() {
+        show(state, look, frame(look, clock));
     }
+    let into = into(clock);
+    if into >= REST {
+        1.0 / 60.0
+    } else {
+        f64::from((REST - into) * PERIOD)
+    }
+}
+
+/// How far into its loop the sparkle is at `clock`, 0 to 1.
+fn into(clock: f64) -> f32 {
+    (clock / f64::from(PERIOD)).rem_euclid(1.0) as f32
+}
+
+/// The frame of the flip to show at `clock`.
+fn frame(look: Look, clock: f64) -> usize {
+    let into = into(clock);
+    if look.reduced || into < REST {
+        0
+    } else {
+        (((into - REST) / (1.0 - REST)) * FRAMES as f32) as usize % FRAMES
+    }
+}
+
+fn show(state: &Spark, look: Look, frame: usize) {
+    if state.shown.get() == Some((look, frame)) {
+        return;
+    }
+    state.shown.set(Some((look, frame)));
+    let rgba = cached(look, frame);
+    state
+        .pixels
+        .set(look.pixels, look.pixels, rgba.as_ref().clone());
+}
+
+/// Rendered frames by theme, image side and frame.
+type Rendered = HashMap<(bool, u32, usize), Arc<Vec<u8>>>;
+
+/// Each frame is rendered once per look.
+fn cached(look: Look, frame: usize) -> Arc<Vec<u8>> {
+    static FRAMES_SEEN: OnceLock<Mutex<Rendered>> = OnceLock::new();
+    let key = (look.dark, look.pixels, frame);
+    let cache = FRAMES_SEEN.get_or_init(Default::default);
+    if let Some(rgba) = cache.lock().unwrap().get(&key) {
+        return rgba.clone();
+    }
+    let kit = rune_theme_opencode::kit(look.dark);
+    let turn = PI * ease(frame as f32 / FRAMES as f32);
+    let rgba = Arc::new(render(
+        turn,
+        look.pixels as usize,
+        kit.c.bg_base,
+        kit.c.text_strong,
+        look.dark,
+    ));
+    let mut cache = cache.lock().unwrap();
+    // Theme switches and scale changes leave old looks behind; a few are
+    // plenty to keep.
+    if cache.len() > FRAMES * 4 {
+        cache.clear();
+    }
+    cache.insert(key, rgba.clone());
+    rgba
 }
 
 /// Slow out of the rest, quick through the middle, slow into the next.
@@ -88,114 +156,168 @@ fn ease(t: f32) -> f32 {
 
 type Point = [f32; 3];
 
-/// The sparkle turned `turn` radians about its vertical axis, as opaque
-/// bevel faces shaded from `ground` toward `ink`, painted back to front.
-fn faces(turn: f32, size: f32, ground: Color, ink: Color, dark: bool) -> Shape {
-    // y points down; the tips go clockwise from the top.
+/// Both faces of the sparkle as triangles. Each point's normal leans
+/// straight out from the middle, more toward the edge, as on a smooth dome:
+/// the light rolls across with no ridge between the points.
+struct Mesh {
+    points: Vec<Point>,
+    normals: Vec<Point>,
+    triangles: Vec<[usize; 3]>,
+}
+
+fn mesh() -> &'static Mesh {
+    static MESH: OnceLock<Mesh> = OnceLock::new();
+    MESH.get_or_init(|| {
+        let edge = boundary();
+        let around = edge.len();
+        let mut points = Vec::new();
+        let mut normals = Vec::new();
+        let mut triangles = Vec::new();
+        for side in [1.0, -1.0] {
+            let peak = points.len();
+            points.push([0.0, 0.0, side * BEVEL]);
+            normals.push([0.0, 0.0, side]);
+            let first = points.len();
+            for b in &edge {
+                let out = unit(*b);
+                for k in 1..=RINGS {
+                    let r = k as f32 / RINGS as f32;
+                    points.push([b[0] * r, b[1] * r, side * BEVEL * (1.0 - r).powf(1.5)]);
+                    let tilt = SLOPE * r.sqrt();
+                    normals.push(unit([out[0] * tilt, out[1] * tilt, side]));
+                }
+            }
+            let at = |s: usize, k: usize| first + (s % around) * RINGS + (k - 1);
+            for s in 0..around {
+                triangles.push([peak, at(s, 1), at(s + 1, 1)]);
+                for k in 1..RINGS {
+                    triangles.push([at(s, k), at(s, k + 1), at(s + 1, k + 1)]);
+                    triangles.push([at(s, k), at(s + 1, k + 1), at(s + 1, k)]);
+                }
+            }
+        }
+        Mesh {
+            points,
+            normals,
+            triangles,
+        }
+    })
+}
+
+/// The sparkle turned `turn` radians about its vertical axis, `side` pixels
+/// square: straight-alpha sRGB, each face lit per pixel and shaded from
+/// `ground` toward `ink`.
+fn render(turn: f32, side: usize, ground: Color, ink: Color, dark: bool) -> Vec<u8> {
+    let mesh = mesh();
+    let (sin, cos) = turn.sin_cos();
+    let spin = |[x, y, z]: Point| [x * cos + z * sin, y, z * cos - x * sin];
+    let fine = side * SUPERSAMPLE;
+    let (scale, middle) = (fine as f32 * 0.48, fine as f32 / 2.0);
+    let screen: Vec<Point> = mesh
+        .points
+        .iter()
+        .map(|p| {
+            let v = spin(*p);
+            [middle + v[0] * scale, middle + v[1] * scale, v[2]]
+        })
+        .collect();
+    let normals: Vec<Point> = mesh.normals.iter().map(|n| spin(*n)).collect();
+    let mut depth = vec![f32::NEG_INFINITY; fine * fine];
+    let mut normal = vec![[0.0f32; 3]; fine * fine];
+    for t in &mesh.triangles {
+        let [a, b, c] = t.map(|i| screen[i]);
+        let area = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+        if area.abs() < 1e-6 {
+            continue;
+        }
+        let x0 = a[0].min(b[0]).min(c[0]).floor().max(0.0) as usize;
+        let x1 = (a[0].max(b[0]).max(c[0]).ceil() as usize).min(fine);
+        let y0 = a[1].min(b[1]).min(c[1]).floor().max(0.0) as usize;
+        let y1 = (a[1].max(b[1]).max(c[1]).ceil() as usize).min(fine);
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+                let w0 = ((b[0] - px) * (c[1] - py) - (b[1] - py) * (c[0] - px)) / area;
+                let w1 = ((c[0] - px) * (a[1] - py) - (c[1] - py) * (a[0] - px)) / area;
+                let w2 = 1.0 - w0 - w1;
+                if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 {
+                    continue;
+                }
+                let z = w0 * a[2] + w1 * b[2] + w2 * c[2];
+                let i = y * fine + x;
+                if z <= depth[i] {
+                    continue;
+                }
+                depth[i] = z;
+                let [na, nb, nc] = t.map(|i| normals[i]);
+                normal[i] = [0, 1, 2].map(|k| w0 * na[k] + w1 * nb[k] + w2 * nc[k]);
+            }
+        }
+    }
+    let mut rgba = Vec::with_capacity(side * side * 4);
+    for y in 0..side {
+        for x in 0..side {
+            let (mut sum, mut covered) = ([0.0f32; 3], 0usize);
+            for sy in 0..SUPERSAMPLE {
+                for sx in 0..SUPERSAMPLE {
+                    let i = (y * SUPERSAMPLE + sy) * fine + x * SUPERSAMPLE + sx;
+                    if depth[i] == f32::NEG_INFINITY {
+                        continue;
+                    }
+                    let mut n = unit(normal[i]);
+                    // Seen from behind, a face shows its other side.
+                    if n[2] < 0.0 {
+                        n = n.map(|c| -c);
+                    }
+                    let light = shade(n);
+                    let amount = if dark {
+                        0.3 + 0.7 * light
+                    } else {
+                        0.95 - 0.5 * light
+                    };
+                    let color = ground.mix(ink, amount.clamp(0.0, 1.0));
+                    sum = add(sum, [color.r, color.g, color.b]);
+                    covered += 1;
+                }
+            }
+            if covered == 0 {
+                rgba.extend_from_slice(&[0, 0, 0, 0]);
+                continue;
+            }
+            let byte = |c: f32| (c.clamp(0.0, 1.0) * 255.0).round() as u8;
+            let n = covered as f32;
+            rgba.extend(sum.map(|c| byte(srgb_encode(c / n))));
+            rgba.push(byte(n / (SUPERSAMPLE * SUPERSAMPLE) as f32));
+        }
+    }
+    rgba
+}
+
+/// The sparkle's edge in its own plane: four tips joined by curves that bow
+/// toward the centre, `SAMPLES` points per side, clockwise from the top
+/// (y points down).
+fn boundary() -> Vec<Point> {
     let tips: [Point; 4] = [
         [0.0, -1.0, 0.0],
         [REACH, 0.0, 0.0],
         [0.0, 1.0, 0.0],
         [-REACH, 0.0, 0.0],
     ];
-    let (sin, cos) = turn.sin_cos();
-    let spin = |[x, y, z]: Point| [x * cos + z * sin, y, z * cos - x * sin];
-    let mut halves: Vec<(f32, Vec<Point>, Point)> = Vec::new();
-    for side in [1.0, -1.0] {
-        let centre = [0.0, 0.0, BEVEL * side];
-        for i in 0..4 {
-            let curve = side_curve(tips[i], tips[(i + 1) % 4]);
-            let (first, second) = curve.split_at(SAMPLES / 2);
-            let mut lit: Vec<Point> = vec![centre];
-            lit.extend_from_slice(first);
-            lit.push(second[0]);
-            let mut shaded: Vec<Point> = vec![centre];
-            shaded.extend_from_slice(second);
-            shaded.push(tips[(i + 1) % 4]);
-            for half in [lit, shaded] {
-                let view: Vec<Point> = half.iter().map(|point| spin(*point)).collect();
-                let normal = outward(&view);
-                if normal[2] <= 0.0 {
-                    continue;
-                }
-                let depth = view.iter().map(|v| v[2]).sum::<f32>() / view.len() as f32;
-                halves.push((depth, view, normal));
-            }
-        }
-    }
-    halves.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let scale = size * 0.48;
-    let middle = size / 2.0;
-    let mut shape = Shape::new();
-    for (_, view, normal) in halves {
-        let light = shade(normal);
-        let amount = if dark {
-            0.28 + 0.72 * light
-        } else {
-            0.98 - 0.5 * light
-        };
-        let points: Vec<[f32; 2]> = view
-            .iter()
-            .map(|v| [middle + v[0] * scale, middle + v[1] * scale])
-            .collect();
-        shape = shape.fill(spread(points), ground.mix(ink, amount.clamp(0.0, 1.0)));
-    }
-    shape
-}
-
-/// The curved side from tip `a` to tip `b`, bowing in past the centre, as
-/// `SAMPLES` points starting at `a` (the end, `b`, is the next side's start).
-fn side_curve(a: Point, b: Point) -> Vec<Point> {
-    let toward = unit(add(a, b)).map(|c| c * PINCH);
-    (0..SAMPLES)
-        .map(|j| {
+    let mut points = Vec::with_capacity(SAMPLES * 4);
+    for i in 0..4 {
+        let (a, b) = (tips[i], tips[(i + 1) % 4]);
+        let toward = unit(add(a, b)).map(|c| c * PINCH);
+        for j in 0..SAMPLES {
             let t = j as f32 / SAMPLES as f32;
             let (u, v, w) = ((1.0 - t) * (1.0 - t), 2.0 * t * (1.0 - t), t * t);
-            [
+            points.push([
                 u * a[0] + v * toward[0] + w * b[0],
                 u * a[1] + v * toward[1] + w * b[1],
                 0.0,
-            ]
-        })
-        .collect()
-}
-
-/// The polygon grown a quarter point from its centroid, so neighbouring
-/// faces overlap instead of showing the card through their antialiased
-/// shared edges.
-fn spread(points: Vec<[f32; 2]>) -> Vec<[f32; 2]> {
-    let count = points.len() as f32;
-    let centre = points.iter().fold([0.0, 0.0], |a, p| {
-        [a[0] + p[0] / count, a[1] + p[1] / count]
-    });
-    points
-        .into_iter()
-        .map(|[x, y]| {
-            let (dx, dy) = (x - centre[0], y - centre[1]);
-            let length = (dx * dx + dy * dy).sqrt().max(1e-6);
-            [x + dx / length * 0.25, y + dy / length * 0.25]
-        })
-        .collect()
-}
-
-/// The face's unit normal from its centre point and the two ends of its
-/// edge, pointing away from the sparkle's middle.
-fn outward(points: &[Point]) -> Point {
-    let sub = |a: Point, b: Point| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-    let (u, v) = (
-        sub(points[1], points[0]),
-        sub(points[points.len() - 1], points[0]),
-    );
-    let mut n = [
-        u[1] * v[2] - u[2] * v[1],
-        u[2] * v[0] - u[0] * v[2],
-        u[0] * v[1] - u[1] * v[0],
-    ];
-    let centre = points.iter().fold([0.0; 3], |a, p| add(a, *p));
-    if dot(n, centre) < 0.0 {
-        n = n.map(|c| -c);
+            ]);
+        }
     }
-    unit(n)
+    points
 }
 
 /// How lit a face turned to `normal` looks, 0 to 1: light from the top left
@@ -225,18 +347,15 @@ fn unit(v: Point) -> Point {
 mod tests {
     use super::*;
 
-    /// Some frame shows at every moment, the slot boundaries included, so
-    /// the sparkle never blinks out.
+    /// Face-on, the sparkle fills its middle and leaves its corners clear,
+    /// with soft edges between.
     #[test]
-    fn a_frame_always_shows() {
-        let boundaries = (0..FRAMES * 2)
-            .map(|slot| f64::from(PERIOD) * (f64::from(REST) + slot as f64 * f64::from(STEP)));
-        let between = (0..997).map(|step| f64::from(step) * 0.0171);
-        for t in boundaries.chain(between) {
-            let shown = (0..FRAMES)
-                .filter(|frame| cycle(*frame).sample(t) > 0.999)
-                .count();
-            assert!((1..=2).contains(&shown), "{shown} frames at {t}");
-        }
+    fn a_frame_covers_the_sparkle_with_soft_edges() {
+        let side = 40;
+        let rgba = render(0.0, side, Color::BLACK, Color::WHITE, true);
+        let alpha = |x: usize, y: usize| rgba[(y * side + x) * 4 + 3];
+        assert_eq!(alpha(side / 2, side / 2), 255);
+        assert_eq!(alpha(1, 1), 0);
+        assert!(rgba.chunks(4).any(|p| p[3] > 0 && p[3] < 255));
     }
 }

@@ -1,4 +1,4 @@
-//! The macOS meeting capsules on Rune: the calendar meeting reminder, the
+//! The meeting capsules on Rune: the calendar meeting reminder, the
 //! recording offer, "left the call", the ready transcript, and the recording
 //! capsule. Each is an
 //! interactive Rune overlay, which on macOS is a non-activating `NSPanel`:
@@ -6,8 +6,8 @@
 //! activates. An offer that times out only closes; nothing starts or stops
 //! on a timeout.
 //!
-//! The pump in `macos_rune` forwards controller events on the main thread;
-//! buttons send `ControllerCommand`s back to the controller.
+//! `macos_rune` and `meeting_runtime` forward controller events; buttons
+//! send `ControllerCommand`s back to the controller.
 //!
 //! The recording capsule's "Copy new" and "Copy all" copy the in-call
 //! transcript (Parakeet, `meeting::TranscriptReader`); "Copy new" shares
@@ -32,10 +32,10 @@ use rune_kit::{Badge, BadgeVariant, Button, ButtonVariant};
 use super::controls::{Paint, PushSize, pulsing_dot, status_dot};
 use crate::app_settings::{MeetingIndicatorCorner, MeetingPolicy, MeetingProviderChoice};
 use crate::calendar::CalendarMeeting;
-use crate::desktop_i18n::{tr, tr_fill};
+use crate::desktop::i18n::{tr, tr_fill};
+use crate::meeting::detection::MeetingCandidate;
+use crate::meeting::watcher::{ControllerCommand, ControllerEvent};
 use crate::meeting::{self, MeetingManifest, TranscriptEntry};
-use crate::meeting_detection::MeetingCandidate;
-use crate::meeting_watcher::{ControllerCommand, ControllerEvent};
 
 /// The offer, call ended, and ready capsules.
 const MEETING_PANEL_WIDTH: f32 = 420.0;
@@ -319,11 +319,18 @@ fn nearest_corner(
 }
 
 /// The primary screen in points, where Rune places the capsules.
+#[cfg(target_os = "macos")]
 fn primary_screen_size() -> Option<(f32, f32)> {
     let mtm = objc2::MainThreadMarker::new()?;
     let screen = objc2_app_kit::NSScreen::screens(mtm).iter().next()?;
     let size = screen.frame().size;
     Some((size.width as f32, size.height as f32))
+}
+
+/// Linux and Windows leave a dragged capsule in its corner.
+#[cfg(not(target_os = "macos"))]
+fn primary_screen_size() -> Option<(f32, f32)> {
+    None
 }
 
 fn place_recording(
@@ -1088,7 +1095,7 @@ mod tests {
     use rune::{Env, Runtime};
 
     use super::*;
-    use crate::meeting_detection::MeetingSource;
+    use crate::meeting::detection::MeetingSource;
 
     type Chosen = Arc<Mutex<Vec<MeetingProviderChoice>>>;
 
@@ -1357,8 +1364,15 @@ mod tests {
         ]
     }
 
+    /// The meeting paste cursor follows one meeting at a time, so the tests
+    /// that copy take turns with it.
+    static PASTE_CURSOR: Mutex<()> = Mutex::new(());
+
     #[test]
     fn the_recording_capsule_copies_the_in_call_transcript() {
+        let _cursor = PASTE_CURSOR
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let id = "capsule-copy-test";
         let (mut rt, _, _) = runtime(live_recording(id), false, true, RECORDING);
         open_recording(&mut rt);
@@ -1396,6 +1410,9 @@ mod tests {
 
     #[test]
     fn copy_new_copies_the_transcript_read_through_the_click() {
+        let _cursor = PASTE_CURSOR
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let id = "capsule-copy-through-click";
         let (mut rt, _, _) = runtime(live_recording(id), false, true, RECORDING);
         let asked: Arc<Mutex<Vec<String>>> = Arc::default();

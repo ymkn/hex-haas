@@ -41,9 +41,12 @@ fi
 mkdir -p "$dist"
 # Portable native code: ggml otherwise tunes its CPU kernels to the build
 # machine (for example AVX-512 or SVE), and the release would crash on older
-# CPUs. No system BLAS either, so the executable and packages need no
+# CPUs. On x86_64, GGML_NATIVE=OFF targets x86-64-v3 (AVX2, BMI2, FMA,
+# F16C): Hex needs a 2013 or newer CPU and says so at startup (cpu_floor.rs,
+# issue #592). No system BLAS either, so the executable and packages need no
 # OpenBLAS runtime.
-(cd "$root" && TRANSCRIBE_CMAKE_ARGS="-DGGML_NATIVE=OFF -DTRANSCRIBE_USE_SYSTEM_BLAS=OFF${TRANSCRIBE_CMAKE_ARGS:+ $TRANSCRIBE_CMAKE_ARGS}" \
+cmake_args="-DGGML_NATIVE=OFF -DTRANSCRIBE_USE_SYSTEM_BLAS=OFF"
+(cd "$root" && TRANSCRIBE_CMAKE_ARGS="$cmake_args${TRANSCRIBE_CMAKE_ARGS:+ $TRANSCRIBE_CMAKE_ARGS}" \
   cargo build --locked --release) >&2
 executable="$dist/hex-$version-linux-$label"
 install -m755 "$target_dir/release/hex" "$executable"

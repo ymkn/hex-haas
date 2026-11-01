@@ -2,8 +2,10 @@
 //! data: Meetings, the OS-only General rows, and the full tour.
 
 use super::*;
-use crate::login_item::LoginItemStatus;
-use crate::onboarding::{Input, Observation, PermissionAction, PermissionKind, Practice, Step};
+use crate::desktop::login_item::LoginItemStatus;
+use crate::desktop::onboarding::{
+    Input, Observation, PermissionAction, PermissionKind, Practice, Step,
+};
 use platform::{CalendarRequest, MeetingRequest, PlatformHost, PlatformRequest};
 
 fn asked(rt: &Runtime<Ui>) -> &[PlatformRequest] {
@@ -21,10 +23,11 @@ fn refresh(rt: &mut Runtime<Ui>) {
 
 #[test]
 fn each_os_lists_only_the_panes_it_can_run() {
-    let mut linux = runtime("portal", true, PANE_SIZE);
-    tap(&mut linux, "nav-labs");
-    for key in ["lab-meetings", "nav-meetings"] {
-        assert!(linux.find(key).is_none(), "Linux has no {key}");
+    // Meetings (beta) is a Labs switch on every OS; this Mac fixture has it on.
+    for scene in ["portal", "windows-settings"] {
+        let mut rt = runtime(scene, true, PANE_SIZE);
+        tap(&mut rt, "nav-labs");
+        assert!(rt.find("lab-meetings").is_some(), "{scene} offers Meetings");
     }
     let mut mac = runtime("mac-settings", true, PANE_SIZE);
     tap(&mut mac, "nav-labs");
@@ -34,11 +37,6 @@ fn each_os_lists_only_the_panes_it_can_run() {
     ] {
         tap(&mut mac, key);
         assert_eq!(mac.state.pane, pane);
-    }
-    let mut windows = runtime("windows-settings", true, PANE_SIZE);
-    tap(&mut windows, "nav-labs");
-    for key in ["lab-meetings", "nav-meetings"] {
-        assert!(windows.find(key).is_none(), "Windows has no {key}");
     }
 }
 
@@ -50,7 +48,7 @@ fn settings_rows_follow_each_os() {
     assert!(present(&linux, "terminal-paste"));
     assert!(present(&linux, "toggle-listening"));
     assert!(present(&linux, "enable-on-launch"));
-    assert!(!present(&linux, "launch-at-login"));
+    assert!(present(&linux, "launch-at-login"));
     assert!(!present(&linux, "dock-icon"));
     assert!(!present(&linux, "meetings-enabled"));
 
@@ -77,7 +75,10 @@ fn settings_rows_follow_each_os() {
     assert!(present(&windows, "launch-at-login"));
     assert!(present(&windows, "toggle-listening"));
     assert!(!present(&windows, "dock-icon"));
-    assert!(present(&windows, "terminal-paste"));
+    assert!(
+        !present(&windows, "terminal-paste"),
+        "Windows has it in Labs"
+    );
     assert!(!present(&windows, "meetings-enabled"));
 }
 
@@ -100,8 +101,8 @@ fn login_item(status: LoginItemStatus) -> platform::PlatformState {
     state
 }
 
-fn login_failed(status: Option<LoginItemStatus>) -> crate::login_item::LoginItemResult {
-    Err(crate::login_item::LoginItemFailure {
+fn login_failed(status: Option<LoginItemStatus>) -> crate::desktop::login_item::LoginItemResult {
+    Err(crate::desktop::login_item::LoginItemFailure {
         status,
         message: "Operation not permitted".into(),
     })
@@ -337,48 +338,82 @@ fn reduce_motion_swaps_allow_for_allowed_at_once() {
 }
 
 #[test]
-fn the_browser_switch_shows_only_with_pause_media() {
-    let mut rt = runtime("mac-settings", true, TALL_SIZE);
-    open_advanced(&mut rt, Pane::General);
-    assert!(rt.find("pause-browser").is_none());
-    rt.state.settings.recording_audio_behavior =
-        crate::app_settings::RecordingAudioBehavior::PauseMedia;
+fn the_browser_permission_shows_with_pause_media_and_its_labs_toggle() {
+    let mut rt = runtime("mac-settings-pause-browser", true, TALL_SIZE);
+    rt.state.settings.pause_browser_media = false;
     refresh(&mut rt);
-    assert!(rt.find("pause-browser").is_some());
-    assert!(
-        rt.find("pause-browser-audio").is_none(),
-        "the permission row waits for the switch"
-    );
+    open_advanced(&mut rt, Pane::General);
+    assert!(rt.find("pause-browser").is_none(), "the toggle is in Labs");
+    assert!(rt.find("pause-browser-audio").is_none());
+    rt.state.settings.pause_browser_media = true;
+    refresh(&mut rt);
+    assert!(rt.find("pause-browser-audio").is_some());
 }
 
 #[test]
-fn the_browser_switch_turns_on_and_asks_for_system_audio() {
-    let mut rt = runtime("mac-settings-pause-browser", true, TALL_SIZE);
-    rt.state.settings.pause_browser_media = false;
-    open_advanced(&mut rt, Pane::General);
-    tap(&mut rt, "pause-browser");
+fn the_browser_labs_toggle_turns_on_and_asks_for_system_audio() {
+    let mut rt = runtime("mac-settings", true, TALL_SIZE);
+    rt.state.platform.system_audio = false;
+    tap(&mut rt, "nav-labs");
+    tap(&mut rt, "lab-pause-browser");
     assert!(rt.state.settings.pause_browser_media);
     assert_eq!(asked(&rt), [PlatformRequest::SystemAudio]);
-    assert!(
-        rt.find("pause-browser-allow-control/mark/dot").is_some(),
-        "the permission row waits with a dot"
-    );
+
+    let mut rt = runtime("mac-settings", true, TALL_SIZE);
+    rt.state.platform.system_audio = true;
+    tap(&mut rt, "nav-labs");
+    tap(&mut rt, "lab-pause-browser");
+    assert!(rt.state.settings.pause_browser_media);
+    assert!(asked(&rt).is_empty());
 }
 
 #[test]
-fn an_allowed_browser_switch_asks_nothing() {
-    let mut rt = runtime("mac-settings-pause-browser", true, TALL_SIZE);
-    rt.state.settings.pause_browser_media = false;
-    rt.state.platform.system_audio = true;
+fn contributed_options_are_labs_toggles_off_by_default() {
+    let mut rt = runtime("mac-settings", true, (980.0, 2000.0));
+    tap(&mut rt, "nav-labs");
+    for row in [
+        "lab-mouse-shortcuts",
+        "lab-pause-browser",
+        "lab-keep-on-clipboard",
+        "lab-copy-only",
+        "lab-spoken-formatting",
+        "lab-filler-words",
+        "lab-spoken-symbols",
+    ] {
+        assert!(rt.find(row).is_some(), "Labs lacks {row}");
+    }
+    assert!(!rt.state.settings.labs.spoken_formatting);
+    tap(&mut rt, "lab-spoken-formatting");
+    assert!(rt.state.settings.labs.spoken_formatting);
+    assert!(!rt.state.settings.labs.spoken_symbols);
+    tap(&mut rt, "lab-spoken-symbols");
+    assert!(rt.state.settings.labs.spoken_symbols);
+    assert!(!rt.state.settings.labs.filler_words);
+    tap(&mut rt, "lab-filler-words");
+    assert!(rt.state.settings.labs.filler_words);
+    assert!(rt.find("lab-share-shortcut").is_none(), "Windows only");
+    assert!(!rt.state.settings.labs.mouse_shortcuts);
+    tap(&mut rt, "lab-mouse-shortcuts");
+    assert!(rt.state.settings.labs.mouse_shortcuts);
+    assert!(!rt.state.settings.labs.keep_on_clipboard);
+    tap(&mut rt, "lab-keep-on-clipboard");
+    assert!(rt.state.settings.labs.keep_on_clipboard);
+    assert!(!rt.state.settings.labs.copy_only);
+    tap(&mut rt, "lab-copy-only");
+    assert!(rt.state.settings.labs.copy_only);
+
+    let mut rt = runtime("windows-settings", true, (980.0, 1600.0));
     open_advanced(&mut rt, Pane::General);
-    tap(&mut rt, "pause-browser");
-    assert!(rt.state.settings.pause_browser_media);
-    assert!(asked(&rt).is_empty());
-    assert!(
-        rt.find("pause-browser-allow-control/mark/ink/check")
-            .is_some(),
-        "shows Allowed"
-    );
+    assert!(rt.find("share-dictation-shortcut").is_none());
+    tap(&mut rt, "nav-labs");
+    assert!(rt.find("lab-mouse-shortcuts").is_none(), "macOS only");
+    assert!(rt.find("lab-keep-on-clipboard").is_none(), "macOS only");
+    assert!(rt.find("lab-copy-only").is_none(), "macOS only");
+    assert!(rt.find("lab-spoken-formatting").is_some(), "every OS");
+    assert!(rt.find("lab-filler-words").is_some(), "every OS");
+    assert!(rt.find("lab-spoken-symbols").is_some(), "every OS");
+    tap(&mut rt, "lab-share-shortcut");
+    assert!(rt.state.settings.share_dictation_shortcut);
 }
 
 #[test]
@@ -426,6 +461,12 @@ fn the_microphone_level_follows_the_voice() {
     assert!(level.hear(Some(0.5)), "a voice shows at once");
     assert!(level.hear(None), "no audio flattens the bars");
     assert!(!level.hear(None));
+
+    // A quiet room's noise shows nothing, so it asks for no frames.
+    let mut quiet = general::MicLevel::default();
+    assert!(!quiet.hear(Some(0.01)));
+    assert!(!quiet.moving());
+    assert!(quiet.hear(Some(0.5)) && quiet.moving());
 }
 
 #[test]
@@ -935,6 +976,17 @@ fn meetings_switch_between_recordings_and_settings() {
 }
 
 #[test]
+fn a_meeting_recording_error_can_be_dismissed() {
+    let mut rt = runtime("meetings", true, PANE_SIZE);
+    rt.state.meetings.runtime_error = Some("Browser call: Access is denied.".into());
+    refresh(&mut rt);
+    assert!(rt.find("meeting-runtime-error").is_some());
+    tap(&mut rt, "meeting-runtime-error/dismiss");
+    assert_eq!(rt.state.meetings.runtime_error, None);
+    assert!(rt.find("meeting-runtime-error").is_none());
+}
+
+#[test]
 fn the_meetings_switch_stays_put_and_a_swap_drops_pending_edits() {
     let mut rt = runtime("meetings", true, PANE_SIZE);
     let switch = |rt: &Runtime<Ui>| {
@@ -1255,7 +1307,7 @@ fn the_mac_tour_asks_each_permission_then_practices() {
         )]
     );
     // macOS grants everything and the model lands: setup moves on.
-    use crate::onboarding::PermissionState::Ready;
+    use crate::desktop::onboarding::PermissionState::Ready;
     rt.state.platform.permissions.microphone = Ready;
     rt.state.platform.permissions.accessibility = Ready;
     rt.state.picker.installed = Some(vec![rt.state.settings.transcription.model]);
@@ -1318,6 +1370,104 @@ fn a_refused_microphone_points_to_system_settings() {
     );
 }
 
+#[test]
+fn stale_permissions_offer_fix_it_and_reset_entries_across_panes() {
+    // 1. Onboarding setup step.
+    let mut rt = runtime("mac-onboarding-stale", true, PANE_SIZE);
+    let shown = texts(&rt);
+    assert!(shown.iter().any(|text| text == "Still grey? Fix it"));
+    assert!(
+        shown
+            .iter()
+            .any(|text| text == "An older Hex entry can keep this off")
+    );
+    tap(
+        &mut rt,
+        "setup-accessibility/setup-grant-control/setup-grant",
+    );
+    assert_eq!(
+        asked(&rt).last(),
+        Some(&PlatformRequest::Permission(
+            PermissionAction::ResetAndPrompt(PermissionKind::Accessibility)
+        ))
+    );
+    assert!(!rt.state.platform.stale(PermissionKind::Accessibility));
+
+    // 2. General › Permissions needed.
+    let mut rt = runtime("mac-settings-permissions-stale", true, PANE_SIZE);
+    let shown = texts(&rt);
+    assert!(shown.iter().any(|text| text == "Still grey? Fix it"));
+    assert!(
+        shown
+            .iter()
+            .any(|text| text == "An older Hex entry can keep this off")
+    );
+    tap(&mut rt, "permission-accessibility-allow");
+    assert_eq!(
+        asked(&rt),
+        [PlatformRequest::Permission(
+            PermissionAction::ResetAndPrompt(PermissionKind::Accessibility)
+        )]
+    );
+    assert!(!rt.state.platform.stale(PermissionKind::Accessibility));
+
+    // 3. Meetings › Settings › Screen & System Audio Recording.
+    let mut rt = runtime("meetings-settings", true, (980.0, 2400.0));
+    rt.state.platform.system_audio = false;
+    rt.state.platform.note_stale(PermissionKind::SystemAudio);
+    refresh(&mut rt);
+    let shown = texts(&rt);
+    assert!(shown.iter().any(|text| text == "Still grey? Fix it"));
+    assert!(
+        shown
+            .iter()
+            .any(|text| text == "An older Hex entry can keep this off")
+    );
+    tap(&mut rt, "meeting-system-audio-allow");
+    assert_eq!(
+        asked(&rt),
+        [PlatformRequest::Permission(
+            PermissionAction::ResetAndPrompt(PermissionKind::SystemAudio)
+        )]
+    );
+    assert!(!rt.state.platform.stale(PermissionKind::SystemAudio));
+}
+
+#[test]
+fn visible_untrusted_permission_rows_are_reported_for_legacy_cleanup() {
+    let mut rt = runtime("mac-onboarding-setup", true, PANE_SIZE);
+    refresh(&mut rt);
+    assert_eq!(
+        rt.state.platform.permissions_shown,
+        [PermissionKind::Accessibility]
+    );
+
+    let mut rt = runtime("mac-settings-permissions", true, PANE_SIZE);
+    refresh(&mut rt);
+    assert_eq!(
+        rt.state.platform.permissions_shown,
+        [PermissionKind::Accessibility]
+    );
+
+    let mut rt = runtime("meetings-settings", true, (980.0, 2400.0));
+    rt.state.platform.system_audio = false;
+    refresh(&mut rt);
+    assert_eq!(
+        rt.state.platform.permissions_shown,
+        [PermissionKind::SystemAudio]
+    );
+
+    #[cfg(hex_capture)]
+    {
+        let mut rt = runtime("mac-scrawl-permission", true, PANE_SIZE);
+        refresh(&mut rt);
+        assert_eq!(
+            rt.state.platform.permissions_shown,
+            [PermissionKind::ScreenRecording]
+        );
+    }
+}
+
 /// The macOS and Windows surfaces in both appearances.
 #[test]
 fn platform_goldens() {
@@ -1332,7 +1482,9 @@ fn platform_goldens() {
             "meetings-off",
             "meetings-recording",
             "mac-onboarding-setup",
+            "mac-onboarding-stale",
             "mac-onboarding-landed",
+            "mac-settings-permissions-stale",
             "shortcut-explainer",
             "shortcut-explainer-toggle",
             "sound-sets",
@@ -1364,7 +1516,7 @@ fn platform_goldens() {
 
 #[test]
 fn voice_filter_saves_the_mode_and_applies_the_tuning_live() {
-    use crate::voice_filter::VoiceFilterMode;
+    use crate::audio::voice_filter::VoiceFilterMode;
     let mut rt = runtime("mac-voice-filter", true, PANE_SIZE);
     tap(&mut rt, "fun-mode/segment1");
     assert_eq!(
@@ -1416,10 +1568,10 @@ fn try_it_records_and_plays_through_the_host() {
         [
             PlatformRequest::HexMicrophoneDemo(DemoRequest::Record),
             PlatformRequest::HexMicrophoneDemo(DemoRequest::Play(
-                crate::hex_microphone::DemoPlaybackTrack::CallHears
+                crate::audio::hex_microphone::DemoPlaybackTrack::CallHears
             )),
             PlatformRequest::HexMicrophoneDemo(DemoRequest::SelectSource(
-                crate::hex_microphone::DemoSourceKind::Recording
+                crate::audio::hex_microphone::DemoSourceKind::Recording
             )),
         ]
     );
@@ -1451,23 +1603,26 @@ fn hud_lab_and_activity_stay_out_of_the_window_sidebar() {
 }
 
 #[test]
-fn voice_filter_needs_its_experiment_or_hex_microphone() {
+fn voice_filter_shows_only_while_its_labs_toggle_is_on() {
     let mut rt = runtime("mac-settings", true, PANE_SIZE);
     rt.state.settings.experimental.hex_microphone = false;
     rt.state.platform.hex_microphone = None;
     refresh(&mut rt);
-    tap(&mut rt, "nav-labs");
     assert!(rt.find("nav-voice-filter").is_none());
-    rt.state.platform.voice_filter = true;
-    refresh(&mut rt);
-    assert!(rt.find("nav-voice-filter").is_some());
+    tap(&mut rt, "nav-labs");
+    tap(&mut rt, "lab-voice-filter");
+    assert!(rt.state.settings.experimental.hex_microphone);
+    assert!(
+        rt.find("nav-voice-filter").is_some(),
+        "a top-level sidebar item"
+    );
 }
 
 #[test]
 fn hud_lab_tunes_dot_scope() {
     let mut rt = runtime("mac-hud-lab", true, PANE_SIZE);
     assert!(rt.find("dot-glow").is_some());
-    rt.state.platform.hud.tuning = crate::dot_scope::Tuning {
+    rt.state.platform.hud.tuning = crate::rune_hud::dot_scope::Tuning {
         glow: 2.0,
         ..Default::default()
     };
@@ -1494,14 +1649,14 @@ fn hud_lab_tunes_dot_scope() {
     tap(&mut rt, "dot-scope-reset");
     assert_eq!(
         rt.state.platform.hud.tuning,
-        crate::dot_scope::Tuning::default()
+        crate::rune_hud::dot_scope::Tuning::default()
     );
     assert!(!rt.state.hud_saved);
 }
 
 #[test]
 fn hud_lab_picks_dot_scope_processing_placement_and_level() {
-    use crate::dot_scope::{Placement, Processing};
+    use crate::rune_hud::dot_scope::{Placement, Processing};
     let mut rt = runtime("mac-hud-lab", true, PANE_SIZE);
     tap(&mut rt, "dot-processing/segments/segment2");
     tap(&mut rt, "dot-placement/segments/segment2");
@@ -1518,97 +1673,107 @@ fn hud_lab_picks_dot_scope_processing_placement_and_level() {
 }
 
 #[test]
-fn production_builds_offer_meetings_in_labs_and_hide_experiments() {
-    let mut rt = runtime("mac-production", true, PANE_SIZE);
-    assert!(!rt.state.platform.dev_build);
-    assert!(rt.find("nav-general").is_some());
-    assert!(rt.find("nav-output").is_some());
-    assert!(rt.find("nav-history").is_some());
-    assert!(rt.find("nav-labs").is_some());
+fn labs_is_one_flat_list_of_toggles_off_by_default() {
+    let mut rt = runtime("mac-production", true, (980.0, 2000.0));
+    rt.state.settings.experimental.hex_microphone = false;
+    rt.state.platform.hex_microphone = None;
+    refresh(&mut rt);
     for hidden in [
         "nav-meetings",
         "nav-annotate",
         "nav-voice-filter",
+        "nav-playground",
         "nav-hud-lab",
         "nav-activity",
     ] {
-        assert!(rt.find(hidden).is_none(), "production showed {hidden}");
+        assert!(rt.find(hidden).is_none(), "the sidebar showed {hidden}");
     }
-
     tap(&mut rt, "nav-labs");
-    assert!(rt.find("lab-meetings").is_some());
-    for hidden in [
-        "lab-annotate",
-        "exp-voice-filter",
-        "exp-live-text",
-        "exp-live-chapters",
-        "exp-playground",
+    assert!(rt.find("send-feedback").is_some());
+    assert!(rt.find("restart-onboarding").is_some());
+    let settings = &rt.state.settings;
+    for (row, on) in [
+        ("lab-meetings", settings.meetings.enabled),
+        ("lab-voice-filter", settings.experimental.hex_microphone),
+        ("lab-playground", settings.labs.playground),
+        ("lab-live-text", settings.labs.live_text),
+        ("lab-live-chapters", settings.labs.live_chapters),
+        ("lab-vocabulary-biasing", settings.labs.vocabulary_biasing),
     ] {
-        assert!(rt.find(hidden).is_none(), "production Labs listed {hidden}");
+        assert!(rt.find(row).is_some(), "Labs lacks {row}");
+        assert!(!on, "{row} is on");
     }
+    assert!(rt.find("lab-terminal-paste").is_none(), "Windows only");
 
     tap(&mut rt, "lab-meetings");
     assert!(rt.state.settings.meetings.enabled);
     assert!(
         rt.find("nav-meetings").is_some(),
-        "enabling Meetings (beta) in Labs adds Meetings to the sidebar"
+        "Meetings joins the main sidebar"
     );
+    tap(&mut rt, "lab-live-text");
+    assert!(rt.state.settings.labs.live_text);
+    tap(&mut rt, "lab-vocabulary-biasing");
+    assert!(rt.state.settings.labs.vocabulary_biasing);
+    tap(&mut rt, "lab-meetings");
+    assert!(rt.find("nav-meetings").is_none(), "hidden while off");
 
-    // Linux and Windows have no release Labs opt-in, so Labs stays hidden in
-    // production builds there.
-    for scene in ["portal", "windows-settings"] {
-        let mut os_rt = runtime(scene, true, PANE_SIZE);
-        os_rt.state.platform.dev_build = false;
-        refresh(&mut os_rt);
-        assert!(
-            os_rt.find("nav-labs").is_none(),
-            "{scene} showed Labs in production"
-        );
-    }
+    // Windows lists Terminal paste in Labs, not General.
+    let mut rt = runtime("windows-settings", true, (980.0, 1400.0));
+    assert!(rt.find("terminal-paste").is_none());
+    tap(&mut rt, "nav-labs");
+    tap(&mut rt, "lab-terminal-paste");
+    assert!(rt.state.settings.paste_with_shift);
+    assert!(
+        rt.find("lab-meetings").is_some(),
+        "Meetings runs on Windows too"
+    );
 }
 
 #[test]
-fn dev_experiments_switches_toggle_panes_live() {
-    let mut rt = runtime("mac-labs", true, (980.0, 1400.0));
-    assert!(rt.find("nav-output").is_some(), "Output is a main tab");
-    for retired in ["exp-modes", "exp-smart-turn", "exp-hud-lab", "exp-activity"] {
-        assert!(rt.find(retired).is_none(), "Labs still listed {retired}");
-    }
-    assert!(rt.find("nav-hud-lab").is_none());
-    assert!(rt.find("nav-activity").is_none());
-
-    // Voice Filter starts on in `mac-labs` (`hex_microphone = true`); clear the
-    // preview driver bundle so flipping the experiment hides and shows the pane.
-    rt.state.platform.hex_microphone = None;
-    refresh(&mut rt);
-    assert!(rt.find("nav-voice-filter").is_some());
-    tap(&mut rt, "exp-voice-filter");
-    assert!(!rt.state.platform.voice_filter);
-    assert!(
-        rt.find("nav-voice-filter").is_none(),
-        "Voice Filter hides live"
-    );
-    tap(&mut rt, "exp-voice-filter");
-    assert!(rt.state.platform.voice_filter);
-    assert!(
-        rt.find("nav-voice-filter").is_some(),
-        "Voice Filter joins Labs live"
-    );
-
-    tap(&mut rt, "exp-live-text");
-    assert!(rt.state.platform.experiments[crate::experiments::Experiment::LiveText.index()]);
-    tap(&mut rt, "exp-playground");
-    assert!(rt.state.platform.playground);
+fn a_labs_link_opens_labs_pulses_its_row_and_leaves_it_off() {
+    use crate::labs::Feature;
+    let mut rt = runtime("mac-settings", true, (980.0, 2000.0));
+    let feature = Feature::VocabularyBiasing;
+    assert!(!feature.on(&rt.state.settings));
+    rt.update(|ui, tx| super::super::labs::reveal(ui, Some(feature.name()), tx));
+    settle(&mut rt);
+    assert!(rt.state.labs_open);
+    assert_eq!(rt.state.lab_flash.map(|(f, _)| f), Some(feature));
+    assert!(rt.find("lab-vocabulary-biasing").is_some());
+    assert!(!feature.on(&rt.state.settings), "a link never flips it");
+    let later = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    assert!(super::super::labs::poll_flash(&mut rt.state, later));
+    assert!(rt.state.lab_flash.is_none());
 }
 
 #[test]
-fn labs_restart_onboarding_opens_the_first_run() {
-    let mut rt = runtime("mac-labs", true, (980.0, 1400.0));
+fn a_labs_link_to_an_unknown_name_opens_labs_without_a_pulse() {
+    let mut rt = runtime("mac-settings", true, (980.0, 2000.0));
+    rt.update(|ui, tx| super::super::labs::reveal(ui, Some("no-such-lab"), tx));
+    settle(&mut rt);
+    assert!(rt.state.labs_open);
+    assert!(rt.state.lab_flash.is_none());
+}
+
+#[test]
+fn labs_run_setup_again_opens_the_first_run() {
+    let mut rt = runtime("mac-labs", true, (980.0, 2000.0));
     assert!(rt.state.first_run.is_none());
     tap(&mut rt, "restart-onboarding");
     assert!(rt.state.error.is_none(), "{:?}", rt.state.error);
     assert!(rt.state.first_run.is_some(), "the first run opens at once");
-    assert!(rt.state.platform.experiments[crate::experiments::Experiment::NewOnboarding.index()]);
+}
+
+#[test]
+fn run_setup_again_opens_the_first_run_on_linux_and_windows() {
+    for scene in ["portal", "windows-settings"] {
+        let mut rt = runtime(scene, true, (980.0, 2000.0));
+        tap(&mut rt, "nav-labs");
+        tap(&mut rt, "restart-onboarding");
+        assert!(rt.state.error.is_none(), "{scene}: {:?}", rt.state.error);
+        assert!(rt.state.first_run.is_some(), "{scene}: the first run opens");
+    }
 }
 
 #[test]
@@ -1735,7 +1900,7 @@ fn double_tap_to_lock_folds_away_under_the_rows_below() {
 }
 
 #[test]
-fn ducking_shows_a_persisted_slider_only_on_macos_when_selected() {
+fn ducking_shows_a_persisted_slider_on_every_os_when_selected() {
     use crate::app_settings::RecordingAudioBehavior;
     let mut rt = runtime("mac-settings", true, (1100.0, 2800.0));
     open_advanced(&mut rt, Pane::General);
@@ -1767,9 +1932,12 @@ fn ducking_shows_a_persisted_slider_only_on_macos_when_selected() {
             rt.state.platform.caps = platform::Capabilities::LINUX;
         }
         open_advanced(&mut rt, Pane::General);
-        tap(&mut rt, "while-dictating-control-trigger");
-        assert!(rt.find("option3").is_none(), "no Lower audio");
-        assert!(rt.find("recording-duck-slider").is_none());
+        pick(&mut rt, "while-dictating", 2);
+        assert_eq!(
+            rt.state.settings.recording_audio_behavior,
+            RecordingAudioBehavior::Duck
+        );
+        assert!(rt.find("recording-duck-slider").is_some());
     }
 }
 
@@ -1783,4 +1951,51 @@ fn ducking_goldens() {
     check_golden("mac-settings-permissions", true, PANE_SIZE);
     check_golden("mac-settings-advanced", false, PANE_SIZE);
     check_golden("mac-settings-sides", true, PANE_SIZE);
+}
+
+#[test]
+fn an_installed_driver_keeps_the_voice_filter_on() {
+    let mut rt = runtime("mac-voice-filter", true, (980.0, 1400.0));
+    assert!(fun_driver_installed(&rt));
+    rt.state.settings.experimental.hex_microphone = false;
+    refresh(&mut rt);
+    assert!(
+        rt.find("nav-voice-filter").is_some(),
+        "the driver keeps it in the sidebar"
+    );
+    assert!(rt.find("fun-hex-microphone").is_some());
+    tap(&mut rt, "uninstall");
+    assert!(matches!(
+        asked(&rt).last(),
+        Some(PlatformRequest::UninstallHexMicrophone)
+    ));
+    tap(&mut rt, "nav-labs");
+    tap(&mut rt, "lab-voice-filter");
+    assert!(
+        !rt.state.settings.experimental.hex_microphone,
+        "the toggle is locked"
+    );
+    assert!(rt.find("nav-voice-filter").is_some());
+
+    if let Some(driver) = &mut rt.state.platform.hex_microphone {
+        driver.driver_bundle_installed = false;
+    }
+    refresh(&mut rt);
+    assert!(
+        rt.find("nav-voice-filter").is_none(),
+        "off once uninstalled"
+    );
+    tap(&mut rt, "lab-voice-filter");
+    assert!(
+        rt.state.settings.experimental.hex_microphone,
+        "without the driver the toggle works"
+    );
+}
+
+fn fun_driver_installed(rt: &rune::Runtime<Ui>) -> bool {
+    rt.state
+        .platform
+        .hex_microphone
+        .as_ref()
+        .is_some_and(|status| status.driver_bundle_installed)
 }

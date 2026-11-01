@@ -13,6 +13,8 @@ mod activity;
 #[cfg(hex_capture)]
 pub(crate) mod capture_capsule;
 mod controls;
+#[cfg(target_os = "macos")]
+pub(crate) mod deep_link;
 mod explainer;
 mod fun;
 mod general;
@@ -31,9 +33,9 @@ mod list_detail;
 mod lists;
 mod live_notes;
 pub(crate) mod live_text;
-#[cfg(target_os = "macos")]
 pub(crate) mod meeting_capsules;
 mod meetings;
+mod meetings_host;
 mod models;
 mod modes;
 mod onboarding;
@@ -43,6 +45,7 @@ mod picker;
 mod platform;
 mod platform_settings;
 pub(crate) mod playground;
+mod practice;
 #[cfg(hex_capture)]
 mod scrawl;
 mod settings;
@@ -60,12 +63,12 @@ use rune::{
 };
 
 use crate::app_settings::{AppSettings, HotkeyBinding, HotkeyKey, HotkeyModifiers, ModifierSide};
-use crate::desktop_host::{
+use crate::desktop::host::{
     DesktopAction, DesktopGrantedShortcut, DesktopListenerSnapshot, DesktopShortcuts,
     DesktopTranscriptionSnapshot, DesktopUpdateStatus,
 };
-use crate::desktop_i18n::{tr, tr_fill};
-use crate::transcription_models::TranscriptionModelId;
+use crate::desktop::i18n::{tr, tr_fill};
+use crate::transcription::models::TranscriptionModelId;
 use controls::{METRICS, Paint};
 use host::{Backend, Request, ShortcutTarget};
 use settings::Capture;
@@ -129,21 +132,29 @@ static SCRAWL_ICON: Icon = Icon {
 /// closing it keeps the app, its state, and the host running.
 #[cfg(target_os = "linux")]
 pub(crate) fn run_app(
-    host: crate::linux_app::HostHandle,
-    requests: std::sync::mpsc::Receiver<crate::linux_service::Control>,
-    first: Option<crate::linux_service::Activation>,
+    host: crate::linux::app::HostHandle,
+    requests: std::sync::mpsc::Receiver<crate::linux::service::Control>,
+    first: Option<crate::linux::service::Activation>,
+    shutdown: &'static std::sync::atomic::AtomicBool,
 ) {
-    use crate::linux_service::{Activation, Control};
-    rune::set_app_id("hex");
-    let mut app = self::app(Some(host.clone()))
-        .args(Vec::new())
-        .windowless()
-        .float_on_open();
-    crate::linux_rune_hud::install(&mut app);
+    use crate::linux::service::{Activation, Control};
+    rune::set_app_id(crate::linux::portal::APP_ID);
+    let mut app = self::app(Some(host.clone())).args(Vec::new()).windowless();
+    // Tiling window managers float a window that maps at a fixed size.
+    // Desktops that float every window need no such map, and KWin on X11
+    // keeps a fixed-size window from fitting a small screen, its title bar
+    // out of reach (#736).
+    if !crate::linux::session::floats_windows() {
+        app = app.float_on_open();
+    }
+    crate::linux::rune_hud::install(&mut app);
     live_text::install(&mut app, crate::rune_hud::live_text_place);
-    // The capture capsule, picker, and ink, in dev builds only.
-    let _capture_overlays = crate::experiments::is_dev_build()
-        .then(|| crate::rune_ui::capture_capsule::feed::CaptureOverlays::install(&mut app));
+    // The capture capsule, picker, and ink.
+    let _capture_overlays =
+        crate::rune_ui::capture_capsule::feed::CaptureOverlays::install(&mut app);
+    let meetings = crate::meeting::runtime::Meetings::install(&mut app, shutdown)
+        .inspect_err(|error| tracing::error!(%error, "meetings could not start"))
+        .ok();
     let handle = app.handle();
     host.set_window_visible({
         let handle = handle.clone();
@@ -157,12 +168,24 @@ pub(crate) fn run_app(
         show(activation);
     }
     let quit = app.handle();
+    let window = app.handle();
     std::thread::Builder::new()
         .name("hex-window-requests".into())
         .spawn(move || {
             while let Ok(request) = requests.recv() {
                 match request {
                     Control::Activate(activation) => show(activation),
+                    Control::Show(pane) => {
+                        show(Activation::default());
+                        window.update(move |ui, tx| self::show(ui, destination(pane), tx));
+                    }
+                    Control::Hide => window.close(),
+                    Control::OnboardingReset(answer) => {
+                        show(Activation::default());
+                        window.update(move |ui, tx| {
+                            let _ = answer.send(restart_onboarding(ui, tx));
+                        });
+                    }
                     Control::Quit => {
                         quit.quit();
                         break;
@@ -172,13 +195,19 @@ pub(crate) fn run_app(
         })
         .expect("could not start the window request thread");
     app.run();
+    // A recording stops, keeping its audio for the next launch.
+    shutdown.store(true, std::sync::atomic::Ordering::Release);
+    if let Some(meetings) = meetings {
+        meetings.join();
+    }
 }
 
 /// The window as a Rune app whose lifetime the caller chooses, connected to
-/// its host through `connect`, with the playground when its experiment is on.
+/// its host through `connect`, with the playground that Labs › Playground
+/// opens.
 pub(crate) fn app(connect: host::Connect) -> rune::App<Ui> {
     onboarding_kit::set_live_window(true);
-    let app = build(connect, playground::enabled());
+    let app = build(connect, PlaygroundMode::Gated);
     #[cfg(target_os = "macos")]
     let app = app.on_open_url(on_open_url);
     app
@@ -187,7 +216,15 @@ pub(crate) fn app(connect: host::Connect) -> rune::App<Ui> {
 /// A `hex://` link the system opened with Hex: a story link opens the window
 /// on that playground story; anything else is ignored.
 #[cfg(target_os = "macos")]
-fn on_open_url(_: &mut Ui, link: &str, tx: &mut Tx) {
+fn on_open_url(ui: &mut Ui, link: &str, tx: &mut Tx) {
+    if let Some(target) = deep_link::parse(link, story_link::scheme()) {
+        match target {
+            Ok(target) => deep_link::open(ui, target, tx),
+            Err(why) => tracing::warn!(%why, "ignored a link opened with Hex"),
+        }
+        crate::macos_rune::bring_window_forward();
+        return;
+    }
     let link = match story_link::parse(link, story_link::scheme()) {
         Ok(link) => link,
         Err(why) => {
@@ -202,7 +239,7 @@ fn on_open_url(_: &mut Ui, link: &str, tx: &mut Tx) {
 }
 
 /// `hex app -- --snap …`: a headless render of a fixture scene. With the
-/// `playground` experiment on, `--playground [story]` renders the playground.
+/// Labs on, `--playground [story]` renders the playground.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(crate) fn render_app(rune_args: Vec<String>) -> rune::App<Ui> {
     let playground = rune_args.iter().any(|arg| arg == "--playground");
@@ -210,7 +247,15 @@ pub(crate) fn render_app(rune_args: Vec<String>) -> rune::App<Ui> {
         .iter()
         .any(|arg| arg == "--snap" || arg == "--video" || arg == "--list-scenes");
     onboarding_kit::set_live_window(playground && !headless);
-    let app = build(Default::default(), playground && playground::enabled()).args(rune_args);
+    let app = build(
+        Default::default(),
+        if playground && playground::enabled() {
+            PlaygroundMode::Attached
+        } else {
+            PlaygroundMode::None
+        },
+    )
+    .args(rune_args);
     if playground && !headless {
         app.handle().update_if(|_, _| {
             crate::feedback::set_enabled(true);
@@ -250,11 +295,22 @@ impl rune::compose::Compositor<Ui> for WindowCompositor {
     }
 }
 
-fn build(connect: host::Connect, with_playground: bool) -> rune::App<Ui> {
-    let spec = if with_playground {
-        playground::spec(spec())
-    } else {
+/// Whether and how the window has the playground.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PlaygroundMode {
+    None,
+    /// With Rune's own ⇧⌘D (headless `--playground` renders).
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
+    Attached,
+    /// Opened only while Labs › Playground is on (the window).
+    Gated,
+}
+
+fn build(connect: host::Connect, playground: PlaygroundMode) -> rune::App<Ui> {
+    let spec = if playground == PlaygroundMode::None {
         spec()
+    } else {
+        playground::spec(spec())
     };
     let app = rune::App::new(spec)
         .init(move || Ui::load_with(connect))
@@ -264,10 +320,10 @@ fn build(connect: host::Connect, with_playground: bool) -> rune::App<Ui> {
     // alone reaches the recorder, which says Linux needs a key with it.
     #[cfg(target_os = "linux")]
     let app = app.modifier_keys();
-    let app = if with_playground {
-        playground::attach(app)
-    } else {
-        app
+    let app = match playground {
+        PlaygroundMode::None => app,
+        PlaygroundMode::Attached => playground::attach(app),
+        PlaygroundMode::Gated => playground::attach_gated(app),
     };
     let window = app.handle();
     // Nothing shown reads the handle, so this asks for no frame. The first
@@ -307,8 +363,7 @@ fn on_close(ui: &mut Ui, _: &mut Tx) {
     crate::macos_rune::window_closed();
 }
 
-/// Where the menu bar, a meeting, or the local API sends the window.
-#[cfg(target_os = "macos")]
+/// Where the menu bar, a meeting, or a `hex window show` sends the window.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Destination {
     Settings,
@@ -320,8 +375,21 @@ pub(crate) enum Destination {
     History,
 }
 
+/// Where `hex window show` opens the window. While Meetings is off, its
+/// pane shows the opt-in.
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn destination(pane: Option<crate::control::Pane>) -> Destination {
+    use crate::control::Pane as Named;
+    match pane {
+        None | Some(Named::Settings) => Destination::Settings,
+        Some(Named::Models) => Destination::Models,
+        Some(Named::Modes) => Destination::Modes,
+        Some(Named::History) => Destination::History,
+        Some(Named::Meetings) => Destination::Meetings(None),
+    }
+}
+
 /// Shows `destination` in the window (the caller opens it).
-#[cfg(target_os = "macos")]
 pub(crate) fn show(ui: &mut Ui, destination: Destination, tx: &mut Tx) {
     let pane = match &destination {
         Destination::Settings | Destination::Models => Pane::General,
@@ -346,15 +414,33 @@ pub(crate) fn show(ui: &mut Ui, destination: Destination, tx: &mut Tx) {
     }
 }
 
-/// `hex onboarding reset`: replays the first run in the window now.
-#[cfg(target_os = "macos")]
+/// What this OS's Hex can do, by capability name, for `hex status` and the
+/// settings `hex settings` can change here.
+pub(crate) fn capabilities() -> std::collections::BTreeMap<String, bool> {
+    platform::Capabilities::current()
+        .fields()
+        .into_iter()
+        .map(|(name, on)| (name.to_owned(), on))
+        .collect()
+}
+
+/// Whether this OS's Hex has the capability `name` ([`capabilities`]).
+pub(crate) fn capability(name: &str) -> bool {
+    platform::Capabilities::current()
+        .fields()
+        .into_iter()
+        .any(|(field, on)| field == name && on)
+}
+
+/// `hex onboarding reset`: replays the first run in the window now; the
+/// window also shows why it couldn't.
 pub(crate) fn restart_onboarding(ui: &mut Ui, tx: &mut Tx) -> Result<(), String> {
-    onboarding_kit::live::restart(ui, tx)
+    onboarding_kit::live::restart(ui, tx).inspect_err(|why| ui.error = Some(why.clone()))
 }
 
 /// The pane the window shows, by its `hex window show` name: General is
 /// still `settings` there.
-#[cfg(target_os = "macos")]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn current_pane(ui: &Ui) -> &'static str {
     match ui.pane {
         Pane::General => "settings",
@@ -364,7 +450,6 @@ pub(crate) fn current_pane(ui: &Ui) -> &'static str {
 
 /// The OS's rules for a shortcut, the ones Settings applies when recording
 /// one; shared with `hex settings set`.
-#[cfg(target_os = "macos")]
 pub(crate) fn shortcut_rule(
     slot: crate::app_settings::HotkeySlot,
     binding: &HotkeyBinding,
@@ -373,8 +458,15 @@ pub(crate) fn shortcut_rule(
     let target = match slot {
         HotkeySlot::Dictation => ShortcutTarget::Dictation,
         HotkeySlot::PasteLast => ShortcutTarget::PasteLast,
+        HotkeySlot::RawDictation => ShortcutTarget::RawDictation,
         #[cfg(hex_capture)]
         HotkeySlot::Capture => ShortcutTarget::Capture,
+        #[cfg(target_os = "macos")]
+        HotkeySlot::SecondDictation => ShortcutTarget::SecondDictation,
+        // Labs › Second dictation shortcut is macOS's; elsewhere a saved one
+        // meets the dictation shortcut's rules.
+        #[cfg(not(target_os = "macos"))]
+        HotkeySlot::SecondDictation => ShortcutTarget::Dictation,
     };
     host::validate_hotkey(target, binding)
 }
@@ -385,9 +477,23 @@ pub(crate) fn hotkey_key_named(name: &str) -> Result<HotkeyKey, &'static str> {
     host::hotkey_key_named(name)
 }
 
+/// The key `name` names: Linux and Windows bind keys by name, and the
+/// shortcut's rule ([`shortcut_rule`]) checks it can register.
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn hotkey_key_named(name: &str) -> Result<HotkeyKey, &'static str> {
+    Ok(HotkeyKey::named(name))
+}
+
+/// The OS's shortcut rules for `hex settings set`.
+pub(crate) fn shortcut_rules() -> crate::control::settings::ShortcutRules {
+    crate::control::settings::ShortcutRules {
+        key_named: |name| hotkey_key_named(name).map_err(str::to_owned),
+        rule: |slot, binding| shortcut_rule(slot, binding).map_err(str::to_owned),
+    }
+}
+
 /// A capsule's "Never offer" or "Always record" choice, kept in the window's
 /// live settings so its next save doesn't drop it.
-#[cfg(target_os = "macos")]
 pub(crate) fn meeting_provider_chosen(
     ui: &mut Ui,
     choice: crate::app_settings::MeetingProviderChoice,
@@ -397,7 +503,6 @@ pub(crate) fn meeting_provider_chosen(
 
 /// The corner the recording capsule was dragged to, kept in the window's live
 /// settings so its next save doesn't move it back.
-#[cfg(target_os = "macos")]
 pub(crate) fn meeting_corner_moved(
     ui: &mut Ui,
     corner: crate::app_settings::MeetingIndicatorCorner,
@@ -405,8 +510,14 @@ pub(crate) fn meeting_corner_moved(
     ui.settings.meetings.recording_indicator_corner = corner;
 }
 
-/// A meeting recording could not start or finish; the Meetings pane says why.
+/// An error from outside the window, such as settings that could not be read
+/// at launch, shown where save errors show.
 #[cfg(target_os = "macos")]
+pub(crate) fn show_error(ui: &mut Ui, error: String) {
+    ui.error = Some(error);
+}
+
+/// A meeting recording could not start or finish; the Meetings pane says why.
 pub(crate) fn meeting_failed(ui: &mut Ui, error: String) {
     ui.meetings.start_pending = false;
     ui.meetings.stop_pending = false;
@@ -507,11 +618,11 @@ enum Pane {
     History,
     /// Annotate (Scrawl's captures inside Hex): the switch, shortcuts,
     /// permission, transcriber, folder, retention, and Scrawl's own app.
-    /// Listed under Experiments; macOS and Linux only.
+    /// Dev builds, macOS and Linux only.
     #[cfg(hex_capture)]
     Annotate,
-    /// The Hex Microphone's driver, tuning, and try-it demo (macOS, under
-    /// Experiments).
+    /// The Hex Microphone's driver, tuning, and try-it demo (macOS, while
+    /// its Labs toggle is on).
     VoiceFilter,
     /// The dictation indicator's tuning scene (Playground only).
     HudLab,
@@ -520,6 +631,7 @@ enum Pane {
 }
 
 impl Pane {
+    #[cfg(all(test, target_os = "linux"))]
     const ALL: &[Pane] = &[
         Pane::General,
         Pane::Output,
@@ -535,40 +647,15 @@ impl Pane {
 
     fn shown(self, ui: &Ui) -> bool {
         let caps = ui.platform.caps;
-        if !ui.platform.dev_build {
-            return match self {
-                Pane::General | Pane::Output | Pane::History => true,
-                Pane::Meetings => caps.meetings,
-                _ => false,
-            };
-        }
         match self {
             Pane::Modes | Pane::HudLab | Pane::Activity => false,
-            Pane::Meetings => caps.meetings,
-            Pane::VoiceFilter => {
-                caps.fun
-                    && crate::app_settings::voice_filter_enabled(
-                        ui.settings.experimental.hex_microphone,
-                        ui.platform.voice_filter,
-                        ui.platform
-                            .hex_microphone
-                            .as_ref()
-                            .is_some_and(|status| status.driver_bundle_installed),
-                    )
-            }
+            Pane::Meetings => caps.meetings && meetings::available(ui),
+            // On from Labs, or kept by a driver apps already use.
+            Pane::VoiceFilter => caps.fun && fun::running(ui),
             #[cfg(hex_capture)]
             Pane::Annotate => ui.platform.scrawl.is_some(),
             _ => true,
         }
-    }
-
-    /// Listed under the sidebar's Labs group.
-    fn experimental(self) -> bool {
-        #[cfg(hex_capture)]
-        if self == Pane::Annotate {
-            return true;
-        }
-        matches!(self, Pane::VoiceFilter)
     }
 
     fn title(self) -> &'static str {
@@ -668,6 +755,10 @@ pub(crate) struct Ui {
     microphones_route: Option<u64>,
     /// The poll clock `microphones` was last listed at.
     microphones_listed_at: f64,
+    /// When Windows and Linux last listed keyboard input sources; macOS's
+    /// native host lists them.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    input_sources_listed_at: f64,
     /// A listing in flight. Listing reads CoreAudio or COM endpoint
     /// properties, which can block, so it runs off the UI thread.
     microphones_listing:
@@ -678,10 +769,11 @@ pub(crate) struct Ui {
     advanced: Vec<Pane>,
     /// The Labs page shows in place of a pane.
     labs_open: bool,
+    /// The Labs row a link just opened, pulsing until it is cleared.
+    lab_flash: Option<(crate::labs::Feature, Instant)>,
     /// A scene previewing the badge of a build kind this binary is not.
     build_preview: Option<BuildKind>,
     capture: Capture,
-    hints: TextEdit,
     vocabulary: vocabulary::VocabularyEditor,
     /// The model the service was last seen preparing, and since when.
     preparing: Option<(TranscriptionModelId, Instant)>,
@@ -696,7 +788,7 @@ pub(crate) struct Ui {
     explainer: explainer::Explainer,
     sound_sets: sound_sets::SoundSets,
     tour: Option<onboarding::Tour>,
-    /// The new first run over the tour (experiment `new-onboarding`).
+    /// The new first run over the tour (Labs).
     first_run: Option<onboarding_kit::Onboard>,
     /// The OS's capabilities and the OS-only state its panes show.
     platform: platform::PlatformState,
@@ -716,7 +808,6 @@ pub(crate) struct Ui {
 /// Which of the window's text editors hold unsaved typing.
 #[derive(Clone, Copy, Debug)]
 struct Drafts {
-    hints: bool,
     modes: bool,
     vocabulary: bool,
 }
@@ -731,31 +822,32 @@ impl Ui {
             Ok(settings) => (settings, None),
             Err(error) => (AppSettings::default(), Some(format!("{error:#}"))),
         };
-        crate::desktop_i18n::apply(settings.ui_language.as_deref());
+        crate::desktop::i18n::apply(settings.ui_language.as_deref());
         let store = host::history(&connect, settings.history_retention);
         let mut ui = Self::with(settings, Service::Pending(connect));
         ui.error = error;
-        ui.history = history::HistoryPane::shared(store);
-        ui.models = models::Models::load();
-        ui.modes.load_personal_commands();
-        let dev_build = crate::experiments::is_dev_build();
-        ui.platform.dev_build = dev_build;
-        for experiment in crate::experiments::Experiment::ALL {
-            ui.platform.experiments[experiment.index()] = crate::experiments::enabled(experiment);
+        // A mouse-button shortcut went back to its default: say so once.
+        if ui.settings.mouse_shortcut_notice {
+            ui.settings.mouse_shortcut_notice = false;
+            if let Err(error) = ui.settings.save() {
+                tracing::warn!(%error, "could not clear the mouse shortcut note");
+            }
+            ui.error.get_or_insert_with(|| {
+                tr("Mouse shortcuts are in Labs now, so your mouse-button shortcut went back to the default. Turn on Labs › Mouse shortcuts to use one again.").to_owned()
+            });
         }
-        ui.platform.developer = dev_build && crate::DEVELOPER_FEATURES_ENABLED;
-        ui.platform.voice_filter =
-            crate::experiments::enabled(crate::experiments::Experiment::VoiceFilter);
-        ui.platform.playground = playground::enabled();
-        ui.platform.hud.tuning = crate::dot_scope::lab();
+        ui.history = history::HistoryPane::shared(store);
+        ui.output = output::OutputPane::shuffled();
+        ui.modes.load_personal_commands();
+        ui.platform.developer =
+            crate::dev_build::is_dev_build() && crate::DEVELOPER_FEATURES_ENABLED;
+        ui.platform.hud.tuning = crate::rune_hud::dot_scope::lab();
         ui.tour = onboarding::Tour::start(&ui.settings, &ui.platform);
-        onboarding_kit::live::start(&mut ui);
         ui.platform.set_login_item(host::launch_at_login());
         ui
     }
 
     fn with(settings: AppSettings, service: Service) -> Self {
-        let hints = TextEdit::new(settings.transcription.recognition_hints.clone());
         let modes = modes::ModesPane::new(&settings);
         let vocabulary = vocabulary::VocabularyEditor::new(&settings.vocabulary);
         Self {
@@ -770,14 +862,15 @@ impl Ui {
             microphones: Ok(Default::default()),
             microphones_route: None,
             microphones_listed_at: 0.0,
+            input_sources_listed_at: f64::NEG_INFINITY,
             microphones_listing: None,
             confirm_release: false,
             mic_level: general::MicLevel::default(),
             advanced: Vec::new(),
             labs_open: false,
+            lab_flash: None,
             build_preview: None,
             capture: Capture::Idle,
-            hints,
             vocabulary,
             preparing: None,
             draft_since: None,
@@ -792,7 +885,7 @@ impl Ui {
             tour: None,
             first_run: None,
             platform: platform::PlatformState::new(platform::Capabilities::current()),
-            host: platform::PlatformHost::None,
+            host: platform::PlatformHost::Local(Default::default()),
             meetings: meetings::MeetingsPane::default(),
             fun: fun::FunPane::default(),
             activity: activity::ActivityPane::default(),
@@ -858,17 +951,9 @@ impl Ui {
     /// The settings with every text field's current text applied.
     fn drafted(&self) -> AppSettings {
         let mut candidate = self.settings.clone();
-        if self.hints_shown(&candidate) {
-            candidate.transcription.recognition_hints = self.hints.text.clone();
-        }
         self.modes.project(&mut candidate);
         candidate.vocabulary = self.vocabulary.project();
         candidate
-    }
-
-    fn hints_shown(&self, settings: &AppSettings) -> bool {
-        crate::transcription_models::definition(settings.transcription.model)
-            .supports_recognition_hints
     }
 
     /// Which editors hold typing the saved settings don't have yet.
@@ -877,8 +962,6 @@ impl Ui {
         let mut modes = settings.clone();
         self.modes.project(&mut modes);
         Drafts {
-            hints: self.hints_shown(settings)
-                && self.hints.text != settings.transcription.recognition_hints,
             modes: modes.dictation_processing != settings.dictation_processing,
             vocabulary: self.vocabulary.project() != settings.vocabulary,
         }
@@ -910,32 +993,40 @@ impl Ui {
     fn ask(&mut self, request: platform::PlatformRequest) {
         match &request {
             platform::PlatformRequest::Permission(
-                crate::onboarding::PermissionAction::RequestMicrophone,
+                crate::desktop::onboarding::PermissionAction::RequestMicrophone,
             ) => self
                 .platform
-                .note_asked(crate::onboarding::PermissionKind::Microphone),
+                .note_asked(crate::desktop::onboarding::PermissionKind::Microphone),
             platform::PlatformRequest::Permission(
-                crate::onboarding::PermissionAction::ShowGuide(kind),
+                crate::desktop::onboarding::PermissionAction::ShowGuide(kind),
             ) => {
                 // Previews grant Screen Recording on the second ask, as for
                 // system audio.
                 #[cfg(hex_capture)]
-                if *kind == crate::onboarding::PermissionKind::ScreenRecording
+                if *kind == crate::desktop::onboarding::PermissionKind::ScreenRecording
                     && self.host.is_fixture()
                     && self.platform.asked(*kind)
                     && let Some(view) = self.platform.scrawl.as_mut()
                 {
                     view.screen_recording = true;
                 }
+                self.platform.clear_stale(*kind);
+                self.platform.note_asked(*kind);
+            }
+            platform::PlatformRequest::Permission(
+                crate::desktop::onboarding::PermissionAction::ResetAndPrompt(kind),
+            ) => {
+                self.platform.clear_stale(*kind);
                 self.platform.note_asked(*kind);
             }
             platform::PlatformRequest::SystemAudio => {
-                let kind = crate::onboarding::PermissionKind::SystemAudio;
+                let kind = crate::desktop::onboarding::PermissionKind::SystemAudio;
                 // Previews grant on the second ask, so a scene can play
                 // Allow, waiting, and Allowed in turn.
                 if self.host.is_fixture() && self.platform.asked(kind) {
                     self.platform.system_audio = true;
                 }
+                self.platform.clear_stale(kind);
                 self.platform.note_asked(kind);
             }
             #[cfg(hex_capture)]
@@ -949,8 +1040,9 @@ impl Ui {
                 }
             }
             platform::PlatformRequest::SetLaunchAtLogin(enabled) => match &self.host {
-                // Windows writes its Run key from the window's own process.
-                platform::PlatformHost::None => {
+                // Windows (its Run key) and Linux (XDG autostart) write
+                // the login item from the window's own process.
+                platform::PlatformHost::Local(_) => {
                     let result = host::set_launch_at_login(*enabled);
                     self.platform.set_login_item(Some(result));
                     return;
@@ -963,7 +1055,7 @@ impl Ui {
                 platform::PlatformHost::Native(_) => {
                     self.platform.request_login_item(*enabled);
                     if let Err(message) = self.host.send(request) {
-                        let failure = crate::login_item::LoginItemFailure {
+                        let failure = crate::desktop::login_item::LoginItemFailure {
                             status: None,
                             message,
                         };
@@ -973,6 +1065,15 @@ impl Ui {
                 }
             },
             _ => {}
+        }
+        #[cfg(not(target_os = "macos"))]
+        if let platform::PlatformRequest::Meeting(meeting) = &request
+            && matches!(self.host, platform::PlatformHost::Local(_))
+        {
+            if let Err(error) = self.send_meeting(meeting.clone()) {
+                self.error = Some(error);
+            }
+            return;
         }
         let is_relaunch = request == platform::PlatformRequest::Relaunch;
         match self.host.send(request) {
@@ -986,6 +1087,23 @@ impl Ui {
             Err(_) if is_relaunch => self.platform.relaunch_failed = true,
             Err(error) => self.error = Some(error),
         }
+    }
+
+    /// Sends a meeting request to whoever carries it out: on Linux and
+    /// Windows the meetings this window keeps itself, whose host ignores
+    /// meeting requests; elsewhere the OS host.
+    fn send_meeting(&mut self, request: platform::MeetingRequest) -> Result<(), String> {
+        #[cfg(not(target_os = "macos"))]
+        if matches!(self.host, platform::PlatformHost::Local(_)) {
+            let waker = self.modes.waker.clone();
+            let wake = move || {
+                if let Some(waker) = &waker {
+                    waker();
+                }
+            };
+            return self.meetings.local.send(request, wake);
+        }
+        self.host.send(platform::PlatformRequest::Meeting(request))
     }
 
     fn running(&self) -> bool {
@@ -1014,12 +1132,6 @@ impl Ui {
         let changed = service != self.settings;
         if changed {
             let drafts = self.drafts();
-            if !drafts.hints
-                && service.transcription.recognition_hints
-                    != self.settings.transcription.recognition_hints
-            {
-                self.hints = TextEdit::new(service.transcription.recognition_hints.clone());
-            }
             if !drafts.modes && service.dictation_processing != self.settings.dictation_processing {
                 self.modes.reload(&service);
             }
@@ -1084,6 +1196,11 @@ fn on_key(ui: &mut Ui, event: &rune::KeyEvent, tx: &mut Tx) -> bool {
     if settings::on_key(ui, event, tx) {
         return true;
     }
+    // Labs › Playground: ⇧⌘D (Ctrl+Shift+D off macOS) opens the playground.
+    if event.key == rune::Key::Command('d') && event.mods.shift && playground::enabled() {
+        tx.toggle_playground();
+        return true;
+    }
     if let rune::Key::Command(digit @ '1'..='9') = event.key
         && !event.mods.alt
         && !ui.picker.open
@@ -1126,6 +1243,33 @@ fn on_key(ui: &mut Ui, event: &rune::KeyEvent, tx: &mut Tx) -> bool {
     }
 }
 
+/// Linux and Windows: the listing and a chosen transcript folder, from the
+/// meetings the window keeps itself.
+#[cfg(not(target_os = "macos"))]
+fn local_meetings(ui: &mut Ui) -> bool {
+    let mut changed = false;
+    if ui.pane == Pane::Meetings
+        && meetings::available(ui)
+        && let Some(listed) = ui.meetings.local.meetings()
+    {
+        ui.meetings.adopt(listed);
+        changed = true;
+    }
+    match ui.meetings.local.chosen_folder() {
+        Some(Ok(folder)) => {
+            ui.platform.meeting_folder_error = None;
+            ui.update(|settings| settings.meetings.output_folder = Some(folder));
+            changed = true;
+        }
+        Some(Err(error)) => {
+            ui.platform.meeting_folder_error = Some(error);
+            changed = true;
+        }
+        None => {}
+    }
+    changed
+}
+
 fn setup(ui: &mut Ui, waker: Waker) {
     ui.modes.waker = Some(waker.clone());
     ui.modes.icon_cache = Some(rune::ImageCache::new(waker.clone()));
@@ -1133,7 +1277,11 @@ fn setup(ui: &mut Ui, waker: Waker) {
         let connect = std::mem::take(connect);
         #[cfg(target_os = "macos")]
         {
-            ui.host = platform::PlatformHost::Native(host::native_host());
+            let host_wake: Arc<dyn Fn() + Send + Sync> = {
+                let waker = waker.clone();
+                Arc::new(move || waker())
+            };
+            ui.host = platform::PlatformHost::Native(host::native_host(host_wake));
         }
         let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(move || waker());
         ui.service = Service::Live(Box::new(Backend::connect(connect, wake)));
@@ -1150,8 +1298,17 @@ fn poll(ui: &mut Ui, clock: f64, tx: &mut Tx) -> bool {
     }
     let now = Instant::now();
     let mut changed = ui.save_drafts(now);
-    changed |= ui.models.poll(ui.live());
+    changed |= labs::poll_flash(ui, now);
+    // The OpenCode catalog is read only while the pane that uses it shows.
+    changed |= ui.models.poll(
+        ui.live()
+            && ui.pane == Pane::Modes
+            && ui.window.as_ref().is_some_and(rune::AppHandle::is_visible),
+    );
     changed |= ui.history.poll(ui.pane == Pane::History);
+    if ui.pane == Pane::Output && !ui.labs_open {
+        changed |= output::poll(ui, clock, tx);
+    }
     // Mode rows show their applications' icons, which the catalog locates.
     if matches!(ui.pane, Pane::Modes | Pane::Output)
         && ui
@@ -1179,7 +1336,12 @@ fn poll(ui: &mut Ui, clock: f64, tx: &mut Tx) -> bool {
         settings::refresh_microphones(ui);
         ui.microphones_listed_at = clock;
     }
+    platform_settings::update_shown_permissions(ui);
     changed |= ui.host.poll(&mut ui.platform);
+    #[cfg(not(target_os = "macos"))]
+    {
+        changed |= settings::poll_input_sources(ui, clock);
+    }
     // macOS reports the login item moments after launch; its switch replaces
     // "Checking…" at once instead of fading in and reflowing the row.
     if login_unknown && ui.platform.login_item.is_some() {
@@ -1191,6 +1353,10 @@ fn poll(ui: &mut Ui, clock: f64, tx: &mut Tx) -> bool {
     {
         ui.meetings.adopt(listed);
         changed = true;
+    }
+    #[cfg(not(target_os = "macos"))]
+    if matches!(ui.host, platform::PlatformHost::Local(_)) {
+        changed |= local_meetings(ui);
     }
     changed |= ui
         .activity
@@ -1246,13 +1412,13 @@ fn view(ui: &Ui, cx: &mut Cx<Ui>) -> El {
     // The native title bar takes the window's background, so it follows a
     // system theme switch along with the rest of the window.
     #[cfg(target_os = "windows")]
-    crate::windows_rune::match_title_bar(p.k.c.bg_deep);
+    crate::windows::rune::match_title_bar(p.k.c.bg_deep);
     // Menus and popovers mount above the page (rune-kit overlays).
     let mut layer = Vec::new();
     let (actions, body) = match ui.pane {
         _ if ui.labs_open => (Vec::new(), labs::page(ui, p)),
         Pane::General => (Vec::new(), general::pane(ui, p, &mut layer)),
-        Pane::Output => (Vec::new(), output::pane(ui, p)),
+        Pane::Output => (Vec::new(), output::pane(ui, p, cx.is_reduced_motion())),
         Pane::Modes => modes::pane(ui, p, &mut layer),
         Pane::History => history::pane(ui, p, &mut layer),
         Pane::Meetings => meetings::pane(ui, p, &mut layer),
@@ -1366,9 +1532,8 @@ fn sidebar(ui: &Ui, p: Paint) -> El {
             NAV_ROW_GAP / 2.0,
         ));
     }
-    if labs::shown(ui) {
-        nav = nav.child(labs::nav(ui, p));
-    }
+    nav = nav.children(labs::playground_nav(ui, p));
+    nav = nav.child(labs::nav(ui, p));
     let action = match ui.view.as_ref().map(|view| &view.update_status) {
         Some(DesktopUpdateStatus::ReadyToRestart) => Some((
             tr("Restart to update").to_owned(),
@@ -1753,9 +1918,10 @@ const SCENES: &[Scene] = &[
         };
         if let Some(view) = &mut ui.view {
             view.listener.shortcuts =
-                DesktopShortcuts::Portal(vec![crate::desktop_host::DesktopGrantedShortcut {
+                DesktopShortcuts::Portal(vec![crate::desktop::host::DesktopGrantedShortcut {
                     name: "Dictation".into(),
                     trigger: None,
+                    unconfirmed: false,
                 }]);
         }
     }),
@@ -1778,7 +1944,7 @@ const SCENES: &[Scene] = &[
     ("chinese", |ui| {
         *ui = portal_fixture();
         ui.settings.ui_language = Some("zh".into());
-        crate::desktop_i18n::apply(Some("zh"));
+        crate::desktop::i18n::apply(Some("zh"));
     }),
     ("menus", |ui| {
         *ui = portal_fixture();
@@ -1822,10 +1988,10 @@ const SCENES: &[Scene] = &[
         modes::fixture(ui);
         ui.pane = Pane::Modes;
     }),
-    ("modes-opencode-v1", |ui| {
+    ("modes-opencode-not-running", |ui| {
         *ui = portal_fixture();
         modes::fixture(ui);
-        ui.models = models::Models::fixture_v1();
+        ui.models = models::Models::fixture_not_running();
         ui.settings.dictation_processing.modes[0]
             .post_processing
             .enabled = false;
@@ -1909,7 +2075,7 @@ const SCENES: &[Scene] = &[
         shortcut_row(ui, listening(None, HotkeyModifiers::option_command()));
     }),
     ("shortcut-row-rejected", |ui| {
-        let message = crate::desktop_i18n::tr("Add a modifier");
+        let message = crate::desktop::i18n::tr("Add a modifier");
         shortcut_row(ui, listening(Some(message), HotkeyModifiers::default()));
     }),
     ("shortcut-row-saved", |ui| {
@@ -1937,11 +2103,11 @@ const SCENES: &[Scene] = &[
     }),
     ("onboarding", |ui| {
         *ui = portal_fixture();
-        onboarding::fixture(ui, crate::onboarding::Step::Welcome, false);
+        onboarding::fixture(ui, crate::desktop::onboarding::Step::Welcome, false);
     }),
     ("onboarding-setup", |ui| {
         *ui = portal_fixture();
-        onboarding::fixture(ui, crate::onboarding::Step::Setup, true);
+        onboarding::fixture(ui, crate::desktop::onboarding::Step::Setup, true);
     }),
     // macOS and Windows surfaces, from preview data (see `platform`).
     ("mac-settings", |ui| *ui = mac_fixture()),
@@ -1998,7 +2164,7 @@ const SCENES: &[Scene] = &[
         ]
         .into_iter()
         .map(
-            |(id, name, language)| crate::keyboard_model_switching::InputSource {
+            |(id, name, language)| crate::transcription::keyboard_model_switching::InputSource {
                 id: id.into(),
                 name: name.into(),
                 languages: vec![language.into()],
@@ -2057,11 +2223,11 @@ const SCENES: &[Scene] = &[
         *ui = mac_fixture();
         vocabulary::fixture(ui, false);
     }),
-    // Whisper ignores the list: the row and the sheet say so.
+    // Cohere ignores the list: the row and the sheet say so.
     ("vocabulary-unused", |ui| {
         *ui = portal_fixture();
-        ui.settings.transcription.model = TranscriptionModelId::WhisperLargeV3Turbo;
-        ui.picker.installed = Some(vec![TranscriptionModelId::WhisperLargeV3Turbo]);
+        ui.settings.transcription.model = TranscriptionModelId::CohereTranscribe;
+        ui.picker.installed = Some(vec![TranscriptionModelId::CohereTranscribe]);
         vocabulary::fixture(ui, true);
     }),
     ("mac-settings-recording", |ui| {
@@ -2078,15 +2244,10 @@ const SCENES: &[Scene] = &[
         };
     }),
     ("mac-settings-permissions", |ui| {
-        *ui = mac_fixture();
-        use crate::onboarding::PermissionState;
-        ui.platform.permissions.microphone = PermissionState::NeedsSettings;
-        ui.platform.permissions.accessibility = PermissionState::NeedsSettings;
-        ui.platform
-            .permissions_asked
-            .push(crate::onboarding::PermissionKind::Accessibility);
-        ui.platform.login_item = Some(crate::login_item::LoginItemStatus::RequiresApproval);
-        ui.platform.accessibility_renamed = true;
+        platform_settings::mac_permissions_fixture(ui, false)
+    }),
+    ("mac-settings-permissions-stale", |ui| {
+        platform_settings::mac_permissions_fixture(ui, true)
     }),
     ("mac-settings-pause-browser", |ui| {
         *ui = mac_fixture();
@@ -2235,10 +2396,10 @@ const SCENES: &[Scene] = &[
     }),
     ("mac-voice-filter-muted", |ui| {
         *ui = mac_fixture();
-        ui.platform.tuning.mode = crate::voice_filter::VoiceFilterMode::Muted;
+        ui.platform.tuning.mode = crate::audio::voice_filter::VoiceFilterMode::Muted;
         ui.platform.demo = Some(fun::preview_demo(
             false,
-            Some(crate::hex_microphone::DemoPlaybackTrack::CallHears),
+            Some(crate::audio::hex_microphone::DemoPlaybackTrack::CallHears),
         ));
         ui.pane = Pane::VoiceFilter;
     }),
@@ -2251,6 +2412,26 @@ const SCENES: &[Scene] = &[
             driver.active_apps.clear();
         }
         ui.platform.demo = Some(fun::preview_demo(true, None));
+        ui.pane = Pane::VoiceFilter;
+    }),
+    ("voice-filter", |ui| {
+        *ui = fixture(DesktopShortcuts::Commands);
+        ui.platform = platform::PlatformState::preview(platform::Capabilities::LINUX);
+        ui.host = platform::PlatformHost::Fixture(Vec::new());
+        ui.settings.experimental.hex_microphone = true;
+        ui.pane = Pane::VoiceFilter;
+    }),
+    ("voice-filter-unavailable", |ui| {
+        *ui = fixture(DesktopShortcuts::Commands);
+        ui.platform = platform::PlatformState::preview(platform::Capabilities::LINUX);
+        ui.host = platform::PlatformHost::Fixture(Vec::new());
+        if let Some(source) = &mut ui.platform.hex_microphone {
+            source.driver_loaded = false;
+            source.action_state = crate::audio::hex_microphone::DriverActionState::Failed(
+                "pw-cat was not found; Hex Microphone needs PipeWire".into(),
+            );
+        }
+        ui.settings.experimental.hex_microphone = true;
         ui.pane = Pane::VoiceFilter;
     }),
     ("mac-hud-lab", |ui| {
@@ -2266,16 +2447,18 @@ const SCENES: &[Scene] = &[
         }
         ui.labs_open = true;
     }),
+    ("mac-labs-link", |ui| {
+        *ui = mac_fixture();
+        ui.labs_open = true;
+        // Far ahead, so the pulse holds for the render.
+        ui.lab_flash = Some((
+            crate::labs::Feature::VocabularyBiasing,
+            Instant::now() + Duration::from_secs(3600),
+        ));
+    }),
     ("mac-production", |ui| {
         *ui = mac_fixture();
-        ui.platform.dev_build = false;
         ui.settings.meetings.enabled = false;
-    }),
-    ("mac-production-labs", |ui| {
-        *ui = mac_fixture();
-        ui.platform.dev_build = false;
-        ui.settings.meetings.enabled = false;
-        ui.labs_open = true;
     }),
     ("mac-activity", |ui| {
         *ui = mac_fixture();
@@ -2302,6 +2485,9 @@ const SCENES: &[Scene] = &[
     }),
     ("mac-onboarding-progress", |ui| {
         mac_tour(ui, onboarding::MacStep::SetupProgress)
+    }),
+    ("mac-onboarding-stale", |ui| {
+        mac_tour(ui, onboarding::MacStep::SetupStale)
     }),
     ("mac-onboarding-denied", |ui| {
         mac_tour(ui, onboarding::MacStep::SetupDenied)
@@ -2481,10 +2667,12 @@ fn portal_fixture() -> Ui {
         DesktopGrantedShortcut {
             name: "Dictation".into(),
             trigger: Some("F12".into()),
+            unconfirmed: false,
         },
         DesktopGrantedShortcut {
             name: "Paste last dictation".into(),
             trigger: Some("Ctrl+Alt+V".into()),
+            unconfirmed: false,
         },
     ]))
 }
@@ -2492,16 +2680,15 @@ fn portal_fixture() -> Ui {
 /// Deterministic settings and service state matching a typical Wayland
 /// desktop with the shortcuts portal.
 fn fixture(shortcuts: DesktopShortcuts) -> Ui {
-    crate::desktop_i18n::apply(Some("en"));
+    crate::desktop::i18n::apply(Some("en"));
     let settings = AppSettings {
         dictation_hotkey: HotkeyBinding {
             modifiers: HotkeyModifiers::default(),
             key: Some(HotkeyKey::named("f12")),
         },
-        transcription: crate::transcription_models::TranscriptionSelection {
+        transcription: crate::transcription::models::TranscriptionSelection {
             model: TranscriptionModelId::ParakeetUnifiedEnglish,
             language: "en".into(),
-            recognition_hints: String::new(),
         },
         paste_with_shift: true,
         ..AppSettings::default()
