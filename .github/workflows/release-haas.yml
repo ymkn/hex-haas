@@ -1,0 +1,71 @@
+# Builds the Haas fork for Windows x64 and publishes it to GitHub Releases.
+#
+#   - A push of a `haas-v*` tag builds, packages, and creates a release with
+#     Hex-Haas-<version>-windows-x64.zip and its SHA256SUMS.
+#   - A manual dispatch builds and uploads the same zip as a workflow
+#     artifact, so a change can be verified before tagging.
+#
+# The build is not code-signed: SmartScreen may warn, and the release notes
+# point at SHA256SUMS for verification. Mirrors upstream's windows-x64 job
+# (actions pinned to the same revisions it uses).
+name: Haas release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'haas-v*'
+
+permissions:
+  contents: write
+
+jobs:
+  windows-x64:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      # In a subdirectory: the Vulkan SDK installs into the workspace, and a
+      # release build needs a clean tree.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: source
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - name: Install the Vulkan SDK
+        uses: humbletim/install-vulkan-sdk@30ba978f977e81b72d091fc8888feb1fb26f9aff # v1.2
+        with:
+          version: 1.4.309.0
+          cache: true
+      - name: Set up build tools
+        working-directory: source
+        shell: pwsh
+        run: ./scripts/setup-haas-build-tools.ps1
+      - name: Build
+        working-directory: source
+        shell: pwsh
+        run: ./scripts/build-haas.ps1
+      - name: Package
+        working-directory: source
+        shell: pwsh
+        run: ./scripts/package-haas.ps1 -Destination ..\out
+      - name: Upload the package as an artifact
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: Hex-Haas-windows-x64
+          path: |
+            out/*.zip
+            out/SHA256SUMS
+          if-no-files-found: error
+      - name: Create the release
+        if: startsWith(github.ref, 'refs/tags/haas-v')
+        working-directory: source
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $assets = Get-ChildItem ..\out\Hex-Haas-*.zip, ..\out\SHA256SUMS | ForEach-Object { $_.FullName }
+          gh release create "${{ github.ref_name }}" --title "${{ github.ref_name }}" --notes-file ..\out\RELEASE-NOTES.md @assets

@@ -98,3 +98,14 @@ GitHubへ保存するのはソース・スクリプト・文書だけです。�
 - `target/`、`dist/`: ビルド結果と実行ファイル
 
 これらの除外フォルダーは必要に応じて別途バックアップしてください。Forkは上流のライセンスを保持します。上流への提案は、外部PRを受け付けない公式の方針に従ってIssueを使います。
+
+## ビルド済みパッケージを取得する
+
+Releases に `Hex-Haas-<version>-windows-x64.zip` を置いています。ソースをビルドせずに使えます。
+
+- 展開して `hex.exe` を実行するだけです。`speech.exe` と `speech.dll` は同じフォルダーに置きます。
+- 必要なものは Windows 10/11 x64 と Vulkan対応GPUドライバーのみ。Haasモデルは初回起動後にモデル選択からダウンロードします（huggingface.co）。
+- コード署名はありません。`SHA256SUMS` でハッシュを確認し、SmartScreenの警告は「詳細情報」から実行を続けてください。
+- データは `%APPDATA%\hex-haas` に作られ、公式Hexとは混ざりません。自動更新はありません。
+
+リリースの作り方（自分用）: `haas-v<バージョン>` 形式のタグをpushすると Actions の「Haas release」がビルドしてリリースを作成します。タグなしの `workflow_dispatch` は同じビルドを検証し、成果物をworkflowのartifactとして残すだけです。ローカルでも `./scripts/build-haas.ps1` の後に `./scripts/package-haas.ps1` で同じzipを作れます。

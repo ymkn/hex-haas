@@ -56,7 +56,12 @@ $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.e
 $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
 $version = (Get-Content "$vs\VC\Auxiliary\Build\Microsoft.VCToolsVersion.default.txt").Trim()
 $bin = "$vs\VC\Tools\MSVC\$version\bin\Hostx64\x64"
-$exports = & "$bin\dumpbin.exe" /exports "$env:WINDIR\System32\vulkan-1.dll"
+# The Vulkan loader ships with GPU drivers in System32; a machine without one
+# (such as a CI runner) gets it from the LunarG SDK under VULKAN_SDK.
+$loader = "$env:WINDIR\System32\vulkan-1.dll"
+if (!(Test-Path $loader) -and $env:VULKAN_SDK) { $loader = Join-Path $env:VULKAN_SDK 'Bin\vulkan-1.dll' }
+if (!(Test-Path $loader)) { throw 'vulkan-1.dll was not found; install a Vulkan-capable GPU driver or the Vulkan SDK.' }
+$exports = & "$bin\dumpbin.exe" /exports $loader
 $names = @($exports | ForEach-Object { if ($_ -match '^\s+\d+\s+[0-9A-F]+\s+[0-9A-F]+\s+(vk\w+)\s*$') { $Matches[1] } })
 if ($names.Count -lt 100) { throw 'Could not read the installed Vulkan loader exports' }
 @('LIBRARY vulkan-1', 'EXPORTS') + $names | Set-Content "$sdk\Lib\vulkan-1.def" -Encoding ascii

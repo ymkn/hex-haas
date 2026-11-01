@@ -11,7 +11,15 @@ if (!(Test-Path "$cmake\cmake.exe") -or !(Test-Path "$sdk\Bin\glslc.exe")) {
 Remove-Item Env:TRANSCRIBE_DIR -ErrorAction SilentlyContinue
 $env:PATH = "$cmake;$sdk\Bin;$env:PATH"
 $env:VULKAN_SDK = $sdk
-$env:CMAKE_GENERATOR = 'Visual Studio 18 2026'
+# Pin the generator only while Visual Studio 18 is the installed C++ toolset;
+# otherwise let CMake pick the newest Visual Studio it finds.
+$vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+$installationVersion = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationVersion 2>$null
+if ($installationVersion -match '^18\.') {
+    $env:CMAKE_GENERATOR = 'Visual Studio 18 2026'
+} else {
+    Remove-Item Env:CMAKE_GENERATOR -ErrorAction SilentlyContinue
+}
 $env:TRANSCRIBE_CMAKE_ARGS = '-DGGML_NATIVE=OFF'
 $env:CMAKE_BUILD_PARALLEL_LEVEL = '4'
 # MSVC otherwise reads UTF-8 upstream C++ comments as the Japanese system
