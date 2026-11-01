@@ -377,6 +377,8 @@ fn flip_experiment(ui: &mut Ui, experiment: Experiment) {
             ui.platform.playground = on;
         }
         Experiment::LiveChapters | Experiment::LiveText | Experiment::NewOnboarding => {}
+        #[cfg(target_os = "windows")]
+        Experiment::HaasJa => {}
     }
 }
 

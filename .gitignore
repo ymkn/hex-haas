@@ -14,3 +14,6 @@ __pycache__/
 /ios/HEXMobile.xcodeproj
 /result
 /result-*
+/tools/haas/
+/haas-data/
+/haas-config/

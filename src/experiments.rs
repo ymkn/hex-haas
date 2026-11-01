@@ -71,15 +71,19 @@ pub enum Experiment {
     NewOnboarding,
     Playground,
     VoiceFilter,
+    #[cfg(target_os = "windows")]
+    HaasJa,
 }
 
 impl Experiment {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 5 + cfg!(target_os = "windows") as usize] = [
         Self::LiveChapters,
         Self::LiveText,
         Self::NewOnboarding,
         Self::Playground,
         Self::VoiceFilter,
+        #[cfg(target_os = "windows")]
+        Self::HaasJa,
     ];
 
     pub fn available() -> impl Iterator<Item = Self> {
@@ -94,6 +98,8 @@ impl Experiment {
             Self::NewOnboarding => "new-onboarding",
             Self::Playground => "playground",
             Self::VoiceFilter => "voice-filter",
+            #[cfg(target_os = "windows")]
+            Self::HaasJa => "haas-ja",
         }
     }
 
@@ -111,6 +117,10 @@ impl Experiment {
             }
             Self::VoiceFilter => {
                 "The Voice Filter pane: the Hex Microphone driver and its filters (macOS)."
+            }
+            #[cfg(target_os = "windows")]
+            Self::HaasJa => {
+                "Experimental Japanese Haas-ja recognition through a local speech.cpp worker."
             }
         }
     }
@@ -136,6 +146,8 @@ static LIVE: [AtomicBool; Experiment::ALL.len()] = [
     AtomicBool::new(false),
     AtomicBool::new(false),
     AtomicBool::new(false),
+    AtomicBool::new(false),
+    #[cfg(target_os = "windows")]
     AtomicBool::new(false),
 ];
 
@@ -738,46 +750,58 @@ mod tests {
         let snapshot = Snapshot::parse(Some("live-text"), Some("live-text\nmystery\n"));
         let path = Path::new("/home/kit/.config/hex/experiments");
         let json = serde_json::to_value(list_json(&snapshot, path)).unwrap();
-        assert_eq!(
-            json,
-            serde_json::json!({
-                "version": 1,
-                "file": "/home/kit/.config/hex/experiments",
-                "experiments": [
-                    {
-                        "name": "live-chapters",
-                        "description": Experiment::LiveChapters.description(),
-                        "enabled": false,
-                        "sources": [],
-                    },
-                    {
-                        "name": "live-text",
-                        "description": Experiment::LiveText.description(),
-                        "enabled": true,
-                        "sources": ["env", "file"],
-                    },
-                    {
-                        "name": "new-onboarding",
-                        "description": Experiment::NewOnboarding.description(),
-                        "enabled": false,
-                        "sources": [],
-                    },
-                    {
-                        "name": "playground",
-                        "description": Experiment::Playground.description(),
-                        "enabled": false,
-                        "sources": [],
-                    },
-                    {
-                        "name": "voice-filter",
-                        "description": Experiment::VoiceFilter.description(),
-                        "enabled": false,
-                        "sources": [],
-                    },
-                ],
-                "unknown": [{ "name": "mystery", "source": "file" }],
-            })
-        );
+        let expected = serde_json::json!({
+            "version": 1,
+            "file": "/home/kit/.config/hex/experiments",
+            "experiments": [
+                {
+                    "name": "live-chapters",
+                    "description": Experiment::LiveChapters.description(),
+                    "enabled": false,
+                    "sources": [],
+                },
+                {
+                    "name": "live-text",
+                    "description": Experiment::LiveText.description(),
+                    "enabled": true,
+                    "sources": ["env", "file"],
+                },
+                {
+                    "name": "new-onboarding",
+                    "description": Experiment::NewOnboarding.description(),
+                    "enabled": false,
+                    "sources": [],
+                },
+                {
+                    "name": "playground",
+                    "description": Experiment::Playground.description(),
+                    "enabled": false,
+                    "sources": [],
+                },
+                {
+                    "name": "voice-filter",
+                    "description": Experiment::VoiceFilter.description(),
+                    "enabled": false,
+                    "sources": [],
+                },
+            ],
+            "unknown": [{ "name": "mystery", "source": "file" }],
+        });
+        #[cfg(target_os = "windows")]
+        let expected = {
+            let mut expected = expected;
+            expected["experiments"]
+                .as_array_mut()
+                .unwrap()
+                .push(serde_json::json!({
+                    "name": "haas-ja",
+                    "description": Experiment::HaasJa.description(),
+                    "enabled": false,
+                    "sources": [],
+                }));
+            expected
+        };
+        assert_eq!(json, expected);
 
         let mut text = Vec::new();
         print_list(&mut text, &snapshot, path).unwrap();

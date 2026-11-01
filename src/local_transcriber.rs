@@ -12,12 +12,21 @@ use crate::transcription_models::{
     TranscriptionSelection, download_with_progress, model_path, validate,
 };
 
+#[cfg(target_os = "windows")]
+mod speech_cpp;
+
+enum LocalSession {
+    Gguf(OfflineGgufSession),
+    #[cfg(target_os = "windows")]
+    SpeechCpp(speech_cpp::SpeechCpp),
+}
+
 /// A word or segment's start and end (ms from the clip's start) and text.
 #[cfg(target_os = "linux")]
 pub type TimedSpan = (i64, i64, String);
 
 pub struct LocalTranscriber {
-    session: OfflineGgufSession,
+    session: LocalSession,
     options: RunOptions,
     device_label: String,
     max_audio_samples: Option<usize>,
@@ -136,6 +145,23 @@ impl LocalTranscriber {
     }
 
     pub fn load(selection: &TranscriptionSelection) -> Result<Self> {
+        #[cfg(target_os = "windows")]
+        if selection.model == crate::transcription_models::TranscriptionModelId::HaasJaV1 {
+            let definition = validate(selection)?;
+            let path =
+                crate::transcription_models::verify_installed(definition, &AtomicBool::new(false))?;
+            let mut worker = speech_cpp::SpeechCpp::load(&path)?;
+            // Prewarm before publishing the new selection to the listener.
+            worker.transcribe(&vec![0.0; 24_000])?;
+            return Ok(Self {
+                session: LocalSession::SpeechCpp(worker),
+                options: RunOptions::default(),
+                device_label: "speech.cpp (automatic Vulkan / CPU)".into(),
+                max_audio_samples: None,
+                stream: None,
+                finest_timestamps: TimestampKind::None,
+            });
+        }
         transcribe_cpp::init_logging();
         transcribe_cpp::init_backends_default()
             .wrap_err("could not initialize transcription backends")?;
@@ -186,7 +212,7 @@ impl LocalTranscriber {
         );
         let session = OfflineGgufSession::new(model)?;
         let mut transcriber = Self {
-            session,
+            session: LocalSession::Gguf(session),
             options: RunOptions {
                 timestamps: if capabilities.max_timestamp_kind == TimestampKind::None {
                     TimestampKind::None
@@ -215,7 +241,13 @@ impl LocalTranscriber {
             "prewarmed local transcription model"
         );
         let stream_run = transcriber.stream_run_options();
-        transcriber.stream = transcriber.session.probe_stream(&stream_run, &architecture);
+        match &mut transcriber.session {
+            LocalSession::Gguf(session) => {
+                transcriber.stream = session.probe_stream(&stream_run, &architecture);
+            }
+            #[cfg(target_os = "windows")]
+            LocalSession::SpeechCpp(_) => {}
+        }
         Ok(transcriber)
     }
 
@@ -239,8 +271,15 @@ impl LocalTranscriber {
         drive: impl FnOnce(&mut transcribe_cpp::Stream<'_>) -> R,
     ) -> transcribe_cpp::Result<R> {
         let options = self.stream_run_options();
-        self.session
-            .with_stream(&options, stream_options, cancel, drive)
+        match &mut self.session {
+            LocalSession::Gguf(session) => {
+                session.with_stream(&options, stream_options, cancel, drive)
+            }
+            #[cfg(target_os = "windows")]
+            LocalSession::SpeechCpp(_) => Err(transcribe_cpp::Error::Unsupported(
+                "Haas supports whole-clip transcription only".into(),
+            )),
+        }
     }
 
     pub fn device_label(&self) -> &str {
@@ -252,6 +291,7 @@ impl LocalTranscriber {
     /// segments instead.
     #[cfg(target_os = "linux")]
     pub fn transcribe_words(&mut self, samples: &[f32]) -> Result<(String, Vec<TimedSpan>)> {
+        let LocalSession::Gguf(session) = &mut self.session;
         const CHUNK: usize = 30 * 16_000;
         let chunk = self.max_audio_samples.map_or(CHUNK, |max| max.min(CHUNK));
         let options = RunOptions {
@@ -261,8 +301,7 @@ impl LocalTranscriber {
         let (mut texts, mut words) = (Vec::new(), Vec::new());
         for (index, part) in samples.chunks(chunk.max(1)).enumerate() {
             let offset = (index * chunk / 16) as i64;
-            let transcript = self
-                .session
+            let transcript = session
                 .run(part, &options)
                 .wrap_err("transcription failed")?;
             let text = transcript.text.trim();
@@ -291,8 +330,13 @@ impl LocalTranscriber {
     }
 
     pub fn transcribe(&mut self, samples: &[f32]) -> Result<String> {
-        self.session
-            .transcribe_chunked(samples, &self.options, self.max_audio_samples)
+        match &mut self.session {
+            LocalSession::Gguf(session) => {
+                session.transcribe_chunked(samples, &self.options, self.max_audio_samples)
+            }
+            #[cfg(target_os = "windows")]
+            LocalSession::SpeechCpp(worker) => worker.transcribe(samples),
+        }
     }
 }
 

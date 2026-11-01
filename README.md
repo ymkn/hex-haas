@@ -1,3 +1,5 @@
+> **個人用Fork（`haas` ブランチ）**: Windows向けHaas-ja対応版です。ビルド・起動・公式Hexの更新取り込み手順は [FORK.md](FORK.md)、実装と制約は [docs/haas-ja.md](docs/haas-ja.md) を参照してください。以下の公式ダウンロードは、このForkの実行ファイルではありません。
+
 <p align="center">
   <img src=".github/assets/hex-icon.png" width="96" height="96" alt="Hex app icon" />
 </p>

@@ -3515,6 +3515,9 @@ mod tests {
     #[test]
     fn invalid_remembered_languages_are_not_offered_by_model_switching() {
         let mut settings = AppSettings {
+            // This fixture needs an English current selection, independent of
+            // the host locale (Japanese Windows otherwise defaults to Whisper/ja).
+            transcription: TranscriptionSelection::default(),
             transcription_recents: vec![
                 TranscriptionSelection {
                     model: TranscriptionModelId::ParakeetV2,

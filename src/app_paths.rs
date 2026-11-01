@@ -12,6 +12,11 @@ pub fn is_local_build() -> bool {
     option_env!("HEX_LOCAL_BUILD") == Some("1")
 }
 
+/// This experimental fork must not fall back to the installed Hex's data.
+pub fn is_haas_build() -> bool {
+    option_env!("HEX_HAAS_BUILD") == Some("1")
+}
+
 /// Whether this is a macOS `Hex Test.app` build (`HEX_TEST_BUILD=1`), which
 /// keeps its data, settings, and user config apart from the installed Hex.
 pub fn is_macos_test_build() -> bool {
@@ -34,7 +39,9 @@ pub fn support_dir() -> Result<PathBuf> {
     }
     let data =
         dirs::data_dir().ok_or_else(|| eyre!("application data directory is unavailable"))?;
-    let folder = if is_macos_test_build() {
+    let folder = if is_haas_build() {
+        "hex-haas"
+    } else if is_macos_test_build() {
         "hex-test"
     } else {
         "hex"
@@ -107,7 +114,13 @@ pub fn experiments_file() -> Result<PathBuf> {
 /// The per-user config folder holding `hex.config.ts` and `experiments` on
 /// every OS: `~/.config/hex`, or `~/.config/hex-test` for `Hex Test.app`.
 fn user_config_dir() -> Result<PathBuf> {
+    if let Some(path) = std::env::var_os("HEX_USER_CONFIG_DIR") {
+        return Ok(path.into());
+    }
     let home = dirs::home_dir().ok_or_else(|| eyre!("home directory is unavailable"))?;
+    if is_haas_build() {
+        return Ok(home.join(".config").join("hex-haas"));
+    }
     Ok(user_config_dir_in(&home, is_macos_test_build()))
 }
 
@@ -133,10 +146,14 @@ mod tests {
         );
         let file = experiments_file().unwrap();
         assert_eq!(file.parent(), personal_commands_workspace().ok().as_deref());
-        assert_eq!(
-            file,
-            user_config_dir_in(&dirs::home_dir().unwrap(), is_macos_test_build())
-                .join("experiments")
-        );
+        let home = dirs::home_dir().unwrap();
+        let expected = if let Some(path) = std::env::var_os("HEX_USER_CONFIG_DIR") {
+            PathBuf::from(path)
+        } else if is_haas_build() {
+            home.join(".config").join("hex-haas")
+        } else {
+            user_config_dir_in(&home, is_macos_test_build())
+        };
+        assert_eq!(file, expected.join("experiments"));
     }
 }

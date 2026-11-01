@@ -24,6 +24,7 @@ pub enum TranscriptionModelId {
     Qwen3Asr06B,
     SenseVoiceSmall,
     CohereTranscribe,
+    HaasJaV1,
     #[serde(rename = "underdog_bark_3_pro")]
     UnderdogBark3Pro,
     #[serde(rename = "underdog_bark_3_clean")]
@@ -41,6 +42,7 @@ impl TranscriptionModelId {
             Self::Qwen3Asr06B => "qwen3_asr06_b",
             Self::SenseVoiceSmall => "sense_voice_small",
             Self::CohereTranscribe => "cohere_transcribe",
+            Self::HaasJaV1 => "haas_ja_v1",
             Self::UnderdogBark3Pro => "underdog_bark_3_pro",
             Self::UnderdogBark3Clean => "underdog_bark_3_clean",
             Self::AppleSpeech => "apple_speech",
@@ -60,6 +62,7 @@ impl FromStr for TranscriptionModelId {
             "qwen3_asr06_b" => Ok(Self::Qwen3Asr06B),
             "sense_voice_small" => Ok(Self::SenseVoiceSmall),
             "cohere_transcribe" => Ok(Self::CohereTranscribe),
+            "haas_ja_v1" => Ok(Self::HaasJaV1),
             "underdog_bark_3_pro" => Ok(Self::UnderdogBark3Pro),
             "underdog_bark_3_clean" => Ok(Self::UnderdogBark3Clean),
             "apple_speech" => Ok(Self::AppleSpeech),
@@ -189,7 +192,13 @@ impl GgufArtifact {
 }
 
 impl ModelDefinition {
-    pub const fn available(&self) -> bool {
+    pub fn available(&self) -> bool {
+        if self.id == TranscriptionModelId::HaasJaV1 {
+            #[cfg(target_os = "windows")]
+            return crate::experiments::enabled(crate::experiments::Experiment::HaasJa);
+            #[cfg(not(target_os = "windows"))]
+            return false;
+        }
         !matches!(self.runtime, ModelRuntime::AppleSpeech)
     }
 
@@ -363,6 +372,18 @@ const COHERE_ARTIFACT: GgufArtifact = GgufArtifact {
     architecture: "cohere_asr",
     variant: "cohere-transcribe-03-2026",
 };
+// Haas uses speech.cpp's FastConformer/KDA implementation, not transcribe.cpp.
+// The original Third Intelligence weights are Apache-2.0; this is sakasegawa's
+// pinned Q8_0 conversion, read by the Windows-only speech.cpp adapter.
+const HAAS_ARTIFACT: GgufArtifact = GgufArtifact {
+    filename: "Haas-616M-ja-v1.0-Q8_0.gguf",
+    revision: "6b965d5007ba780585de51549d57a8c1c0d67c7e",
+    repository: "sakasegawa/Haas-ja-v1.0-GGUF",
+    bytes: 656_381_472,
+    sha256: "cd5f60b2f1c411404b83fca4a65e3ce30a26d9e951b6a346529e65f22758afeb",
+    architecture: "fastconformer",
+    variant: "Haas-ja-v1.0",
+};
 // Conway Research's Parakeet TDT v3 fine-tunes (CC-BY-4.0), converted to
 // Q8_0 with transcribe.cpp's Parakeet converter; each repository holds the
 // recipe.
@@ -533,6 +554,22 @@ pub const MODELS: &[ModelDefinition] = &[
         streams: false,
         runtime: ModelRuntime::Gguf(&UNDERDOG_BARK_3_CLEAN_ARTIFACT),
         languages: &["en"],
+        accepts_language_hint: false,
+        supports_language_detection: false,
+        supports_recognition_hints: false,
+    },
+    ModelDefinition {
+        id: TranscriptionModelId::HaasJaV1,
+        name: "Haas-ja-v1.0 (speech.cpp)",
+        realtime: "Not measured",
+        // Published Haas results use CER, not this UI's WER-derived accuracy.
+        word_error_rate: None,
+        quality_context: "Japanese; experimental speech.cpp backend",
+        coverage: "Japanese",
+        timestamps: "No timestamps",
+        streams: false,
+        runtime: ModelRuntime::Gguf(&HAAS_ARTIFACT),
+        languages: &["ja"],
         accepts_language_hint: false,
         supports_language_detection: false,
         supports_recognition_hints: false,
@@ -1403,6 +1440,23 @@ mod tests {
     }
 
     #[test]
+    fn haas_catalog_keeps_japanese_only_and_does_not_claim_wer_accuracy() {
+        let haas = definition(TranscriptionModelId::HaasJaV1);
+        assert!(haas.supports_language("ja"));
+        assert!(!haas.supports_language("en"));
+        assert!(!haas.supports_language(AUTO_LANGUAGE));
+        assert_eq!(haas.default_language(), "ja");
+        assert!(!haas.streams);
+        assert!(!haas.supports_recognition_hints);
+        assert!(haas.accuracy_label().is_none());
+        assert_eq!(haas.download_bytes(), Some(656_381_472));
+        assert_eq!(
+            recommended_selection("ja").model,
+            TranscriptionModelId::WhisperLargeV3Turbo
+        );
+    }
+
+    #[test]
     fn gguf_artifacts_are_q8_0_for_the_vulkan_shader_subset() {
         // Q8_0 GGUFs hold only f32, f16, and q8_0 tensors, the types the
         // Vulkan backend is built for (`CMAKE_ARGS` in .cargo/config.toml).
@@ -1451,6 +1505,7 @@ mod tests {
             (TranscriptionModelId::Qwen3Asr06B, "qwen3_asr06_b"),
             (TranscriptionModelId::SenseVoiceSmall, "sense_voice_small"),
             (TranscriptionModelId::CohereTranscribe, "cohere_transcribe"),
+            (TranscriptionModelId::HaasJaV1, "haas_ja_v1"),
             (
                 TranscriptionModelId::UnderdogBark3Pro,
                 "underdog_bark_3_pro",

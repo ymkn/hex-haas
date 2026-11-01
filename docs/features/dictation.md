@@ -156,6 +156,17 @@ does not prove the physical dictation shortcut; see the [feature index](README.m
 
 ## Sub-features
 
+### Experimental Windows Haas-ja backend
+
+Local builds with `HEX_EXPERIMENTS=haas-ja` offer `Haas-ja-v1.0 (speech.cpp)`
+in the existing model picker. The default recommendation stays Whisper.
+The Windows adapter keeps a speech.cpp worker warm, sends audio through anonymous
+pipes, preserves native Haas punctuation, keeps dictations up to 15 seconds whole,
+partitions longer clips only when necessary, and reuses ordinary processing and
+paste. It provides no streaming, timestamps, or custom vocabulary yet. See the
+[local integration guide](../haas-ja.md) for pinned artifacts, isolation, tests,
+observed native smoke results, and unverified end-to-end behavior.
+
 ### Vocabulary Quality Checks
 
 `hex benchmark-transcription` accepts a scoring vocabulary and expected terms,
