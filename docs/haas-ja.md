@@ -42,7 +42,7 @@ SPIRV-Headers commit `496543121ce6419f23d6fa5d7194ba66c36212d2` is also installe
 
 ## Build and launch
 
-Extract the pinned speech.cpp archive under `tools/haas/speech/`. Verify its hash before executing anything. Visual Studio x64 C++ tools, a Windows SDK, Rust and PowerShell 7 are required.
+`scripts/setup-haas-build-tools.ps1` downloads the pinned speech.cpp v0.10.0 Windows x64 Vulkan build beside CMake, shaderc, and the Vulkan/SPIRV headers, verifies every hash before use, and extracts speech.exe and speech.dll under `tools/haas/speech/`. Visual Studio x64 C++ tools, a Windows SDK, Rust, PowerShell 7, and Git (its bash, for the filtered check) are required; inference needs a Vulkan-capable GPU driver (`vulkan-1.dll`).
 
 ```powershell
 ./scripts/setup-haas-build-tools.ps1

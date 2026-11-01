@@ -2,6 +2,14 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $tools = Join-Path $root 'tools\haas'
 New-Item -ItemType Directory -Force $tools | Out-Null
+# speech.cpp v0.10.0, the Haas runtime: prebuilt Windows x64 Vulkan binaries.
+# Pinned and hash-verified; see docs/haas-ja.md.
+$speechArchive = Join-Path $tools 'speech.zip'
+if (!(Test-Path $speechArchive)) {
+    Invoke-WebRequest 'https://github.com/nyosegawa/speech.cpp/releases/download/v0.10.0/speech-0.10.0-windows-x64-vulkan.zip' -OutFile $speechArchive
+}
+if ((Get-FileHash $speechArchive -Algorithm SHA256).Hash -ne '2F88EB9E29242F1846A80BD2D418553BB0B17637254092B66B73803380A94AB4') { throw 'speech.cpp checksum mismatch' }
+if (!(Test-Path "$tools\speech\speech.exe")) { Expand-Archive $speechArchive "$tools\speech" }
 $cmakeZip = Join-Path $tools 'cmake.zip'
 if (!(Test-Path $cmakeZip)) {
     Invoke-WebRequest 'https://github.com/Kitware/CMake/releases/download/v4.4.5/cmake-4.4.5-windows-x86_64.zip' -OutFile $cmakeZip
@@ -35,6 +43,8 @@ if ((Get-FileHash $spirvArchive -Algorithm SHA256).Hash -ne 'b33782a6ccd124e6e02
 if (!(Test-Path "$tools\spirv-headers")) { Expand-Archive $spirvArchive "$tools\spirv-headers" }
 $spirvSource = Get-ChildItem "$tools\spirv-headers" -Directory | Select-Object -First 1
 $cmake = "$tools\cmake\cmake-4.4.5-windows-x86_64\bin\cmake.exe"
+# A CMake cache embeds absolute paths, so a moved checkout cannot reuse one.
+Remove-Item "$tools\spirv-build" -Recurse -Force -ErrorAction SilentlyContinue
 & $cmake -S $spirvSource.FullName -B "$tools\spirv-build" "-DCMAKE_INSTALL_PREFIX=$sdk" -DSPIRV_HEADERS_ENABLE_TESTS=OFF
 if ($LASTEXITCODE) { throw 'SPIRV-Headers configure failed' }
 & $cmake --install "$tools\spirv-build"
@@ -52,5 +62,5 @@ if ($names.Count -lt 100) { throw 'Could not read the installed Vulkan loader ex
 @('LIBRARY vulkan-1', 'EXPORTS') + $names | Set-Content "$sdk\Lib\vulkan-1.def" -Encoding ascii
 & "$bin\lib.exe" /nologo "/def:$sdk\Lib\vulkan-1.def" /machine:x64 "/out:$sdk\Lib\vulkan-1.lib"
 if ($LASTEXITCODE) { throw 'Vulkan import library creation failed' }
-Get-FileHash $cmakeZip, $shaderArchive, $headersArchive, $spirvArchive -Algorithm SHA256 | Format-List Path,Hash
+Get-FileHash $speechArchive, $cmakeZip, $shaderArchive, $headersArchive, $spirvArchive -Algorithm SHA256 | Format-List Path,Hash
 & "$sdk\Bin\glslc.exe" --version

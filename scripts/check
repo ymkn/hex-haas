@@ -29,9 +29,14 @@ stage "fmt"
 cargo fmt --all --check || exit 10
 
 stage "code-shape"
-# Windows ships no python3 alias; fall back to python.
+# The shape rules run on Python; a machine without one skips this stage with
+# a warning instead of failing (the code_shape_tests in cargo test still run).
 python_bin=$(command -v python3 || command -v python)
-"$python_bin" scripts/code-shape.py --check || exit 13
+if [[ -n "$python_bin" ]]; then
+    "$python_bin" scripts/code-shape.py --check || exit 13
+else
+    printf 'python not found; skipping the code-shape stage\n'
+fi
 
 if [[ $# -eq 0 ]]; then
     stage "clippy"

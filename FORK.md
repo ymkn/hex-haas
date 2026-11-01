@@ -19,7 +19,7 @@ Haas対応以外の使い方は通常のHexと同じで、ログイン時起動�
 
 ## ローカル作業場所とリモート
 
-現在の作業場所は `~/Desktop/hex-haas` です。Gitのリモートは次の役割に分けます。
+clone先はどこでも構いません（例: `~/Desktop/hex-haas`）。Gitのリモートは次の役割に分けます。
 
 ```text
 origin   -> ymkn/hex-haas     自分の変更の取得・push
@@ -71,7 +71,7 @@ git merge --no-ff $target
 # この後、起動中のHexをトレイから終了する。
 Copy-Item ./target/release/hex.exe ./dist/haas/hex.exe -Force
 ./scripts/test-haas-package.ps1
-uv run --no-project python ./scripts/check_haas_punctuation.py
+uv run --no-project python ./scripts/check_haas_punctuation.py  # Pythonのみで動く。uvがなければ python でもよい
 git push origin haas
 ```
 
@@ -79,7 +79,7 @@ git push origin haas
 
 ## 再構築とデータ
 
-Visual Studio x64 C++ツール・Windows SDK・Rust・PowerShell 7を用意し、[ビルドガイド](docs/haas-ja.md#build-and-launch) の固定バージョンに従ってspeech.cppを取得、ハッシュ検証してから展開します。
+必要なものは Visual Studio x64 C++ツール・Windows SDK・Rust・PowerShell 7・Git（`-TestFilter` のbash用）です。推論にはVulkan対応GPUドライバー（`vulkan-1.dll`）も必要です。`setup-haas-build-tools.ps1` がCMake・shaderc・Vulkan/SPIRVヘッダー・speech.cpp v0.10.0を固定バージョンで取得し、ハッシュ検証してから展開します。
 
 ```powershell
 ./scripts/setup-haas-build-tools.ps1
