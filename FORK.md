@@ -12,7 +12,7 @@ Haasは speech.cpp v0.10.0 の常駐worker経由で動きます。Whisperなど�
 
 ## ローカル作業場所とリモート
 
-現在の作業場所は `~/source/repos/hex-haas` です。Gitのリモートは次の役割に分けます。
+現在の作業場所は `~/Desktop/hex-haas` です。Gitのリモートは次の役割に分けます。
 
 ```text
 origin   -> ymkn/hex-haas     自分の変更の取得・push
