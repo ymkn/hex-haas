@@ -246,7 +246,8 @@ pub(super) fn blurb(def: &ModelDefinition) -> &'static str {
         M::Nemotron35Asr => tr("Writes while you talk, in 27 languages"),
         M::GigaAmV3 => tr("Russian, with punctuation. A small download"),
         M::AppleSpeech => tr("Apple's speech recognition, kept up to date by macOS"),
-        M::Custom(_) => "",
+        // Haas has no measured speed/error figure or extra marketing copy.
+        M::HaasJaV1 | M::Custom(_) => "",
     }
 }
 
@@ -429,4 +430,17 @@ pub(super) fn row_choose_button(p: Paint, entry: &Entry) -> El {
         .key("choose-model")
         // A ghost's label lines up with the row's other right edges.
         .mr(-9.0)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn haas_picker_makes_no_unmeasured_speed_or_error_claim() {
+        let haas = crate::transcription::models::definition(
+            crate::transcription::models::TranscriptionModelId::HaasJaV1,
+        );
+        assert!(super::blurb(haas).is_empty());
+        assert!(super::wait(haas).is_none());
+        assert!(super::errors(haas, "ja").is_none());
+    }
 }
