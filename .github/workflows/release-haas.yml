@@ -1,9 +1,11 @@
 # Builds the Haas fork for Windows x64 and publishes it to GitHub Releases.
 #
-#   - A push of a `haas-v*` tag builds, packages, and creates a release with
-#     Hex-Haas-<version>-windows-x64.zip and its SHA256SUMS.
-#   - A manual dispatch builds and uploads the same zip as a workflow
-#     artifact, so a change can be verified before tagging.
+#   - A push of a `haas-v*` tag builds both variants, packages them, and
+#     creates one release with Hex-Haas-<version>-windows-x64.zip (GPU),
+#     Hex-Haas-<version>-windows-x64-cpu.zip (no Vulkan loader needed), and
+#     a combined SHA256SUMS.
+#   - A manual dispatch builds and uploads the same zips as workflow
+#     artifacts, so a change can be verified before tagging.
 #
 # The build is not code-signed: SmartScreen may warn, and the release notes
 # point at SHA256SUMS for verification. Mirrors upstream's windows-x64 job
@@ -51,21 +53,140 @@ jobs:
         shell: pwsh
         run: ./scripts/package-haas.ps1 -Destination ..\out
       - name: Upload the package as an artifact
-        if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: Hex-Haas-windows-x64
           path: |
             out/*.zip
             out/SHA256SUMS
+            out/RELEASE-NOTES.md
           if-no-files-found: error
-      - name: Create the release
-        if: startsWith(github.ref, 'refs/tags/haas-v')
+
+  windows-x64-cpu:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    defaults:
+      run:
         working-directory: source
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: source
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - name: Set up CPU build tools
+        run: ./scripts/setup-haas-cpu-build-tools.ps1
+      - name: Build and check all three binaries for Vulkan imports
+        run: ./scripts/build-haas-cpu.ps1
+      - name: Smoke the CPU binaries
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # The load-time proof is the dumpbin import scan in the build
+          # steps: none of the three binaries imports vulkan-1.dll, so a
+          # loader on this runner cannot be what makes them start. A loader
+          # shipped inside the package would break that separation, so
+          # refuse only that; a system loader is noted, not fatal.
+          $packaged = @(Get-ChildItem dist\haas-cpu -Filter vulkan-1.dll -Recurse | ForEach-Object { $_.FullName })
+          foreach ($loader in $packaged) {
+              throw "The CPU package must not contain a Vulkan loader, but contains $loader"
+          }
+          $system = @("$env:WINDIR\System32\vulkan-1.dll")
+          $system += ($env:PATH -split ';' | Where-Object { $_ } | ForEach-Object { Join-Path $_ 'vulkan-1.dll' })
+          foreach ($loader in $system) {
+              if (Test-Path $loader) { Write-Warning "This runner has a Vulkan loader at $loader; startup here does not by itself prove loader-free operation (the import scan does)." }
+          }
+          & ./dist/haas-cpu/hex.exe --version
+          if ($LASTEXITCODE) { throw 'CPU Hex failed to start.' }
+          & ./dist/haas-cpu/speech.exe --version
+          if ($LASTEXITCODE) { throw 'CPU speech.cpp failed to start.' }
+          & ./dist/haas-cpu/hex.exe model devices
+          if ($LASTEXITCODE) { throw 'CPU device enumeration failed.' }
+      - name: Download Haas and run CPU inference on a synthetic WAV
+        timeout-minutes: 20
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Required, not continue-on-error: Hugging Face access and a real
+          # model load/worker inference must succeed before uploading a zip.
+          # Japanese SAPI voices are NOT assumed available on windows-latest.
+          # A deterministic non-silent waveform exercises inference without
+          # SAPI, a microphone, playback, or a Japanese accuracy claim. Empty
+          # text is allowed; an inference error/nonzero exit is not.
+          # Native Japanese speech, shortcut/paste, and AVD GUI/WARP need a PC.
+          $env:HEX_APPLICATION_SUPPORT_DIR = Join-Path $env:RUNNER_TEMP 'hex-haas-cpu-smoke'
+          New-Item -ItemType Directory -Force $env:HEX_APPLICATION_SUPPORT_DIR | Out-Null
+          & ./dist/haas-cpu/hex.exe model install haas_ja_v1 --language ja
+          if ($LASTEXITCODE) { throw 'Haas model download failed; inference was NOT verified.' }
+          $wav = Join-Path $env:RUNNER_TEMP 'haas-cpu-synthetic.wav'
+          $rate = 16000
+          $count = 3 * $rate
+          $writer = [System.IO.BinaryWriter]::new([System.IO.File]::Create($wav))
+          try {
+              $writer.Write([System.Text.Encoding]::ASCII.GetBytes('RIFF'))
+              $writer.Write([int](36 + 2 * $count))
+              $writer.Write([System.Text.Encoding]::ASCII.GetBytes('WAVEfmt '))
+              $writer.Write([int]16)
+              $writer.Write([int16]1)
+              $writer.Write([int16]1)
+              $writer.Write([int]$rate)
+              $writer.Write([int](2 * $rate))
+              $writer.Write([int16]2)
+              $writer.Write([int16]16)
+              $writer.Write([System.Text.Encoding]::ASCII.GetBytes('data'))
+              $writer.Write([int](2 * $count))
+              for ($i = 0; $i -lt $count; $i++) {
+                  $t = $i / [double]$rate
+                  $sample = 6000 * [Math]::Sin(2 * [Math]::PI * 220 * $t) + 3000 * [Math]::Sin(2 * [Math]::PI * 440 * $t)
+                  $writer.Write([int16]$sample)
+              }
+          } finally { $writer.Dispose() }
+          & ./dist/haas-cpu/hex.exe model transcribe $wav --model haas_ja_v1 --language ja
+          if ($LASTEXITCODE) { throw 'Haas CPU inference failed.' }
+      - name: Package
+        run: ./scripts/package-haas-cpu.ps1 -Destination ..\out-cpu
+      - name: Upload the CPU package as an artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: Hex-Haas-windows-x64-cpu
+          path: |
+            out-cpu/*.zip
+            out-cpu/SHA256SUMS
+            out-cpu/RELEASE-NOTES.md
+          if-no-files-found: error
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/haas-v')
+    needs: [windows-x64, windows-x64-cpu]
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Download the GPU package
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: Hex-Haas-windows-x64
+          path: out
+      - name: Download the CPU package
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: Hex-Haas-windows-x64-cpu
+          path: out-cpu
+      - name: Create the release with both variants
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $assets = Get-ChildItem ..\out\Hex-Haas-*.zip, ..\out\SHA256SUMS | ForEach-Object { $_.FullName }
-          gh release create "${{ github.ref_name }}" --title "${{ github.ref_name }}" --notes-file ..\out\RELEASE-NOTES.md @assets
+          $assetsDir = Join-Path $PWD 'release-assets'
+          New-Item -ItemType Directory -Force $assetsDir | Out-Null
+          $zips = @(Get-ChildItem out\Hex-Haas-*.zip, out-cpu\Hex-Haas-*.zip)
+          if ($zips.Count -ne 2) { throw "Expected exactly the GPU and CPU zips, found $($zips.Count)." }
+          foreach ($zip in $zips) { Copy-Item $zip.FullName $assetsDir }
+          $sums = @(Get-Content out\SHA256SUMS) + @(Get-Content out-cpu\SHA256SUMS)
+          $sums | Set-Content (Join-Path $assetsDir 'SHA256SUMS') -Encoding ascii
+          $notes = (Get-Content out\RELEASE-NOTES.md -Raw) + "`n" + (Get-Content out-cpu\RELEASE-NOTES.md -Raw)
+          $notes | Set-Content (Join-Path $assetsDir 'RELEASE-NOTES.md') -Encoding utf8NoBOM
+          $assets = Get-ChildItem $assetsDir\Hex-Haas-*.zip, $assetsDir\SHA256SUMS | ForEach-Object { $_.FullName }
+          gh release create "${{ github.ref_name }}" --title "${{ github.ref_name }}" --notes-file (Join-Path $assetsDir 'RELEASE-NOTES.md') @assets

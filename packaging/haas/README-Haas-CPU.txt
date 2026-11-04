@@ -37,5 +37,5 @@ Hex Haas — Windows x64 CPU（非公式フォークビルド）
   - 自動更新・コード署名はありません。SHA256SUMSでzipのハッシュを確認してください。
   - 初回起動時にSmartScreenの警告が出ることがあります。
   - Haasモデル（Apache-2.0）は同梱していません。起動後にダウンロードされます。
-  - CPU版は当面Actionsの手動実行artifactのみで、タグ連動Releaseはありません。
+  - CPU版はhaas-v*タグのReleaseにGPU版と一緒に登録されます。Actionsの手動実行artifactでも取得できます。
   - ライセンス本文は同梱の LICENSE を参照してください。

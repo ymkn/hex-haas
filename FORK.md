@@ -108,13 +108,14 @@ Releases に `Hex-Haas-<version>-windows-x64.zip` を置いています。ソー
 - コード署名はありません。`SHA256SUMS` でハッシュを確認し、SmartScreenの警告は「詳細情報」から実行を続けてください。
 - データは `%APPDATA%\hex-haas` に作られ、公式Hexとは混ざりません。自動更新はありません。
 
-リリースの作り方（自分用）: `haas-v<バージョン>` 形式のタグをpushすると Actions の「Haas release」がビルドしてリリースを作成します。タグなしの `workflow_dispatch` は同じビルドを検証し、成果物をworkflowのartifactとして残すだけです。ローカルでも `./scripts/build-haas.ps1` の後に `./scripts/package-haas.ps1` で同じzipを作れます。
+リリースの作り方（自分用）: `haas-v<バージョン>` 形式のタグをpushすると Actions の「Haas release」がGPU版とCPU版をビルドして、両方のzipと統合したSHA256SUMSを1つのリリースに登録します。タグなしの `workflow_dispatch` は同じビルドを検証し、成果物をworkflowのartifactとして残すだけです。ローカルでも `./scripts/build-haas.ps1` の後に `./scripts/package-haas.ps1` で同じzipを作れます。
 
 ## GPUなしのCPUバリアント（Windows x64）
 
 Vulkanドライバーや `vulkan-1.dll` がないPCには、別パッケージ
-`Hex-Haas-<version>-windows-x64-cpu.zip` を使います。当面は Actions の
-「Haas CPU build」を手動実行したartifactのみで、タグでは実行・Release公開しません。
+`Hex-Haas-<version>-windows-x64-cpu.zip` を使います。`haas-v*` タグの Release には
+GPU版と一緒に CPU版 zip も登録されます（SHA256SUMS は両版をまとめた1ファイル）。
+単体確認用に Actions の「Haas CPU build」手動実行（artifactのみ）も残しています。
 上のGPU版とは別の成果物です。CPU版の3ファイルをまとめて展開し、
 `dist/haas-cpu/hex.exe`（zipでは `hex.exe`）を直接起動します。
 
@@ -153,4 +154,4 @@ CIには全3バイナリのdumpbin検査（loader不在の証明はこのimport�
 Haasモデル取得と非無音の合成WAV推論を必須ゲートとして用意しています。
 日本語SAPI音声には依存せず、日本語の精度は検証しません。モデル取得・推論失敗を
 許容してartifactを出すことはありません。これらは実行前の検証定義であり、
-Windowsビルド・GPU版リンク回帰・AVDの画面・実口述・貼り付けは未検証です。
+2026-11-04にCIで両ワークフローとも成功し、WindowsビルドとGPU版リンク回帰は確認済みです。未検証なのはAVDの画面・実口述・貼り付けです。

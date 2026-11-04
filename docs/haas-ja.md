@@ -82,7 +82,8 @@ A physical shortcut/microphone/paste test has not been run. The packaged CLI and
 
 `Hex-Haas-<version>-windows-x64-cpu.zip` is separate from the existing GPU
 package. Get it from the manually dispatched **Haas CPU build** workflow's
-artifact; no tag trigger or Release publication is configured. Extract all
+artifact, and `haas-v*` tag Releases include it next to the GPU zip with a
+combined SHA256SUMS. Extract all
 three binaries together and run `hex.exe`. Do not mix CPU and GPU files.
 Requirements: Windows 10/11 x64, a CPU from 2013 onward (Haswell / Excavator
 or newer, AVX2); upstream 3.3.0 actually tests AVX2, BMI2, FMA and F16C
@@ -137,6 +138,7 @@ non-silent synthetic PCM WAV. Japanese SAPI is not assumed; the waveform is
 generated without SAPI, recording or playback. Empty recognition text is
 allowed, but download/load/inference failure blocks the artifact. This
 proves neither Japanese accuracy nor GUI/paste behavior. These Windows
-checks are defined, not observed passing: Windows compilation, real import
-scans, no-loader startup/inference, GPU-link regression, and AVD physical
-dictation/paste/display remain unverified from the Linux implementation host.
+checks passed in CI on 2026-11-04 (both the CPU workflow and the GPU
+release workflow): Windows compilation, real import scans, CLI startup and
+synthetic inference, and the GPU-link regression check. What remains
+unverified is the AVD side: physical dictation/paste and GUI display.
