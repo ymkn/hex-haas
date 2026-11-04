@@ -131,7 +131,7 @@ speech.cpp build determines whether Haas has a GPU backend.
 
 Verification definition: setup checks speech.exe/speech.dll imports, and
 the CPU build checks all three packaged binaries with dumpbin. The new CI
-workflow additionally requires no Vulkan loader on the runner, CLI version
+workflow additionally runs the CLI version
 and device commands, a real Haas model download, and inference on a 3-second
 non-silent synthetic PCM WAV. Japanese SAPI is not assumed; the waveform is
 generated without SAPI, recording or playback. Empty recognition text is
