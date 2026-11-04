@@ -225,6 +225,8 @@ enum Encoding {
     Software {
         pixels: Vec<u8>,
         movie: Option<Writer>,
+        /// Why the GPU couldn't encode, when it was tried.
+        hardware: Option<String>,
     },
 }
 
@@ -240,9 +242,40 @@ pub fn recorded_screen() -> Option<(u32, u32)> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// The recorded screen's size in the desktop's logical points, when the portal said so and it
+/// shows the screen is scaled.
+static RECORDED_POINTS: std::sync::Mutex<Option<(f64, f64)>> = std::sync::Mutex::new(None);
+
+/// The size of the screen being recorded in the desktop's logical points, as the screen-cast
+/// portal reported it (Wayland). A host drawing over the screen uses it rather than dividing
+/// the pixels by its own scale, which a fractional scale (1.5, 1.33) rounds up to a whole
+/// number. `None` when the portal didn't say, or said nothing a scale could come from.
+pub fn recorded_screen_points() -> Option<(f64, f64)> {
+    *RECORDED_POINTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The screen's logical size from the portal's stream `size`, when it is smaller than the
+/// frames' `pixels` in the same shape: a size as large as the frames (some portals report
+/// pixels), missing, or of another shape gives no scale to trust.
+fn logical_screen(size: Option<(i32, i32)>, pixels: (u32, u32)) -> Option<(f64, f64)> {
+    let (width, height) = size?;
+    let (width, height) = (f64::from(width), f64::from(height));
+    let (pixel_width, pixel_height) = (f64::from(pixels.0), f64::from(pixels.1));
+    if width <= 0.0 || height <= 0.0 || width >= pixel_width || height >= pixel_height {
+        return None;
+    }
+    let (sx, sy) = (pixel_width / width, pixel_height / height);
+    ((sx - sy).abs() <= 0.02 * sx).then_some((width, height))
+}
+
 pub(super) fn run_sampler(sampler: Sampler) -> Option<super::Movie> {
     let recorded = record(&sampler);
     *RECORDED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    *RECORDED_POINTS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     match recorded {
@@ -306,6 +339,14 @@ fn record(sampler: &Sampler) -> Result<Option<super::Movie>> {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) =
             Some((format.width, format.height));
+        let points = logical_screen(cast.size, (format.width, format.height));
+        scrawl_log(format!(
+            "Screen size from the portal: {:?}, in points: {points:?}",
+            cast.size
+        ));
+        *RECORDED_POINTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = points;
     }
     let edge = if source == Source::Window {
         WINDOW_EDGE
@@ -348,6 +389,11 @@ fn record(sampler: &Sampler) -> Result<Option<super::Movie>> {
         if let Some(frame) = stream.newest() {
             match load(&mut encoding, &frame, &format) {
                 Ok(()) => have_frame = true,
+                // Nothing of the screen recorded yet: end the capture with why rather than
+                // write one with no picture.
+                Err(error) if !have_frame => {
+                    return Err(error.context("could not record the screen"));
+                }
                 Err(error) if !failed => {
                     scrawl_log(format!("Recording frame failed: {error:#}"));
                     failed = true;
@@ -400,6 +446,9 @@ fn record(sampler: &Sampler) -> Result<Option<super::Movie>> {
         }
         Encoding::Software { movie, .. } => movie,
     };
+    if first.is_none() && path.is_some() {
+        scrawl_log("The screen stream gave no frame to record");
+    }
     let (Some(movie), Some(path), Some((_, offset_ms))) = (movie, path, first) else {
         return Ok(None);
     };
@@ -453,6 +502,7 @@ fn record_x11(sampler: &Sampler) -> Result<Option<super::Movie>> {
     let mut encoding = Encoding::Software {
         pixels: Vec::new(),
         movie,
+        hardware: None,
     };
     crate::log::start_metric("sck_ready_ms", sampler.started_at);
     let tick = Duration::from_secs(1) / FPS;
@@ -510,6 +560,7 @@ fn start_encoding(
     small: (u32, u32),
     path: Option<&std::path::Path>,
 ) -> Encoding {
+    let mut unavailable = None;
     if format.dmabuf
         && let Some(path) = path
     {
@@ -522,7 +573,10 @@ fn start_encoding(
                     movie,
                 };
             }
-            Err(error) => scrawl_log(format!("Hardware encoding unavailable: {error:#}")),
+            Err(error) => {
+                scrawl_log(format!("Hardware encoding unavailable: {error:#}"));
+                unavailable = Some(format!("{error:#}"));
+            }
         }
     }
     let pixel = match format.pixel {
@@ -539,22 +593,31 @@ fn start_encoding(
     Encoding::Software {
         pixels: Vec::new(),
         movie,
+        hardware: unavailable,
     }
 }
 
 fn load(encoding: &mut Encoding, frame: &Frame, format: &VideoFormat) -> Result<()> {
     match encoding {
         Encoding::Hardware { encoder, .. } => encoder.load(frame),
-        Encoding::Software { pixels, .. } => {
+        Encoding::Software {
+            pixels, hardware, ..
+        } => {
             let row = format.width as usize * 4;
             pixels.resize(row * format.height as usize, 0);
+            let rows = match (frame.rows(row, format.height as usize), hardware.as_deref()) {
+                (Ok(rows), _) => rows,
+                (Err(error), None) => return Err(error),
+                (Err(error), Some(why)) => {
+                    return Err(error.context(format!("hardware encoding is unavailable: {why}")));
+                }
+            };
             if frame.dmabuf {
                 pipewire::sync_dmabuf(frame.fd, true);
             }
             for y in 0..format.height as usize {
-                let src = unsafe {
-                    std::slice::from_raw_parts(frame.rows().add(y * frame.stride as usize), row)
-                };
+                let src =
+                    unsafe { std::slice::from_raw_parts(rows.add(y * frame.stride as usize), row) };
                 pixels[y * row..(y + 1) * row].copy_from_slice(src);
             }
             if frame.dmabuf {
@@ -568,7 +631,7 @@ fn load(encoding: &mut Encoding, frame: &Frame, format: &VideoFormat) -> Result<
 fn encode(encoding: &mut Encoding) -> Result<()> {
     match encoding {
         Encoding::Hardware { encoder, movie } => encoder.encode(movie),
-        Encoding::Software { pixels, movie } => match movie {
+        Encoding::Software { pixels, movie, .. } => match movie {
             Some(movie) => Ok(std::io::Write::write_all(movie, pixels)?),
             None => Ok(()),
         },
@@ -604,5 +667,28 @@ fn candidate(
             Some(RgbaFrame::new(t_ms, width, height, rgba))
         }
         Encoding::Software { .. } => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::logical_screen;
+
+    #[test]
+    fn a_fractionally_scaled_screen_keeps_its_logical_size() {
+        // 1.5 and 1.33: the overlay's whole-number scale (2) would give 1920x1080 and 1280x720.
+        assert_eq!(
+            logical_screen(Some((2560, 1440)), (3840, 2160)),
+            Some((2560.0, 1440.0))
+        );
+        assert_eq!(
+            logical_screen(Some((1920, 1080)), (2560, 1440)),
+            Some((1920.0, 1080.0))
+        );
+        // Nothing a scale could come from: unsaid, pixels, or another shape.
+        assert_eq!(logical_screen(None, (3840, 2160)), None);
+        assert_eq!(logical_screen(Some((3840, 2160)), (3840, 2160)), None);
+        assert_eq!(logical_screen(Some((1440, 2560)), (3840, 2160)), None);
+        assert_eq!(logical_screen(Some((0, 0)), (3840, 2160)), None);
     }
 }

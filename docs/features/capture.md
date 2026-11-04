@@ -50,8 +50,8 @@ Draw                                     // capture.draw (capture_host::drawing)
 │       ending_a_stroke_while_the_input_target_is_locked_does_not_deadlock;
 │       not observed on a Windows PC
 ├── Esc while drawing -> stops drawing, never the recording (recognition.rs
-│   on macOS; Escape bound through the portal or grab on Linux; the keyboard
-│   hook on Windows, when no dictation takes it; and the overlay's own key
+│   on macOS; the Escape grab on X11 (Wayland binds no Escape); the keyboard
+│   hook on Windows, when no dictation records; and the overlay's own key
 │   handler where it gets the keyboard)
 ├── macOS and Windows -> Shift held alone still draws, as in Scrawl
 ├── While drawing -> the ink overlay takes the pointer with a pen cursor, so
@@ -67,6 +67,16 @@ Draw                                     // capture.draw (capture_host::drawing)
 │   physical for the hold on a portal desktop ("Annotate pen" is logged)
 ├── Ink holds 650 ms, then fades over 650 ms on screen; every stroke stays in
 │   the bundle (keyframes, contact sheet, scrawl.json)
+├── Linux: strokes are placed on the recorded screen in its logical points,
+│   from the ScreenCast portal's stream size when it reports one smaller
+│   than the frames, so a fractional scale (1.5, 1.33), which reaches the
+│   overlay rounded up to 2, no longer pins strokes to a top-left part of
+│   the screen; without that size it divides the pixels by the overlay's
+│   scale. Check: scrawl-capture capture::platform::tests
+│   a_fractionally_scaled_screen_keeps_its_logical_size; not observed on a
+│   fractionally scaled monitor. Known gap: the overlay starts below a
+│   desktop bar's reserved area, so saved ink sits that bar's height off
+│   the live ink
 └── Linux recordings show the overlay itself (Wayland can't leave it out)
 
 On Linux                                 // capture.linux
@@ -93,8 +103,13 @@ On Linux                                 // capture.linux
 ├── Encoding -> VA-API (libva loaded at run time): each DMA-BUF imported, scaled
 │   to a 2560 px long edge (1920 for a window) and converted on the video
 │   engine, H.264 High at a constant QP with Hex-written headers, 30 fps;
-│   `ffmpeg -c copy` muxes recording.mp4. No VA-API -> frames copied and
-│   encoded with x264 through ffmpeg (slow on DMA-BUF-only compositors)
+│   `ffmpeg -c copy` muxes recording.mp4. Every /dev/dri render node is
+│   tried in order, so a hybrid laptop whose first node is a GPU the VA
+│   driver can't use encodes on the next (#853). No VA-API -> frames copied
+│   and encoded with x264 through ffmpeg (slow on DMA-BUF-only compositors);
+│   a first frame neither path can read (a DMA-BUF the CPU can't map) fails
+│   the capture with why, never a capture without a picture. Check: vaapi
+│   render_nodes_in_order; not observed on a hybrid laptop
 ├── Candidates -> a small copy from the video engine (at most 4× smaller per
 │   pass: radeonsi crashes past it)
 ├── Reading movies back (keyframes, probe, audio) -> `ffmpeg`/`ffprobe`
@@ -213,7 +228,7 @@ First launch with Annotate on            // capture.import
 ├── Press while recording -> stop, as `hex capture stop` // ignored within 400 ms
 ├── Press while the capsule's picker is open -> the picker records what it is on
 ├── Esc while a capture records -> nothing: it reaches the app being recorded,
-│   and Hex's tap lets it through (only a dictation hold under it is cancelled)
+│   and Hex's tap lets it through; a dictation under it goes on too (#786)
 ├── The binding is swallowed, never chord evidence for dictation
 └── Hold the dictation shortcut mid-capture -> dictation pastes as usual
 
@@ -619,11 +634,11 @@ hex capture stop                         // capture.stop
 
 What a send carries                      // capture.send (router opencode::send_bundle)
 ├── One prompt: the summary (transcript, marks, notes) as text, then the
-│   contact sheet and up to 8 keyframes as inline `data:image/png;base64`
-│   file parts (12 MiB of encoded images at most; past it, later frames are
-│   left out). Nothing in it depends on the bundle's folder, so an OpenCode
-│   server on another machine reads all of it; the text only names where it
-│   was recorded
+│   contact sheet as one inline `data:image/png;base64` file part
+│   (12 MiB encoded at most; past it, no image). The keyframes are not
+│   attached; the text says they are in `frames/` and `frames-full/` of the
+│   capture folder. The picture does not depend on the folder, so an OpenCode
+│   server on another machine reads it; the text only names where it was recorded
 ├── Every request goes to the running local service over HTTP
 │   (service.json); a service that isn't up is never started
 ├── With an agent host (routing's agentHost) the bundle is synced there and
@@ -631,7 +646,7 @@ What a send carries                      // capture.send (router opencode::send_
 │   images
 ├── No video: a capture's movie is too large for a prompt
 └── Check: router opencode tests; a send from apollo to a throwaway session
-    on OpenCode V2 stored the contact sheet and keyframe as inline image/png
+    on OpenCode V2 stored the contact sheet and keyframe as inline image/png (before one-sheet)
     (2026-10-29)
 
 Where it goes                            // capture.route; capture.routing's autoSend on

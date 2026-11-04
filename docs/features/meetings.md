@@ -4,7 +4,8 @@ Record a call locally: Hex captures the other participants (system audio) and
 you (microphone) as separate tracks, transcribes them on this Mac, and saves a
 Markdown transcript with `You` and `Them` turns. Recording starts automatically
 only for calls from a website or app set to Always record, and never stops
-automatically. This map describes macOS; [Linux and Windows](#linux-and-windows)
+automatically unless Labs › Stop when the call ends is on (see
+[meetings.auto-stop](#record)). This map describes macOS; [Linux and Windows](#linux-and-windows)
 lists where they differ.
 
 Linked checks are locators unless an executed result is recorded below.
@@ -31,7 +32,8 @@ Labs > Meetings switch (macOS)                       // meetings.opt-in; off by 
 │   │   with OpenCode (off by default; when Apple Intelligence is off or missing)
 │   ├── Calendar -> Connect calendar; reminders before meetings // meetings.calendar
 │   └── Detected calls -> Ask / Always record / Never offer per provider // meetings.policy
-│       ├── Slack huddles, Zoom, Google Meet, Microsoft Teams, FaceTime (always listed)
+│       ├── Slack huddles, Zoom, Google Meet, Microsoft Teams, FaceTime, WhatsApp,
+│       │   Gather (always listed)
 │       └── then each website or app chosen for from an offer's "…"
 └── Off -> Controller idles; no microphone-activity inspection or shortcut;
            the pane leaves the sidebar
@@ -113,7 +115,12 @@ hardware.
 ### Detect And Offer
 
 ```ts
-Zoom / Teams / Slack huddle / FaceTime / browser call uses the microphone
+Zoom / Teams / Slack huddle / FaceTime / WhatsApp / browser call uses the microphone
+  (WhatsApp: net.whatsapp.WhatsApp, the older desktop.WhatsApp, WhatsApp.exe or
+  WhatsApp.Root.exe on Windows, web.whatsapp.com in a browser; 20 s, as voice
+  notes also hold the microphone; Gather: com.gather.GatherV2 and its helpers,
+  com.gather.Gather, Gather.exe, app.v2.gather.town and app.gather.town; 20 s,
+  as sitting in a space can hold it)
   -> CoreAudio input process -> canonical host app   // parent PID + bundle ID
   -> On the microphone for 2 s by the monotonic clock // meetings.detect
      │   Google Meet and Banshee (banshee.app) in a browser count as known
@@ -127,6 +134,7 @@ Zoom / Teams / Slack huddle / FaceTime / browser call uses the microphone
      ├── Always record -> starts recording, no offer   // meetings.auto-record
      │   └── recording capsule says "Started automatically" for 10 s; with the
      │       indicator off, a "Recording automatically" capsule with Stop
+     │       and ✕ (✕ only hides it; the recording goes on, in the menu bar)
      └── Ask -> Capsule below the menu bar, focus-free  // meetings.offer
          ├── Title: "Google Meet call detected", "Call on meet.jit.si",
          │   "Call in Brave Browser" (site unknown), or the meeting's name
@@ -146,6 +154,8 @@ Zoom / Teams / Slack huddle / FaceTime / browser call uses the microphone
   -> "Left the call" prompt after the call app is off the microphone for 3 s
   -> Times are wall-clock runs: observations more than 10 s apart (sleep, a
      stalled loop) start a stability run again instead of counting the gap
+     └── A call off the microphone for at most 2 s (a missed check) keeps
+         its run; a longer release starts it over
 
 Choices persist as `meetings.providers` (`key`, `label`, `policy`:
 `ask` / `always_record` / `never_offer`) in `settings.json`. Missing means Ask.
@@ -153,7 +163,12 @@ The older `meetings.never_offer` list reads as Never offer entries and is
 rewritten as `providers` on the next load.
 ```
 
-Chromium and Electron apps (Brave, Chrome, Edge, Slack, Teams) capture microphone
+Call detection knows Brave, Chrome, Safari, Firefox, Edge, and Arc
+(`company.thebrowser.Browser`, foreground name `Arc`; its tab is read like
+Brave's). Arc was missing until #801, so its Meet calls were never detected.
+Check: `a_google_meet_call_in_arc_records_after_about_two_seconds`.
+
+Chromium and Electron apps (Brave, Chrome, Edge, Arc, Slack, Teams) capture microphone
 audio in sandboxed `audio.mojom.AudioService` utility processes (`*.helper`) that
 do not register with `NSRunningApplication`; Zoom uses `us.zoom.CptHost`, Firefox
 uses `org.mozilla.plugincontainer`, Safari uses `com.apple.WebKit.GPU` (`Safari
@@ -163,7 +178,19 @@ process to its canonical host app via parent PID lineage, CoreAudio's
 `kAudioProcessPropertyBundleID`, and `NSRunningApplication`. When Brave uses the
 microphone and is not snoozed, `ContextSnapshot::capture_for_meeting` in
 [dictation/context.rs](../../src/dictation/context.rs) reads the active tab of Brave's front window,
-even if Brave is behind another window. Background tabs are not searched: a
+even if Brave is behind another window. When that AppleScript read fails or
+answers nothing (Automation not allowed, a failing script; #827, Arc), the
+page comes from the browser process's focused web area through Accessibility
+(`AXURL`), still behind another window; the first failure per browser is
+logged as `could not read the browser tab`. Arc (and other Chromium browsers)
+behind another app often exposes no web area either, so without a page the
+browser's own focused window title is used: a tab titled `Meet - …` /
+`Meet – …` counts as a Google Meet call on `meet.google.com` (2 s, Always
+record applies); the landing page ("Google Meet") does not. Before this, a
+Meet call in a background Arc without Automation was an unnamed browser call
+(#827). Check:
+`a_google_meet_call_in_arc_without_its_address_is_known_by_its_title`; not yet
+observed against a live background Arc. Background tabs are not searched: a
 call open in one says nothing about which tab holds the microphone, and a
 voice note elsewhere would otherwise get a known service's 2 s threshold or
 trigger Always record. (A call in a background tab is therefore judged by the
@@ -410,6 +437,21 @@ Detected app leaves the microphone for about 3 s     // meetings.call-ended
   -> "Zoom left the call" capsule: Keep recording / Stop & transcribe
   -> No timeout; nothing stops automatically
 
+Labs › Stop when the call ends (macOS, off by default; #835) // meetings.auto-stop
+  Only a recording Hex started on its own (Always record); manual, offered,
+  and calendar recordings are never stopped
+  -> The call app counts as present while it holds the microphone OR any of
+     its Core Audio processes plays output (WhatsApp keeps the microphone
+     while muted; its output stays open until hang-up)
+  -> Both off for about 3 s -> capsule says "Hex stops recording in 30 s
+     unless you keep recording."
+     ├── App back on the microphone or output within 30 s -> nothing stops
+     ├── Keep recording -> nothing stops for this absence; leaving again re-arms
+     ├── Stop & transcribe -> stops now
+     └── 30 s pass -> Stop & Transcribe, as the menu bar's; logged
+         "meeting recording stopped automatically after its call ended"
+  -> Off -> exactly as above: microphone only, nothing stops
+
 Capture sources (meeting/capture.rs)                // meetings.capture
 ├── Microphone -> dictation's input (saved device, else System default) via cpal, resampled to 16 kHz
 │   ├── System default changes, the Settings microphone changes, or a missing
@@ -436,6 +478,16 @@ A failure shows "Meeting could not be recorded." above the recordings until
 its close button dismisses it ([#562](https://github.com/anomalyco/hex/issues/562);
 check `a_meeting_recording_error_can_be_dismissed`).
 Checks: `call_end_is_reported_once_per_sustained_absence`,
+`an_ended_call_stops_after_the_grace_unless_it_comes_back_or_is_kept` in
+[meeting/detection.rs](../../src/meeting/detection.rs),
+`only_automatic_recordings_stop_when_the_call_ends_and_only_with_the_lab_on` and
+`keep_recording_disarms_a_pending_automatic_stop` in
+[meeting/watcher.rs](../../src/meeting/watcher.rs),
+`an_automatic_stop_says_so_and_keep_recording_cancels_it` in
+[meeting_capsules.rs](../../src/rune_ui/meeting_capsules.rs) (auto-stop; not
+yet observed on a real Mac: the output read
+`microphone_activity::application_running_output` against a live WhatsApp
+call, a muted call, and Zoom or Teams helpers),
 `paste_cursor_counts_coalesced_turns_and_advances_only_on_success` in
 [meeting/tests.rs](../../src/meeting/tests.rs),
 `meeting_delta_coalesces_turns_in_time_order` in
@@ -454,7 +506,7 @@ The capsules are Rune overlays in [meeting_capsules.rs](../../src/rune_ui/meetin
 interactive, non-activating `NSPanel`s at status level on every Space,
 fed by the controller events the menu-bar pump receives
 ([macos_rune.rs](../../src/macos_rune.rs)). The offer (20 s), "left the
-call", ready (15 s, Copy / Reveal, notes refresh) and a recording capsule
+call", ready (15 s, Copy / Reveal / ✕, notes refresh) and a recording capsule
 (title, elapsed time, Copy new, Copy all, Open, Stop, in the configured
 corner, compact until hovered, dragged between corners) are ported. Copy new
 and Copy all are checked by
@@ -472,7 +524,11 @@ recording; Stop transcribed) and the ready capsule (Copy copied the
 Markdown). Before that day's fix the recording capsule never appeared: it
 closed and reopened in one overlay batch, and the hide ran last. The offer,
 "left the call", "…" choices, and automatic-recording capsules remain unseen
-on screen.
+on screen. The ready and automatic-recording capsules' ✕ (#996) is checked by
+`dismissing_a_ready_transcript_only_closes_it` and
+`dismissing_an_automatic_recording_never_stops_it`, and drawn by
+`panel_goldens` (`meeting-capsule-ready-*`, `-auto-started-*`); it has not
+been clicked on a real Mac.
 
 ### Transcribe
 
@@ -747,7 +803,7 @@ Final publication                                   // meetings.output
     ├── Never overwrites; adds " (2)"
     └── Failure -> Meeting still Complete; "Markdown not saved: …"
 
-Transcript ready capsule (15 s) -> Copy (Markdown or speaker turns fallback) / Reveal
+Transcript ready capsule (15 s) -> Copy (Markdown or speaker turns fallback) / Reveal / ✕ closes
 Meetings pane -> Copy icon on a completed row's hover, the card's Copy transcript icon, Reveal Markdown (or Reveal Files when none)
 Menu bar (idle) -> Copy Last Meeting Transcript
 Option-Control-V -> `MeetingPasteCursor` in `meeting/delta.rs` over the transcript

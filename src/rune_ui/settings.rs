@@ -341,6 +341,24 @@ pub(super) fn validate(
     if binding.is_bare_primary_click() {
         return Err(tr("Add a modifier"));
     }
+    // Menu, Pause, and Scroll Lock need Labs › Special keys alone (Linux).
+    if cfg!(target_os = "linux")
+        && binding.key.as_ref().is_some_and(HotkeyKey::is_special)
+        && !settings.special_keys_allowed()
+    {
+        return Err(if binding.modifiers.is_empty() {
+            tr("Add a modifier")
+        } else {
+            tr("Unsupported key")
+        });
+    }
+    // A navigation key alone needs Labs › Special keys alone (Windows).
+    if cfg!(target_os = "windows")
+        && binding.is_lone_navigation_key()
+        && !settings.special_keys_allowed()
+    {
+        return Err(tr("Add a modifier"));
+    }
     host::validate_hotkey(target, binding)?;
     if conflicts(settings, target, binding) {
         return Err(tr("Already in use"));
@@ -451,7 +469,7 @@ pub(super) fn sound_volume_index(settings: &AppSettings) -> usize {
 
 pub(super) fn toggle_menu(ui: &mut Ui, menu: Menu) {
     ui.open = (ui.open != Some(menu)).then_some(menu);
-    if matches!(ui.open, Some(Menu::Microphone | Menu::TourMicrophone)) {
+    if matches!(ui.open, Some(Menu::Microphone)) {
         refresh_microphones(ui);
     }
 }
@@ -577,7 +595,9 @@ pub(super) fn listener_card(ui: &Ui, p: Paint) -> El {
         }) => trigger.clone(),
         _ => ui.settings.dictation_hotkey.keycaps().join("+"),
     };
+    let no_model = super::general::missing_model(ui).is_some();
     let hint = match (running, ui.settings.shortcut_mode) {
+        _ if no_model => tr("Hex can't dictate until a speech model is installed").to_string(),
         _ if !ui.records_shortcuts() => {
             tr("Ready anywhere · Use your desktop's shortcuts to dictate").to_string()
         }
@@ -626,7 +646,11 @@ pub(super) fn listener_card(ui: &Ui, p: Paint) -> El {
         .py(8.0)
         .gap(12.0)
         .center_y()
-        .child(status_dot(if running { p.success() } else { p.muted() }))
+        .child(status_dot(if running && !no_model {
+            p.success()
+        } else {
+            p.muted()
+        }))
         .child(
             col()
                 .key("copy")
@@ -643,7 +667,7 @@ pub(super) fn listener_card(ui: &Ui, p: Paint) -> El {
                     text(hint)
                         .key("hint")
                         .font(DESCRIPTION)
-                        .color(p.muted())
+                        .color(if no_model { p.danger() } else { p.muted() })
                         .wrap(),
                 )
                 .children(failure.map(|failure| {
@@ -701,19 +725,6 @@ fn portal_grant(ui: &Ui, target: ShortcutTarget) -> Option<&DesktopGrantedShortc
         ShortcutTarget::SecondDictation => return None,
     };
     granted.iter().find(|shortcut| shortcut.name == name)
-}
-
-/// The key a shortcuts portal's desktop gave Cancel dictation. Hex suggests
-/// none, so a key here comes from the desktop (#624), and it takes that key
-/// from every app.
-pub(super) fn cancel_grant(ui: &Ui) -> Option<&str> {
-    let Some(DesktopShortcuts::Portal(granted)) = ui.shortcuts() else {
-        return None;
-    };
-    granted
-        .iter()
-        .find(|shortcut| shortcut.name == "Cancel dictation")
-        .and_then(|shortcut| shortcut.trigger.as_deref())
 }
 
 /// Keys GNOME keeps for itself by default (window menu, input sources, app
@@ -823,8 +834,8 @@ pub(super) fn refused_note(ui: &Ui, p: Paint, target: ShortcutTarget) -> Option<
 
 /// Without a shortcuts portal the desktop's keybindings own every shortcut:
 /// the commands to bind there.
-pub(super) fn desktop_commands(p: Paint) -> El {
-    let rows = vec![
+pub(super) fn desktop_commands(ui: &Ui, p: Paint) -> El {
+    let mut rows = vec![
         note(
             "no-portal",
             tr(
@@ -848,13 +859,6 @@ pub(super) fn desktop_commands(p: Paint) -> El {
         ),
         command_row(
             p,
-            "cancel",
-            tr("Cancel dictation"),
-            tr("Discard the current recording"),
-            &["hex dictation cancel"],
-        ),
-        command_row(
-            p,
             "paste-last",
             tr("Paste last dictation"),
             tr("Re-paste the most recent dictation"),
@@ -868,7 +872,46 @@ pub(super) fn desktop_commands(p: Paint) -> El {
             &["hex dictation toggle --raw"],
         ),
     ];
+    // GNOME without a shortcuts portal (GNOME 46 and older, #781): Hex writes
+    // the commands into GNOME's own custom shortcuts.
+    if on_gnome() {
+        rows.insert(1, gnome_shortcuts_row(ui, p));
+    }
     section(p, "desktop-shortcuts", tr("Desktop shortcuts"), rows)
+}
+
+/// Adds or removes Hex's GNOME custom keyboard shortcuts.
+fn gnome_shortcuts_row(ui: &Ui, p: Paint) -> El {
+    let on = ui.settings.gnome_keyboard_shortcuts;
+    let description = if on {
+        tr(
+            "Added to GNOME Settings › Keyboard › Custom Shortcuts while Hex is enabled. GNOME runs them on the key press, so your dictation shortcut toggles dictation. Change the keys there.",
+        )
+    } else {
+        tr(
+            "Adds dictation, paste last and Annotate to GNOME Settings › Keyboard › Custom Shortcuts with your shortcuts. GNOME runs them on the key press, so dictation toggles.",
+        )
+    };
+    let action = button(
+        p,
+        "gnome-shortcuts-control",
+        if on {
+            tr("Remove")
+        } else {
+            tr("Add GNOME keyboard shortcuts")
+        },
+        ButtonKind::Secondary,
+        move |ui: &mut Ui, _| {
+            ui.update(|settings| settings.gnome_keyboard_shortcuts = !on);
+        },
+    );
+    setting_row(
+        p,
+        "gnome-shortcuts",
+        tr("GNOME keyboard shortcuts"),
+        Some(description),
+        action,
+    )
 }
 
 fn command_row(p: Paint, key: &str, title: &str, description: &str, commands: &[&str]) -> El {
@@ -939,40 +982,44 @@ pub(super) fn input_source_rows(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> Vec<E
                     });
                 }),
             }];
-            choices.extend(transcription_models::MODELS.iter().filter_map(|model| {
-                let fallback = ui.settings.transcription_for_model(model.id).language;
-                if !model.available()
-                    || !matches!(model.runtime, transcription_models::ModelRuntime::Gguf(_))
-                    || !ui.picker.installed(model, &fallback)
-                {
-                    return None;
-                }
-                let language = match &mapped {
-                    Some(choice) if model.supports_language(&choice.language) => {
-                        choice.language.clone()
-                    }
-                    _ => source.language_for(model, &fallback),
-                };
-                let source_id = source.id.clone();
-                let id = model.id;
-                Some(Choice {
-                    label: model.name.into(),
-                    detail: None,
-                    selected: mapped.as_ref().is_some_and(|choice| choice.model == id),
-                    choose: Box::new(move |ui| {
-                        ui.open = None;
-                        ui.update(|settings| {
-                            settings.keyboard_model_switching.mappings.insert(
-                                source_id.clone(),
-                                KeyboardModelChoice {
-                                    model: id,
-                                    language: language.clone(),
-                                },
-                            );
-                        });
+            choices.extend(
+                transcription_models::all_models()
+                    .into_iter()
+                    .filter_map(|model| {
+                        let fallback = ui.settings.transcription_for_model(model.id).language;
+                        if !model.available()
+                            || !matches!(model.runtime, transcription_models::ModelRuntime::Gguf(_))
+                            || !ui.picker.installed(model, &fallback)
+                        {
+                            return None;
+                        }
+                        let language = match &mapped {
+                            Some(choice) if model.supports_language(&choice.language) => {
+                                choice.language.clone()
+                            }
+                            _ => source.language_for(model, &fallback),
+                        };
+                        let source_id = source.id.clone();
+                        let id = model.id;
+                        Some(Choice {
+                            label: model.name.into(),
+                            detail: None,
+                            selected: mapped.as_ref().is_some_and(|choice| choice.model == id),
+                            choose: Box::new(move |ui| {
+                                ui.open = None;
+                                ui.update(|settings| {
+                                    settings.keyboard_model_switching.mappings.insert(
+                                        source_id.clone(),
+                                        KeyboardModelChoice {
+                                            model: id,
+                                            language: language.clone(),
+                                        },
+                                    );
+                                });
+                            }),
+                        })
                     }),
-                })
-            }));
+            );
             let label = mapped.as_ref().map_or_else(
                 || tr("Don't switch").to_string(),
                 |choice| {
@@ -1064,7 +1111,9 @@ pub(super) fn transcription_status(ui: &Ui, p: Paint) -> Option<(String, rune::C
     if let Some(error) = &transcription.error {
         return Some((error.clone(), p.danger()));
     }
-    let model = transcription.preparing?;
+    let Some(model) = transcription.preparing else {
+        return super::model_import::selection_notice(ui).map(|notice| (notice, p.warning()));
+    };
     let name = transcription_models::definition(model).name;
     let stage = match transcription.preparation_stage {
         Some(ModelPreparationStage::Verifying) => tr("Verifying model").to_string(),
@@ -1263,50 +1312,6 @@ pub(super) fn shortcut_caps(binding: &HotkeyBinding, side_picker: bool) -> Vec<S
         .collect()
 }
 
-pub(super) fn double_tap_only_applies(settings: &AppSettings) -> bool {
-    settings.shortcut_mode == ShortcutMode::Hold
-        && settings.double_tap_lock
-        && settings.dictation_hotkey.key.is_some()
-}
-
-pub(super) fn release_confirmation(_ui: &Ui, p: Paint) -> El {
-    setting_row(
-        p,
-        "confirm-release",
-        tr("Release the microphone when idle?"),
-        Some(tr(
-            "Opens the microphone on shortcut press without pre-roll.",
-        )),
-        row()
-            .key("actions")
-            .gap(8.0)
-            .child(button(
-                p,
-                "cancel-release",
-                tr("Cancel"),
-                ButtonKind::Secondary,
-                |ui: &mut Ui, _| {
-                    ui.confirm_release = false;
-                },
-            ))
-            .child(
-                button(
-                    p,
-                    "confirm-release",
-                    tr("Release microphone"),
-                    ButtonKind::Primary,
-                    |ui: &mut Ui, _| {
-                        if ui.update(|settings| settings.release_microphone_while_idle = true) {
-                            ui.confirm_release = false;
-                        }
-                    },
-                )
-                .default_button(),
-            ),
-    )
-    .fill(p.k.c.hover)
-}
-
 /// Stable or Dev shows only while this install updates itself: test,
 /// source, managed, and package-manager installs never check a channel.
 pub(super) fn updates_itself(ui: &Ui) -> bool {
@@ -1322,6 +1327,31 @@ pub(super) fn updates_itself(ui: &Ui) -> bool {
                 | DesktopUpdateStatus::SwitchAvailable { .. }
         )
     })
+}
+
+/// Issue 767: the window takes Menu alone only with Labs › Special keys
+/// alone on.
+#[cfg(all(test, target_os = "linux"))]
+mod special_keys_tests {
+    use super::*;
+
+    #[test]
+    fn menu_alone_needs_its_labs_toggle() {
+        let menu = HotkeyBinding {
+            modifiers: HotkeyModifiers::default(),
+            key: Some(HotkeyKey::named("menu")),
+        };
+        let mut settings = AppSettings::default();
+        assert_eq!(
+            validate(&settings, ShortcutTarget::Dictation, &menu),
+            Err(tr("Add a modifier"))
+        );
+        settings.labs.standalone_special_keys = true;
+        assert_eq!(
+            validate(&settings, ShortcutTarget::Dictation, &menu),
+            Ok(())
+        );
+    }
 }
 
 #[cfg(test)]
