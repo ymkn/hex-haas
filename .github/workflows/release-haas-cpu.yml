@@ -1,0 +1,97 @@
+# Artifact-only CPU variant. Tags never trigger it; no release publication.
+# No Vulkan SDK, signing credential, or OIDC token is used in this build job.
+name: Haas CPU build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-x64-cpu:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: source
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: source
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - name: Set up CPU build tools
+        run: ./scripts/setup-haas-cpu-build-tools.ps1
+      - name: Build and check all three binaries for Vulkan imports
+        run: ./scripts/build-haas-cpu.ps1
+      - name: Smoke without a Vulkan loader
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Refuse a runner with a loader: --version alone on that host would
+          # not prove that transitive DLL dependencies work without Vulkan.
+          $loaders = @("$env:WINDIR\System32\vulkan-1.dll")
+          $loaders += ($env:PATH -split ';' | Where-Object { $_ } | ForEach-Object { Join-Path $_ 'vulkan-1.dll' })
+          $loaders += @(Get-ChildItem dist\haas-cpu -Filter vulkan-1.dll -Recurse | ForEach-Object { $_.FullName })
+          foreach ($loader in $loaders) {
+              if (Test-Path $loader) { throw "This smoke requires no Vulkan loader, but found $loader" }
+          }
+          & ./dist/haas-cpu/hex.exe --version
+          if ($LASTEXITCODE) { throw 'CPU Hex failed to start.' }
+          & ./dist/haas-cpu/speech.exe --version
+          if ($LASTEXITCODE) { throw 'CPU speech.cpp failed to start.' }
+          & ./dist/haas-cpu/hex.exe model devices
+          if ($LASTEXITCODE) { throw 'CPU device enumeration failed.' }
+      - name: Download Haas and run CPU inference on a synthetic WAV
+        timeout-minutes: 20
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Required, not continue-on-error: Hugging Face access and a real
+          # model load/worker inference must succeed before uploading a zip.
+          # Japanese SAPI voices are NOT assumed available on windows-latest.
+          # A deterministic non-silent waveform exercises inference without
+          # SAPI, a microphone, playback, or a Japanese accuracy claim. Empty
+          # text is allowed; an inference error/nonzero exit is not.
+          # Native Japanese speech, shortcut/paste, and AVD GUI/WARP need a PC.
+          $env:HEX_APPLICATION_SUPPORT_DIR = Join-Path $env:RUNNER_TEMP 'hex-haas-cpu-smoke'
+          New-Item -ItemType Directory -Force $env:HEX_APPLICATION_SUPPORT_DIR | Out-Null
+          & ./dist/haas-cpu/hex.exe model install haas_ja_v1 --language ja
+          if ($LASTEXITCODE) { throw 'Haas model download failed; inference was NOT verified.' }
+          $wav = Join-Path $env:RUNNER_TEMP 'haas-cpu-synthetic.wav'
+          $rate = 16000
+          $count = 3 * $rate
+          $writer = [System.IO.BinaryWriter]::new([System.IO.File]::Create($wav))
+          try {
+              $writer.Write([System.Text.Encoding]::ASCII.GetBytes('RIFF'))
+              $writer.Write([int](36 + 2 * $count))
+              $writer.Write([System.Text.Encoding]::ASCII.GetBytes('WAVEfmt '))
+              $writer.Write([int]16)
+              $writer.Write([int16]1)
+              $writer.Write([int16]1)
+              $writer.Write([int]$rate)
+              $writer.Write([int](2 * $rate))
+              $writer.Write([int16]2)
+              $writer.Write([int16]16)
+              $writer.Write([System.Text.Encoding]::ASCII.GetBytes('data'))
+              $writer.Write([int](2 * $count))
+              for ($i = 0; $i -lt $count; $i++) {
+                  $t = $i / [double]$rate
+                  $sample = 6000 * [Math]::Sin(2 * [Math]::PI * 220 * $t) + 3000 * [Math]::Sin(2 * [Math]::PI * 440 * $t)
+                  $writer.Write([int16]$sample)
+              }
+          } finally { $writer.Dispose() }
+          & ./dist/haas-cpu/hex.exe model transcribe $wav --model haas_ja_v1 --language ja
+          if ($LASTEXITCODE) { throw 'Haas CPU inference failed.' }
+      - name: Package
+        run: ./scripts/package-haas-cpu.ps1 -Destination ..\out-cpu
+      - name: Upload the CPU package as an artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: Hex-Haas-windows-x64-cpu
+          path: |
+            out-cpu/*.zip
+            out-cpu/SHA256SUMS
+          if-no-files-found: error

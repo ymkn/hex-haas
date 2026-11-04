@@ -258,6 +258,16 @@ build, it does not self-update. Checks include the catalog's
 `haas_data_uses_the_standard_location_with_its_own_directory_name`, and
 `scripts/test-haas-package.ps1`; their existence alone is not a passing run.
 
+The separate Windows x64 CPU package is built by
+`scripts/setup-haas-cpu-build-tools.ps1`, `scripts/build-haas-cpu.ps1`, and
+`scripts/package-haas-cpu.ps1`. It needs AVX2 but no Vulkan loader for
+inference, keeps the same `hex-haas` data, and is artifact-only through
+manual `release-haas-cpu.yml` dispatch. Its required import/startup/model
+download/synthetic-inference checks are defined, not yet observed on Windows;
+AVD display, physical dictation and paste remain unverified. See the
+[CPU guide](../haas-ja.md#cpu-variant-windows-x64-no-vulkan-loader) for pins,
+build isolation, prerequisites and proof limits.
+
 ### Copy Recent Dictation (Labs, macOS)
 
 Paste Last Dictation reaches only the newest dictation. With Labs › Copy

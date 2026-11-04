@@ -5,7 +5,7 @@
 - Fork: https://github.com/ymkn/hex-haas
 - 上流: https://github.com/anomalyco/hex
 - 改修ブランチ: `haas`
-- ベース: 公式 `v3.1.1`（`v3.0.0` `7b05b5fd1fa0e3b9c333209cd1644d9603693d5c` に `v3.1.1` をマージ）
+- ベース: 公式 `v3.3.0`（`v3.0.0` `7b05b5fd1fa0e3b9c333209cd1644d9603693d5c` に `v3.1.1`、`v3.3.0` を順にマージ）
 - `dev` は上流用として残し、個人の変更は `haas` にだけコミットします。
 
 Haasは speech.cpp v0.10.0 の常駐worker経由で動きます。Whisperなど既存モデルは元の認識処理を使います。15秒以内の音声は分割せず、Haas自身の句読点出力を保持します。詳細・制約・検証結果は [docs/haas-ja.md](docs/haas-ja.md) を参照してください。
@@ -109,3 +109,48 @@ Releases に `Hex-Haas-<version>-windows-x64.zip` を置いています。ソー
 - データは `%APPDATA%\hex-haas` に作られ、公式Hexとは混ざりません。自動更新はありません。
 
 リリースの作り方（自分用）: `haas-v<バージョン>` 形式のタグをpushすると Actions の「Haas release」がビルドしてリリースを作成します。タグなしの `workflow_dispatch` は同じビルドを検証し、成果物をworkflowのartifactとして残すだけです。ローカルでも `./scripts/build-haas.ps1` の後に `./scripts/package-haas.ps1` で同じzipを作れます。
+
+## GPUなしのCPUバリアント（Windows x64）
+
+Vulkanドライバーや `vulkan-1.dll` がないPCには、別パッケージ
+`Hex-Haas-<version>-windows-x64-cpu.zip` を使います。当面は Actions の
+「Haas CPU build」を手動実行したartifactのみで、タグでは実行・Release公開しません。
+上のGPU版とは別の成果物です。CPU版の3ファイルをまとめて展開し、
+`dist/haas-cpu/hex.exe`（zipでは `hex.exe`）を直接起動します。
+
+必要なのは Windows 10/11 x64 と、2013年以降の CPU（Haswell / Excavator 以降、
+AVX2 対応）です。v3.3.0の実検査はAVX2・BMI2・FMA・F16C（x86-64-v3）です。CPU推論はGPU版より低速です。
+画面描画（Rune/wgpu、DX12 WARP等）は別で、AVDでの表示は実機確認が必要です。
+
+```powershell
+./scripts/setup-haas-cpu-build-tools.ps1
+./scripts/build-haas-cpu.ps1
+./scripts/build-haas-cpu.ps1 -Check
+./scripts/build-haas-cpu.ps1 -Lint
+./scripts/build-haas-cpu.ps1 -TestFilter haas
+./scripts/package-haas-cpu.ps1
+./dist/haas-cpu/hex.exe --version
+./dist/haas-cpu/hex.exe model devices
+```
+
+ビルドの前提ツールはGPU版と同じですが、Vulkan SDK・shaderc・GPUドライバーは不要です。
+CPU用ツール・speech.cppのソースとビルド結果は `tools/haas-cpu/`、Rust/native成果物は
+`target-cpu/`、実行ファイルは `dist/haas-cpu/`、zipは `dist/package-cpu/` に分離します。
+`tools/haas-cpu/` と `target-cpu/` もGitから除外しています。
+CPUスクリプトはGPU用環境変数と `TRANSCRIBE_DIR` を継承・再利用しません。
+同じPowerShellで後からGPU版をビルドする場合は、新しいシェルを使ってください。
+
+Windows x64のCargo既定もCPUになります。Vulkanを有効にするのは既存の
+`build-haas.ps1`（Check/Lint/Testも含む）です。未使用の上流汎用入口
+（直接のcargo、`build-windows.sh`、上流Windowsチェック・Release workflow）は
+CPU構成になるため、HaasのGPU版には使わないでください。LinuxのVulkan指定は不変です。
+
+設定・履歴・モデルはGPU版と同じ `%APPDATA%\hex-haas`、ユーザー設定は
+`~/.config/hex-haas` です。切り替える前にHexを終了し、GPU版のexe/DLLを混ぜないでください。
+CPU版も自動更新・コード署名なしで、モデルは初回にダウンロードします。
+
+CIには全3バイナリのdumpbin検査、Vulkan loader不在でのCLI起動・デバイス列挙、
+Haasモデル取得と非無音の合成WAV推論を必須ゲートとして用意しています。
+日本語SAPI音声には依存せず、日本語の精度は検証しません。モデル取得・推論失敗を
+許容してartifactを出すことはありません。これらは実行前の検証定義であり、
+Windowsビルド・GPU版リンク回帰・AVDの画面・実口述・貼り付けは未検証です。

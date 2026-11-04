@@ -1,4 +1,5 @@
 /target
+/target-cpu/
 /.venv
 /logs
 /perf/transcription-corpus
@@ -17,5 +18,6 @@ __pycache__/
 /result
 /result-*
 /tools/haas/
+/tools/haas-cpu/
 /haas-data/
 /haas-config/

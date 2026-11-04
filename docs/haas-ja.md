@@ -1,6 +1,6 @@
 # Haas-ja support for Windows
 
-This local fork is based on official Hex `v3.0.0` merged with `v3.1.1`. It adds a Japanese-only `haas_ja_v1` picker choice and is intended to replace ordinary Hex for daily use. Haas builds enable the backend without any switch: the model is available only when `app_paths::is_haas_build()`. The recommended model and normal Hex behavior remain unchanged; only the data/config directory name is `hex-haas` instead of `hex`.
+This local fork is based on official Hex `v3.0.0` merged with `v3.1.1` and `v3.3.0`. It adds a Japanese-only `haas_ja_v1` picker choice and is intended to replace ordinary Hex for daily use. Haas builds enable the backend without any switch: the model is available only when `app_paths::is_haas_build()`. The recommended model and normal Hex behavior remain unchanged; only the data/config directory name is `hex-haas` instead of `hex`.
 
 ## Runtime
 
@@ -77,3 +77,66 @@ Observed on this PC:
 - This small synthetic fixture is not an accuracy benchmark. Haas misrecognized the initial `今日は` as `共和`, while Whisper transcribed it correctly. Better accuracy than Whisper has not been established.
 
 A physical shortcut/microphone/paste test has not been run. The packaged CLI and fixture renders do not prove that the current foreground application consumes a pasted transcript.
+
+## CPU variant (Windows x64, no Vulkan loader)
+
+`Hex-Haas-<version>-windows-x64-cpu.zip` is separate from the existing GPU
+package. Get it from the manually dispatched **Haas CPU build** workflow's
+artifact; no tag trigger or Release publication is configured. Extract all
+three binaries together and run `hex.exe`. Do not mix CPU and GPU files.
+Requirements: Windows 10/11 x64, a CPU from 2013 onward (Haswell / Excavator
+or newer, AVX2); upstream 3.3.0 actually tests AVX2, BMI2, FMA and F16C
+(x86-64-v3), not just AVX2 as the original CPU plan assumed. Inference needs no GPU,
+Vulkan SDK, or `vulkan-1.dll`, but is slower on the CPU. Rune/wgpu display
+support (including DX12 WARP on AVD) is separate and needs a real-PC check.
+
+```powershell
+./scripts/setup-haas-cpu-build-tools.ps1
+./scripts/build-haas-cpu.ps1
+./scripts/build-haas-cpu.ps1 -Check
+./scripts/build-haas-cpu.ps1 -Lint
+./scripts/build-haas-cpu.ps1 -TestFilter haas
+./scripts/package-haas-cpu.ps1
+./dist/haas-cpu/hex.exe --version
+./dist/haas-cpu/hex.exe model devices
+./dist/haas-cpu/hex.exe model install haas_ja_v1 --language ja
+./dist/haas-cpu/hex.exe model transcribe path/to/fixture.wav --model haas_ja_v1 --language ja
+```
+
+The CPU setup hash-verifies CMake 4.4.5 (the same pin as the GPU tools),
+speech.cpp v0.10.0 source at `06590811a90041f935a470ba0e2b85346d2fc041`
+(zip SHA-256 `111cc186abb0e20fbdfa222c0f9f5e52976da1fc51680a0b834a43606a02667e`),
+and nyosegawa/ggml at `700c9d743ed7cc583c0f1b6507afebb6c0e88bc0`
+(zip SHA-256 `3b2722df7f79f02b3f9e5c0acccce2bfa8ff0c687abbd3090ac206bc60fed9b9`).
+It builds/installs static ggml without Vulkan, native-host tuning, OpenMP,
+tests or examples, then builds speech with `SPEECH_INSTALLED_GGML=ON`.
+Both stages use x64 and the static MSVC CRT. Tools stay in `tools/haas-cpu/`.
+
+The CPU Hex build clears `VULKAN_SDK` and `TRANSCRIBE_DIR`, explicitly sets
+`TRANSCRIBE_CMAKE_ARGS=-DGGML_NATIVE=OFF -DTRANSCRIBE_VULKAN=OFF`, and
+overrides Cargo's default `CMAKE_ARGS` with only the static CRT option.
+`CARGO_TARGET_DIR=target-cpu` isolates every build/check/lint/test path;
+none reuses a GPU native prefix. Outputs are `dist/haas-cpu/` and
+`dist/package-cpu/`. Use a fresh shell when switching back to GPU builds.
+The Windows x64 Cargo default is now CPU, including unused upstream generic
+Windows build workflows; only `build-haas.ps1` enables Haas Vulkan builds.
+The Linux Cargo Vulkan feature and the transcribe.cpp pin remain unchanged.
+
+Both packages share `%APPDATA%\hex-haas` and `~/.config/hex-haas`, and both
+disable automatic updates. Quit Hex before switching variants. Upstream
+3.3.0's GGUF Auto/GPU/CPU health/fallback policy is retained; Haas still
+uses its separate speech.cpp worker before transcribe.cpp initialization.
+That GGUF device setting does not control the Haas worker; the packaged
+speech.cpp build determines whether Haas has a GPU backend.
+
+Verification definition: setup checks speech.exe/speech.dll imports, and
+the CPU build checks all three packaged binaries with dumpbin. The new CI
+workflow additionally requires no Vulkan loader on the runner, CLI version
+and device commands, a real Haas model download, and inference on a 3-second
+non-silent synthetic PCM WAV. Japanese SAPI is not assumed; the waveform is
+generated without SAPI, recording or playback. Empty recognition text is
+allowed, but download/load/inference failure blocks the artifact. This
+proves neither Japanese accuracy nor GUI/paste behavior. These Windows
+checks are defined, not observed passing: Windows compilation, real import
+scans, no-loader startup/inference, GPU-link regression, and AVD physical
+dictation/paste/display remain unverified from the Linux implementation host.

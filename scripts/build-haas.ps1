@@ -20,7 +20,8 @@ if ($installationVersion -match '^18\.') {
 } else {
     Remove-Item Env:CMAKE_GENERATOR -ErrorAction SilentlyContinue
 }
-$env:TRANSCRIBE_CMAKE_ARGS = '-DGGML_NATIVE=OFF'
+# x64 Windows defaults to CPU; enable Vulkan on every Haas GPU build/check path.
+$env:TRANSCRIBE_CMAKE_ARGS = '-DGGML_NATIVE=OFF -DTRANSCRIBE_VULKAN=ON'
 $env:CMAKE_BUILD_PARALLEL_LEVEL = '4'
 # MSVC otherwise reads UTF-8 upstream C++ comments as the Japanese system
 # code page, which can swallow source lines after a multibyte character.
