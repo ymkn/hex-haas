@@ -6,8 +6,12 @@ $dist = Join-Path $root 'dist\haas'
 foreach ($file in @('hex.exe', 'speech.exe', 'speech.dll')) {
     if (!(Test-Path (Join-Path $dist $file))) { throw "dist\haas\$file is missing; run scripts/build-haas.ps1 first." }
 }
-$version = ((& (Join-Path $dist 'hex.exe') --version) -split '\s+') | Select-Object -Last 1
-if ($version -notmatch '^[0-9A-Za-z][0-9A-Za-z.+_-]{0,127}$') { throw "Unexpected version '$version'." }
+$versionOutput = (& (Join-Path $dist 'hex.exe') --version 2>&1 | Out-String)
+if ($LASTEXITCODE) { throw 'hex.exe --version failed.' }
+# Drop whitespace-only tokens: the version is the last non-empty one
+# ("hex 3.3.1", or "hex 0.0.0-dev-<run>" on a dev build).
+$version = (@($versionOutput -split '\s+') | Where-Object { $_ } | Select-Object -Last 1)
+if (!$version -or ($version -notmatch '^[0-9A-Za-z][0-9A-Za-z.+_-]{0,127}$')) { throw "Unexpected version '$version'." }
 
 $name = "Hex-Haas-$version-windows-x64"
 $stage = Join-Path $Destination $name
