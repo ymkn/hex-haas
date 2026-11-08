@@ -1,23 +1,6 @@
 param([ValidateSet('x64', 'arm64')][string]$Arch = 'x64')
 $ErrorActionPreference = 'Stop'
-# Downloads flake often enough (GitHub release assets answering 504) to
-# sink an unattended daily build, so every pinned download retries with
-# backoff. The callers hash-verify the result as before.
-function Get-PinnedDownload([string]$Uri, [string]$OutFile) {
-    $ProgressPreference = 'SilentlyContinue'
-    $delays = @(10, 20, 40, 80, 120)
-    for ($attempt = 0; ; $attempt++) {
-        try {
-            Invoke-WebRequest $Uri -OutFile $OutFile
-            return
-        } catch {
-            if ($attempt -ge $delays.Count) { throw }
-            Write-Warning "Download of $Uri failed ($($_.Exception.Message)); retry $($attempt + 1) in $($delays[$attempt])s."
-            Remove-Item $OutFile -Force -ErrorAction SilentlyContinue
-            Start-Sleep -Seconds $delays[$attempt]
-        }
-    }
-}
+. (Join-Path $PSScriptRoot 'haas-common.ps1')
 $root = Split-Path $PSScriptRoot -Parent
 $tools = Join-Path $root 'tools\haas-cpu'
 if ($Arch -eq 'arm64') { $tools = Join-Path $root 'tools\haas-cpu-arm64' }

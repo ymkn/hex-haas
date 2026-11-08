@@ -1,22 +1,5 @@
 $ErrorActionPreference = 'Stop'
-# Downloads flake often enough (GitHub release assets answering 504) to
-# sink an unattended daily build, so every pinned download retries with
-# backoff. The callers hash-verify the result as before.
-function Get-PinnedDownload([string]$Uri, [string]$OutFile) {
-    $ProgressPreference = 'SilentlyContinue'
-    $delays = @(10, 20, 40, 80, 120)
-    for ($attempt = 0; ; $attempt++) {
-        try {
-            Invoke-WebRequest $Uri -OutFile $OutFile
-            return
-        } catch {
-            if ($attempt -ge $delays.Count) { throw }
-            Write-Warning "Download of $Uri failed ($($_.Exception.Message)); retry $($attempt + 1) in $($delays[$attempt])s."
-            Remove-Item $OutFile -Force -ErrorAction SilentlyContinue
-            Start-Sleep -Seconds $delays[$attempt]
-        }
-    }
-}
+. (Join-Path $PSScriptRoot 'haas-common.ps1')
 $root = Split-Path $PSScriptRoot -Parent
 $tools = Join-Path $root 'tools\haas'
 New-Item -ItemType Directory -Force $tools | Out-Null
@@ -50,6 +33,10 @@ if (!(Test-Path $headersArchive)) {
 if ((Get-FileHash $headersArchive -Algorithm SHA256).Hash -ne '3760505ffbd3589de77e1b9f5ba11eaac13d3c86869588e19f3df3e0fac7e69c') { throw 'Vulkan-Headers checksum mismatch' }
 if (!(Test-Path "$tools\vulkan-headers")) { Expand-Archive $headersArchive "$tools\vulkan-headers" }
 $sdk = Join-Path $tools 'vulkan'
+# The SDK tree below is assembled entirely by this script; rebuild it from
+# scratch so files from an older pin cannot survive (same reasoning as the
+# spirv-build clear below).
+Remove-Item $sdk -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force "$sdk\Include", "$sdk\Lib", "$sdk\Bin" | Out-Null
 $include = Get-ChildItem "$tools\vulkan-headers" -Directory | Select-Object -First 1
 Copy-Item "$($include.FullName)\include\*" "$sdk\Include" -Recurse -Force
