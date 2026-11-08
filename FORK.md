@@ -110,9 +110,18 @@ Releases に `Hex-Haas-<version>-windows-x64.zip`（GPU版）、
 - 展開して `hex.exe` を実行するだけです。`speech.exe` と `speech.dll` は同じフォルダーに置きます。
 - 必要なものは Windows 10/11 x64 と Vulkan対応GPUドライバーのみ。Haasモデルは初回起動後にモデル選択からダウンロードします（huggingface.co）。
 - コード署名はありません。`SHA256SUMS` でハッシュを確認し、SmartScreenの警告は「詳細情報」から実行を続けてください。
-- データは `%APPDATA%\hex-haas`（設定・履歴）と `%LOCALAPPDATA%\hex-haas`（モデル・ログ）に作られ、公式Hexとは混ざりません。自動更新はありません。
+- データは `%APPDATA%\hex-haas`（設定・履歴）と `%LOCALAPPDATA%\hex-haas`（モデル・ログ）に作られ、公式Hexとは混ざりません。更新は配置先フォルダーで `hex haas-upgrade` を実行して手動で行います（後述）。
 
-リリースの作り方（自分用）: `haas-v<バージョン>` 形式のタグをpushすると Actions の「Haas release」がGPU版・x64 CPU版・ARM64 CPU版をビルドして、3つのzipと統合したSHA256SUMSを1つのリリースに登録します。タグなしの `workflow_dispatch` は同じビルドを検証し、成果物をworkflowのartifactとして残すだけです。ローカルでも `./scripts/build-haas.ps1` の後に `./scripts/package-haas.ps1`、CPU版は `./scripts/build-haas-cpu.ps1`（ARM64は `-Arch arm64`）の後に `./scripts/package-haas-cpu.ps1` で同じzipを作れます。
+リリースの作り方（自分用）: `haas-v<バージョン>` 形式のタグをpushすると Actions の「Haas release」がGPU版・x64 CPU版・ARM64 CPU版をビルドして、3つのzipと統合したSHA256SUMS、それに `manifest.json`（バリアント別のファイル名・SHA-256・サイズ）を1つのリリースに登録します。タグなしの `workflow_dispatch` は同じビルドを検証し、成果物をworkflowのartifactとして残すだけです。ローカルでも `./scripts/build-haas.ps1` の後に `./scripts/package-haas.ps1`、CPU版は `./scripts/build-haas-cpu.ps1`（ARM64は `-Arch arm64`）の後に `./scripts/package-haas-cpu.ps1` で同じzipを作れます。
+
+## デイリービルドと端末側アップデート
+
+- Actions の「Haas daily sync and build」が毎日03:30（JST）に上流 `anomalyco/hex` の `dev` を `haas` にマージします。きれいにマージできればそのまま push し、3バリアントを再ビルドして prerelease `haas-daily` を差し替えます。コンフリクトしたらマージを取りやめ（`haas` は変更しません）、`haas-sync-conflict` ラベルの Issue で知らせます。上流にもフォークにも前回のデイリーから差分がない日はビルドしません。手動 dispatch の `force` で強制実行できます。
+- 各パッケージの zip には `haas-build.json`（variant / channel / version / build）が入り、各リリースには `manifest.json` が付きます。
+- 導入済み端末での更新は、Hex を終了してから配置フォルダーで `hex haas-upgrade` を実行します。自分のチャンネルの最新 `manifest.json` と比べて新しければ、同じバリアントの zip をダウンロードし、サイズと SHA-256 を検証してからファイルを入れ替えます。`--check` は確認のみ、`--yes` は確認プロンプト省略、`--channel daily|stable` はチャンネルの一時上書きです。
+- チャンネルはパッケージ側で決まります。タグ版は stable（最新の `haas-v*` リリースを追う）、デイリー版は daily（`haas-daily` を追う）。
+- `haas-build.json` がない旧パッケージ（v3.3.1まで）は、初回だけ `hex haas-upgrade --variant gpu`（CPU版は `--variant cpu`、ARM64版は `--variant arm64`）とバリアントを指定してください。以後はマーカーで自動判定されます。
+- 入れ替えの際、実行中の `hex.exe` は `hex.exe.upgrade-old` に退避してから差し替えます（古いファイルは次回以降の実行時に削除を試みます）。配置フォルダーへの書き込み権限が必要です。Hex 本体が起動中だと `speech.exe` / `speech.dll` のロックで入れ替え前に停止します。
 
 ## GPUなしのCPUバリアント（Windows x64 / ARM64）
 
@@ -153,7 +162,7 @@ CPU構成になるため、HaasのGPU版には使わないでください。Linu
 
 設定・履歴・モデルはGPU版と同じ `%APPDATA%\hex-haas` と `%LOCALAPPDATA%\hex-haas`、ユーザー設定は
 `~/.config/hex-haas` です。切り替える前にHexを終了し、GPU版のexe/DLLを混ぜないでください。
-CPU版も自動更新・コード署名なしで、モデルは初回にダウンロードします。
+CPU版もコード署名なしで、モデルは初回にダウンロードします。更新はGPU版と同じく `hex haas-upgrade` で行います。
 
 ## ARM64 CPUバリアント（Windows ARM64）
 

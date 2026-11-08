@@ -1,0 +1,129 @@
+# Daily upstream sync and build for the Haas fork.
+#
+#   - Fetches anomalyco/hex `dev` and merges it into `haas`. A clean merge
+#     is pushed straight to `haas`; a conflict aborts the merge, leaves
+#     `haas` untouched, and is reported on a tracking issue instead.
+#   - When upstream moved, the fork moved since the last daily, or a manual
+#     dispatch forces it, the three Windows variants are rebuilt through
+#     release-haas.yml and published to the rolling `haas-daily`
+#     prerelease, which `hex haas-upgrade` follows on the daily channel.
+#
+# Pushes made here use GITHUB_TOKEN, so they do not trigger other
+# workflows; the build below is a workflow_call inside this same run.
+name: Haas daily sync and build
+
+on:
+  schedule:
+    # 03:30 JST.
+    - cron: '30 18 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Build even if neither upstream nor the fork changed'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: haas-daily
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      proceed: ${{ steps.decide.outputs.proceed }}
+      build_id: ${{ steps.decide.outputs.build_id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: haas
+          fetch-depth: 0
+      - name: Merge upstream dev into haas
+        id: merge
+        run: |
+          set -uo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git remote add upstream https://github.com/anomalyco/hex.git
+          git fetch --no-tags upstream dev
+          upstream_short=$(git rev-parse --short upstream/dev)
+          echo "upstream_short=$upstream_short" >> "$GITHUB_OUTPUT"
+          if git merge-base --is-ancestor upstream/dev HEAD; then
+            echo 'Upstream dev has no commits past the last merge.'
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+            echo 'conflict=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git merge --no-ff upstream/dev -m "Merge official Hex dev ($upstream_short) into the Haas fork (daily sync)"; then
+            git push origin HEAD:haas
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+            echo 'conflict=false' >> "$GITHUB_OUTPUT"
+          else
+            git diff --name-only --diff-filter=U | sort > conflict-files.txt
+            git merge --abort || true
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+            echo 'conflict=true' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Report a sync conflict on the tracking issue
+        if: steps.merge.outputs.conflict == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          gh label create haas-sync-conflict --color B60205 --description 'Daily upstream sync needs a manual merge' --force
+          {
+            echo "上流 \`anomalyco/hex\` の dev（${{ steps.merge.outputs.upstream_short }}）を haas にマージしようとしてコンフリクトした。haas は変更していない。"
+            echo
+            echo 'コンフリクトしたファイル:'
+            echo '```'
+            cat conflict-files.txt
+            echo '```'
+            echo
+            echo "手動でマージを解決するまで、デイリービルドはこの世代で止まる。解決したらこの Issue を閉じてよい（次のコンフリクトで再作成される）。"
+            echo
+            echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          } > issue-body.md
+          existing=$(gh issue list --label haas-sync-conflict --state open --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file issue-body.md
+          else
+            gh issue create --title '上流 dev の同期がコンフリクトで止まっている' --label haas-sync-conflict --body-file issue-body.md
+          fi
+      - name: Decide whether to build
+        id: decide
+        run: |
+          set -uo pipefail
+          echo "build_id=$(TZ=Asia/Tokyo date +'%Y%m%d-%H%M')" >> "$GITHUB_OUTPUT"
+          proceed=false
+          if [ '${{ steps.merge.outputs.conflict }}' = 'true' ]; then
+            proceed=false
+          elif [ '${{ steps.merge.outputs.changed }}' = 'true' ]; then
+            proceed=true
+          elif [ '${{ github.event_name }}' = 'workflow_dispatch' ] && [ '${{ inputs.force }}' = 'true' ]; then
+            proceed=true
+          else
+            last_source=$(curl -fsSL "https://github.com/${{ github.repository }}/releases/download/haas-daily/manifest.json" | python3 -c 'import sys, json; print(json.load(sys.stdin).get("source", ""))' 2>/dev/null || echo '')
+            if [ "$last_source" != "$(git rev-parse HEAD)" ]; then
+              proceed=true
+            fi
+          fi
+          echo "proceed=$proceed" >> "$GITHUB_OUTPUT"
+          echo "Build: $proceed"
+
+  build:
+    needs: sync
+    if: needs.sync.outputs.proceed == 'true'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release-haas.yml
+    with:
+      channel: daily
+      build_id: ${{ needs.sync.outputs.build_id }}
+      publish_daily: true
+    secrets: inherit

@@ -3,6 +3,7 @@ pub(crate) mod audio_control;
 pub(crate) mod context;
 pub(crate) mod dictation;
 pub(crate) mod gpu_fallback;
+pub(crate) mod haas_upgrade;
 pub(crate) mod input;
 pub(crate) mod login_item;
 pub(crate) mod paste;
@@ -89,6 +90,22 @@ enum Command {
         #[arg(long)]
         embedded: bool,
     },
+    /// (Haas fork) Update this install from the fork's GitHub releases.
+    #[command(name = "haas-upgrade")]
+    HaasUpgrade {
+        /// Only report whether an update is available.
+        #[arg(long)]
+        check: bool,
+        /// Install without asking for confirmation.
+        #[arg(long)]
+        yes: bool,
+        /// Channel to follow, stable or daily (default: the channel in haas-build.json).
+        #[arg(long)]
+        channel: Option<String>,
+        /// Variant to install, gpu, cpu or arm64 (needed once for packages without haas-build.json).
+        #[arg(long)]
+        variant: Option<String>,
+    },
     /// List microphone devices visible through WASAPI.
     Devices,
     /// Compare live-stream and full-clip transcription of a WAV file.
@@ -158,6 +175,17 @@ pub fn run(shutdown: &'static AtomicBool) -> Result<()> {
     // log, lock, or Hex of their own.
     if let Command::Control(command) = command {
         crate::control::cli::finish(crate::control::cli::run(command));
+    }
+    // The fork's self-update runs locally like a control command: no log,
+    // lock, or Hex of its own.
+    if let Command::HaasUpgrade {
+        check,
+        yes,
+        channel,
+        variant,
+    } = command
+    {
+        crate::control::cli::finish(haas_upgrade::run(check, yes, channel, variant));
     }
     // A headless render (`--snap`) draws fixtures without starting the
     // runtime or touching the data folder, and prints to the terminal that

@@ -7,6 +7,11 @@
 #     and a combined SHA256SUMS.
 #   - A manual dispatch builds and uploads the same zips as workflow
 #     artifacts, so a change can be verified before tagging.
+#   - The daily workflow (daily-haas.yml) calls this workflow with
+#     publish_daily to refresh the rolling `haas-daily` prerelease.
+#   - Every published release also carries a manifest.json (per-variant
+#     file name, SHA-256 and size, plus channel/version/build), which is
+#     what `hex haas-upgrade` on an installed copy reads to update itself.
 #
 # The build is not code-signed: SmartScreen may warn, and the release notes
 # point at SHA256SUMS for verification. Mirrors upstream's windows-x64 job
@@ -15,6 +20,20 @@ name: Haas release
 
 on:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      channel:
+        description: 'Channel recorded in haas-build.json (stable or daily)'
+        type: string
+        default: stable
+      build_id:
+        description: 'Build id recorded in haas-build.json (empty = timestamp)'
+        type: string
+        default: ''
+      publish_daily:
+        description: 'Publish the packages to the rolling haas-daily prerelease'
+        type: boolean
+        default: false
   push:
     tags:
       - 'haas-v*'
@@ -52,6 +71,10 @@ jobs:
       - name: Package
         working-directory: source
         shell: pwsh
+        env:
+          HAAS_CHANNEL: ${{ inputs.channel || 'stable' }}
+          HAAS_BUILD: ${{ inputs.build_id }}
+          HAAS_SOURCE: ${{ github.sha }}
         run: ./scripts/package-haas.ps1 -Destination ..\out
       - name: Upload the package as an artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
@@ -61,6 +84,7 @@ jobs:
             out/*.zip
             out/SHA256SUMS
             out/RELEASE-NOTES.md
+            out/haas-build.json
           if-no-files-found: error
 
   windows-x64-cpu:
@@ -146,6 +170,10 @@ jobs:
           & ./dist/haas-cpu/hex.exe model transcribe $wav --model haas_ja_v1 --language ja
           if ($LASTEXITCODE) { throw 'Haas CPU inference failed.' }
       - name: Package
+        env:
+          HAAS_CHANNEL: ${{ inputs.channel || 'stable' }}
+          HAAS_BUILD: ${{ inputs.build_id }}
+          HAAS_SOURCE: ${{ github.sha }}
         run: ./scripts/package-haas-cpu.ps1 -Destination ..\out-cpu
       - name: Upload the CPU package as an artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
@@ -155,6 +183,7 @@ jobs:
             out-cpu/*.zip
             out-cpu/SHA256SUMS
             out-cpu/RELEASE-NOTES.md
+            out-cpu/haas-build.json
           if-no-files-found: error
 
   windows-arm64-cpu:
@@ -245,6 +274,10 @@ jobs:
           & ./dist/haas-cpu-arm64/hex.exe model transcribe $wav --model haas_ja_v1 --language ja
           if ($LASTEXITCODE) { throw 'Haas ARM64 CPU inference failed.' }
       - name: Package
+        env:
+          HAAS_CHANNEL: ${{ inputs.channel || 'stable' }}
+          HAAS_BUILD: ${{ inputs.build_id }}
+          HAAS_SOURCE: ${{ github.sha }}
         run: ./scripts/package-haas-cpu.ps1 -Arch arm64 -Destination ..\out-cpu-arm64
       - name: Upload the ARM64 CPU package as an artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
@@ -254,10 +287,11 @@ jobs:
             out-cpu-arm64/*.zip
             out-cpu-arm64/SHA256SUMS
             out-cpu-arm64/RELEASE-NOTES.md
+            out-cpu-arm64/haas-build.json
           if-no-files-found: error
 
   publish:
-    if: startsWith(github.ref, 'refs/tags/haas-v')
+    if: startsWith(github.ref, 'refs/tags/haas-v') || inputs.publish_daily
     needs: [windows-x64, windows-x64-cpu, windows-arm64-cpu]
     runs-on: windows-latest
     timeout-minutes: 15
@@ -293,5 +327,49 @@ jobs:
           $sums | Set-Content (Join-Path $assetsDir 'SHA256SUMS') -Encoding ascii
           $notes = (Get-Content out\RELEASE-NOTES.md -Raw) + "`n" + (Get-Content out-cpu\RELEASE-NOTES.md -Raw) + "`n" + (Get-Content out-cpu-arm64\RELEASE-NOTES.md -Raw)
           $notes | Set-Content (Join-Path $assetsDir 'RELEASE-NOTES.md') -Encoding utf8NoBOM
-          $assets = Get-ChildItem $assetsDir\Hex-Haas-*.zip, $assetsDir\SHA256SUMS | ForEach-Object { $_.FullName }
-          gh release create "${{ github.ref_name }}" --title "${{ github.ref_name }}" --notes-file (Join-Path $assetsDir 'RELEASE-NOTES.md') @assets
+          # Compose manifest.json from the per-variant haas-build.json
+          # sidecars: `hex haas-upgrade` reads it to find its own variant's
+          # asset and verify the download against the recorded SHA-256.
+          $markers = [ordered]@{}
+          foreach ($entry in @(@('gpu', 'out'), @('cpu', 'out-cpu'), @('arm64', 'out-cpu-arm64'))) {
+              $markers[$entry[0]] = Get-Content (Join-Path $entry[1] 'haas-build.json') -Raw | ConvertFrom-Json
+          }
+          $base = $markers['gpu']
+          foreach ($name in @('cpu', 'arm64')) {
+              if ($markers[$name].version -ne $base.version -or $markers[$name].channel -ne $base.channel -or $markers[$name].build -ne $base.build) {
+                  throw "haas-build.json mismatch between gpu and $name."
+              }
+          }
+          $sumByFile = @{}
+          foreach ($line in $sums) {
+              if ($line -match '^([0-9a-f]{64})\s+(.+)$') { $sumByFile[$Matches[2].Trim()] = $Matches[1] }
+          }
+          $manifestAssets = [ordered]@{}
+          foreach ($entry in @(@('gpu', 'out'), @('cpu', 'out-cpu'), @('arm64', 'out-cpu-arm64'))) {
+              $zipFile = Get-ChildItem (Join-Path $entry[1] 'Hex-Haas-*.zip') | Select-Object -First 1
+              if (!$sumByFile.ContainsKey($zipFile.Name)) { throw "SHA256SUMS has no entry for $($zipFile.Name)." }
+              $manifestAssets[$entry[0]] = [ordered]@{ file = $zipFile.Name; sha256 = $sumByFile[$zipFile.Name]; size = $zipFile.Length }
+          }
+          $manifest = [ordered]@{
+              product   = 'hex-haas'
+              channel   = $base.channel
+              version   = $base.version
+              build     = $base.build
+              source    = $base.source
+              published = (Get-Date).ToUniversalTime().ToString('o')
+              assets    = $manifestAssets
+          }
+          $manifest | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $assetsDir 'manifest.json') -Encoding utf8NoBOM
+          $assets = Get-ChildItem $assetsDir\Hex-Haas-*.zip, $assetsDir\SHA256SUMS, $assetsDir\manifest.json | ForEach-Object { $_.FullName }
+          if ('${{ inputs.publish_daily }}' -eq 'true') {
+              $null = gh release view haas-daily --json tagName 2>$null
+              if ($LASTEXITCODE -eq 0) {
+                  gh release delete haas-daily --yes --cleanup-tag
+                  if ($LASTEXITCODE) { throw 'Failed to delete the previous haas-daily release.' }
+              }
+              $dailyNotes = "Daily build $($base.build) of Hex Haas $($base.version), from source $($base.source).`n`n" + $notes
+              $dailyNotes | Set-Content (Join-Path $assetsDir 'RELEASE-NOTES.md') -Encoding utf8NoBOM
+              gh release create haas-daily --prerelease --target "${{ github.sha }}" --title "Haas daily build $($base.build)" --notes-file (Join-Path $assetsDir 'RELEASE-NOTES.md') @assets
+          } else {
+              gh release create "${{ github.ref_name }}" --title "${{ github.ref_name }}" --notes-file (Join-Path $assetsDir 'RELEASE-NOTES.md') @assets
+          }

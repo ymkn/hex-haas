@@ -33,7 +33,7 @@ Hex Haas — Windows ARM64 CPU（非公式フォークビルド）
   終了してください。公式Hexのデータとは混ざりません。
 
 注意
-  - 自動更新・コード署名はありません。SHA256SUMSでzipのハッシュを確認してください。
+  - 自動更新・コード署名はありません。更新はこのフォルダーで hex haas-upgrade を実行してください。SHA256SUMSでzipのハッシュを確認してください。
   - 初回起動時にSmartScreenの警告が出ることがあります。
   - Haasモデル（Apache-2.0）は同梱していません。起動後にダウンロードされます。
   - ARM64 CPU版はhaas-v*タグのReleaseにx64 GPU/CPU版と一緒に登録されます。

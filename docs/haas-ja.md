@@ -52,9 +52,20 @@ SPIRV-Headers commit `496543121ce6419f23d6fa5d7194ba66c36212d2` is also installe
 ./scripts/build-haas.ps1 -TestFilter haas
 ```
 
-Launch `dist/haas/hex.exe` directly, or use `Start-Hex-Haas.cmd` as a convenience. Both use `%APPDATA%\hex-haas` for settings and history, `%LOCALAPPDATA%\hex-haas` for logs and models (upstream's post-v3.3.0 move of Windows logs and models to Local AppData; the fork's Local folder keeps the fork name so models never mix with the installed Hex's), and `~/.config/hex-haas` for `hex.config.ts`. No special launch environment is required, no settings are automatically copied or forced, and Hex's ordinary single-instance handling applies. Launch at login uses the unmodified Windows registration behavior. As with any official local build, automatic updates are off; rebuild to update the fork.
+Launch `dist/haas/hex.exe` directly, or use `Start-Hex-Haas.cmd` as a convenience. Both use `%APPDATA%\hex-haas` for settings and history, `%LOCALAPPDATA%\hex-haas` for logs and models (upstream's post-v3.3.0 move of Windows logs and models to Local AppData; the fork's Local folder keeps the fork name so models never mix with the installed Hex's), and `~/.config/hex-haas` for `hex.config.ts`. No special launch environment is required, no settings are automatically copied or forced, and Hex's ordinary single-instance handling applies. Launch at login uses the unmodified Windows registration behavior. As with any official local build, the in-app updater is off; local builds rebuild to update, and packaged installs use `hex haas-upgrade` (below).
 
 The former checkout-local `haas-data/` and `haas-config/` directories are no longer used. To keep that profile, quit Hex and move them to the corresponding `hex-haas` directories, only when the destinations do not already contain data. The ordinary `hex` directories remain untouched. There is no parallel-install or launcher-switching mechanism; uninstall the official application if replacing it, keeping its old data if desired.
+
+## Updating a packaged install
+
+Packaged installs update with the fork's own CLI (the upstream in-app updater stays off). Quit Hex first, then run in the install folder:
+
+```powershell
+hex haas-upgrade          # check, confirm, download, verify, swap in place
+hex haas-upgrade --check  # report only
+```
+
+Each package carries `haas-build.json` (variant, channel, version, build); each release carries a `manifest.json` with the per-variant file name, size and SHA-256, and the download is verified against it before any file is replaced. The stable channel follows the newest `haas-v*` release; the daily channel follows the rolling `haas-daily` prerelease published by the daily upstream-sync workflow, which merges `anomalyco/hex` dev into the fork every morning (conflicts stop the sync and are reported on an issue instead). Packages from before the marker (up to v3.3.1) need `--variant gpu`, `--variant cpu` or `--variant arm64` on the first run. The running `hex.exe` is renamed to `hex.exe.upgrade-old` and replaced; later runs remove the old file. A still-running Hex locks `speech.exe`/`speech.dll`, and the lock check stops the swap before anything changes.
 
 ## Verification
 
