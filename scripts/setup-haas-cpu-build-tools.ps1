@@ -1,5 +1,23 @@
 param([ValidateSet('x64', 'arm64')][string]$Arch = 'x64')
 $ErrorActionPreference = 'Stop'
+# Downloads flake often enough (GitHub release assets answering 504) to
+# sink an unattended daily build, so every pinned download retries with
+# backoff. The callers hash-verify the result as before.
+function Get-PinnedDownload([string]$Uri, [string]$OutFile) {
+    $ProgressPreference = 'SilentlyContinue'
+    $delays = @(10, 20, 40, 80, 120)
+    for ($attempt = 0; ; $attempt++) {
+        try {
+            Invoke-WebRequest $Uri -OutFile $OutFile
+            return
+        } catch {
+            if ($attempt -ge $delays.Count) { throw }
+            Write-Warning "Download of $Uri failed ($($_.Exception.Message)); retry $($attempt + 1) in $($delays[$attempt])s."
+            Remove-Item $OutFile -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds $delays[$attempt]
+        }
+    }
+}
 $root = Split-Path $PSScriptRoot -Parent
 $tools = Join-Path $root 'tools\haas-cpu'
 if ($Arch -eq 'arm64') { $tools = Join-Path $root 'tools\haas-cpu-arm64' }
@@ -9,7 +27,7 @@ New-Item -ItemType Directory -Force $tools | Out-Null
 if ($Arch -eq 'x64') {
     $cmakeZip = Join-Path $tools 'cmake.zip'
     if (!(Test-Path $cmakeZip)) {
-        Invoke-WebRequest 'https://github.com/Kitware/CMake/releases/download/v4.4.5/cmake-4.4.5-windows-x86_64.zip' -OutFile $cmakeZip
+        Get-PinnedDownload 'https://github.com/Kitware/CMake/releases/download/v4.4.5/cmake-4.4.5-windows-x86_64.zip' -OutFile $cmakeZip
     }
     if ((Get-FileHash $cmakeZip -Algorithm SHA256).Hash -ne '326c826486d46a23cf9d5a1c9ee3a567d427bdd02c4a34071937a2a675cff004') { throw 'CMake checksum mismatch' }
     if (!(Test-Path "$tools\cmake\cmake-4.4.5-windows-x86_64\bin\cmake.exe")) { Expand-Archive $cmakeZip "$tools\cmake" }
@@ -40,7 +58,7 @@ if ($Arch -eq 'x64') {
     # OpenMP).
     $cmakeZip = Join-Path $tools 'cmake.zip'
     if (!(Test-Path $cmakeZip)) {
-        Invoke-WebRequest 'https://github.com/Kitware/CMake/releases/download/v4.4.5/cmake-4.4.5-windows-arm64.zip' -OutFile $cmakeZip
+        Get-PinnedDownload 'https://github.com/Kitware/CMake/releases/download/v4.4.5/cmake-4.4.5-windows-arm64.zip' -OutFile $cmakeZip
     }
     if ((Get-FileHash $cmakeZip -Algorithm SHA256).Hash -ne 'B0B54EBDD3E7B9F5AD733D865541D6E0A3B774182E4318B26890221432835359') { throw 'CMake checksum mismatch' }
     if (!(Test-Path "$tools\cmake\cmake-4.4.5-windows-arm64\bin\cmake.exe")) {
@@ -50,7 +68,7 @@ if ($Arch -eq 'x64') {
     }
     $ninjaZip = Join-Path $tools 'ninja.zip'
     if (!(Test-Path $ninjaZip)) {
-        Invoke-WebRequest 'https://github.com/ninja-build/ninja/releases/download/v1.12.1/ninja-winarm64.zip' -OutFile $ninjaZip
+        Get-PinnedDownload 'https://github.com/ninja-build/ninja/releases/download/v1.12.1/ninja-winarm64.zip' -OutFile $ninjaZip
     }
     if ((Get-FileHash $ninjaZip -Algorithm SHA256).Hash -ne '79C96A50E0DEAFEC212CFA85AA57C6B74003F52D9D1673DDCD1EAB1C958C5900') { throw 'Ninja checksum mismatch' }
     if (!(Test-Path "$tools\ninja\ninja.exe")) {
@@ -61,7 +79,7 @@ if ($Arch -eq 'x64') {
     }
     $llvmArchive = Join-Path $tools 'llvm.tar.xz'
     if (!(Test-Path $llvmArchive)) {
-        Invoke-WebRequest 'https://github.com/llvm/llvm-project/releases/download/llvmorg-20.1.8/clang+llvm-20.1.8-aarch64-pc-windows-msvc.tar.xz' -OutFile $llvmArchive
+        Get-PinnedDownload 'https://github.com/llvm/llvm-project/releases/download/llvmorg-20.1.8/clang+llvm-20.1.8-aarch64-pc-windows-msvc.tar.xz' -OutFile $llvmArchive
     }
     if ((Get-FileHash $llvmArchive -Algorithm SHA256).Hash -ne '0DF3E81E8FE26370DD2B60B9E009D81CD130D3FDC41B257434AA663C5D9F0C13') { throw 'LLVM checksum mismatch' }
     if (!(Test-Path "$tools\llvm\bin\clang-cl.exe")) {
@@ -103,7 +121,7 @@ if ($Arch -eq 'x64') {
 }
 $speechArchive = Join-Path $tools 'speech-source.zip'
 if (!(Test-Path $speechArchive)) {
-    Invoke-WebRequest 'https://github.com/nyosegawa/speech.cpp/archive/06590811a90041f935a470ba0e2b85346d2fc041.zip' -OutFile $speechArchive
+    Get-PinnedDownload 'https://github.com/nyosegawa/speech.cpp/archive/06590811a90041f935a470ba0e2b85346d2fc041.zip' -OutFile $speechArchive
 }
 if ((Get-FileHash $speechArchive -Algorithm SHA256).Hash -ne '111cc186abb0e20fbdfa222c0f9f5e52976da1fc51680a0b834a43606a02667e') { throw 'speech.cpp source checksum mismatch' }
 if (!(Test-Path "$tools\speech-source")) {
@@ -114,7 +132,7 @@ if (!(Test-Path "$tools\speech-source")) {
 # GitHub's zip omits submodules: obtain the exact ggml commit separately.
 $ggmlArchive = Join-Path $tools 'ggml-source.zip'
 if (!(Test-Path $ggmlArchive)) {
-    Invoke-WebRequest 'https://github.com/nyosegawa/ggml/archive/700c9d743ed7cc583c0f1b6507afebb6c0e88bc0.zip' -OutFile $ggmlArchive
+    Get-PinnedDownload 'https://github.com/nyosegawa/ggml/archive/700c9d743ed7cc583c0f1b6507afebb6c0e88bc0.zip' -OutFile $ggmlArchive
 }
 if ((Get-FileHash $ggmlArchive -Algorithm SHA256).Hash -ne '3b2722df7f79f02b3f9e5c0acccce2bfa8ff0c687abbd3090ac206bc60fed9b9') { throw 'ggml source checksum mismatch' }
 if (!(Test-Path "$tools\ggml-source")) {
