@@ -28,7 +28,8 @@ Hex Haas — Windows x64 CPU（非公式フォークビルド）
     マイク・ショートカット・貼り付けが動くかは実機で確認してください。
 
 データの保存先
-  設定・履歴・モデル : %APPDATA%\hex-haas
+  設定・履歴 : %APPDATA%\hex-haas
+  モデル・ログ : %LOCALAPPDATA%\hex-haas
   hex.config.ts      : %USERPROFILE%\.config\hex-haas
   GPU版と同じ保存先を共有します。切り替える前に起動中のHexを終了してください。
   公式Hexのデータとは混ざりません。

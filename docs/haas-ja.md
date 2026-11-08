@@ -52,7 +52,7 @@ SPIRV-Headers commit `496543121ce6419f23d6fa5d7194ba66c36212d2` is also installe
 ./scripts/build-haas.ps1 -TestFilter haas
 ```
 
-Launch `dist/haas/hex.exe` directly, or use `Start-Hex-Haas.cmd` as a convenience. Both use `%APPDATA%\hex-haas` for settings, history, logs and models, and `~/.config/hex-haas` for `hex.config.ts`. No special launch environment is required, no settings are automatically copied or forced, and Hex's ordinary single-instance handling applies. Launch at login uses the unmodified Windows registration behavior. As with any official local build, automatic updates are off; rebuild to update the fork.
+Launch `dist/haas/hex.exe` directly, or use `Start-Hex-Haas.cmd` as a convenience. Both use `%APPDATA%\hex-haas` for settings and history, `%LOCALAPPDATA%\hex-haas` for logs and models (upstream's post-v3.3.0 move of Windows logs and models to Local AppData; the fork's Local folder keeps the fork name so models never mix with the installed Hex's), and `~/.config/hex-haas` for `hex.config.ts`. No special launch environment is required, no settings are automatically copied or forced, and Hex's ordinary single-instance handling applies. Launch at login uses the unmodified Windows registration behavior. As with any official local build, automatic updates are off; rebuild to update the fork.
 
 The former checkout-local `haas-data/` and `haas-config/` directories are no longer used. To keep that profile, quit Hex and move them to the corresponding `hex-haas` directories, only when the destinations do not already contain data. The ordinary `hex` directories remain untouched. There is no parallel-install or launcher-switching mechanism; uninstall the official application if replacing it, keeping its old data if desired.
 
@@ -123,7 +123,10 @@ The Windows x64 Cargo default is now CPU, including unused upstream generic
 Windows build workflows; only `build-haas.ps1` enables Haas Vulkan builds.
 The Linux Cargo Vulkan feature and the transcribe.cpp pin remain unchanged.
 
-Both packages share `%APPDATA%\hex-haas` and `~/.config/hex-haas`, and both
+Both packages share `%APPDATA%\hex-haas` (settings, history),
+`%LOCALAPPDATA%\hex-haas` (models, logs; the fork's own Local folder, named
+like the Roaming one since upstream #1432 moved Windows models there), and
+`~/.config/hex-haas`, and both
 disable automatic updates. Quit Hex before switching variants. Upstream
 3.3.0's GGUF Auto/GPU/CPU health/fallback policy is retained; Haas still
 uses its separate speech.cpp worker before transcribe.cpp initialization.
@@ -184,3 +187,19 @@ The build script refuses to run on a non-ARM64 host because the pinned
 clang-cl is an ARM64 binary. Both dumpbin import scans and an ARM64
 machine-type header check gate the build; the CI ARM64 job adds the same
 CLI startup, model download, and synthetic-WAV inference gates as x64.
+
+Observed on 2026-11-08, on the Snapdragon X 10-core (X1P64100 @ 3.40 GHz,
+16 GB) ARM64 Windows 11 PC this fork is built on: the setup script produced
+speech.exe/speech.dll whose only imports are KERNEL32 and ADVAPI32, all
+three binaries pass the ARM64 machine-type header check, `cargo check`,
+`cargo clippy -D warnings`, and every haas-filtered test pass, and the
+packaged hex.exe (3.3.1) reports its version, enumerates the CPU device,
+downloads the 656 MB Haas model from Hugging Face, and transcribes the
+3-second synthetic WAV on the CPU in about 2 seconds including the model
+load. This proves neither Japanese accuracy nor GUI/paste behavior; those
+still need the real microphone, shortcut, and paste checks on this PC.
+One fork adaptation was required by this verification: upstream's move of
+Windows logs and models to Local AppData (#1432) added a Local folder that
+the fork's `hex-haas` rename had not covered, so a Haas build would have
+mixed its models into the installed Hex's `%LOCALAPPDATA%\hex`; the rename
+now covers the Local folder (`%LOCALAPPDATA%\hex-haas`) with a test.

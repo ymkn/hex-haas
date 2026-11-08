@@ -12,7 +12,8 @@ Haasは speech.cpp v0.10.0 の常駐worker経由で動きます。Whisperなど�
 
 Haas対応以外の使い方は通常のHexと同じで、ログイン時起動も通常どおり使えます。保存先のディレクトリ名だけを `hex` から `hex-haas` に変えています。
 
-- 設定・履歴・ログ・モデル: `%APPDATA%\hex-haas`
+- 設定・履歴: `%APPDATA%\hex-haas`
+- モデル・ログ: `%LOCALAPPDATA%\hex-haas`（上流のWindows配置に従う。上流 v3.3.0 時点の `%APPDATA%` 配置から移動済み）
 - `hex.config.ts`: `~/.config/hex-haas`
 
 `dist/haas/hex.exe` を直接起動できます。専用の環境変数や起動先切り替えは不要です。ローカルビルドのため、公式のローカルビルドと同じく自動更新は行いません。
@@ -109,7 +110,7 @@ Releases に `Hex-Haas-<version>-windows-x64.zip`（GPU版）、
 - 展開して `hex.exe` を実行するだけです。`speech.exe` と `speech.dll` は同じフォルダーに置きます。
 - 必要なものは Windows 10/11 x64 と Vulkan対応GPUドライバーのみ。Haasモデルは初回起動後にモデル選択からダウンロードします（huggingface.co）。
 - コード署名はありません。`SHA256SUMS` でハッシュを確認し、SmartScreenの警告は「詳細情報」から実行を続けてください。
-- データは `%APPDATA%\hex-haas` に作られ、公式Hexとは混ざりません。自動更新はありません。
+- データは `%APPDATA%\hex-haas`（設定・履歴）と `%LOCALAPPDATA%\hex-haas`（モデル・ログ）に作られ、公式Hexとは混ざりません。自動更新はありません。
 
 リリースの作り方（自分用）: `haas-v<バージョン>` 形式のタグをpushすると Actions の「Haas release」がGPU版・x64 CPU版・ARM64 CPU版をビルドして、3つのzipと統合したSHA256SUMSを1つのリリースに登録します。タグなしの `workflow_dispatch` は同じビルドを検証し、成果物をworkflowのartifactとして残すだけです。ローカルでも `./scripts/build-haas.ps1` の後に `./scripts/package-haas.ps1`、CPU版は `./scripts/build-haas-cpu.ps1`（ARM64は `-Arch arm64`）の後に `./scripts/package-haas-cpu.ps1` で同じzipを作れます。
 
@@ -150,7 +151,7 @@ Windows x64のCargo既定もCPUになります。Vulkanを有効にするのは�
 （直接のcargo、`build-windows.sh`、上流Windowsチェック・Release workflow）は
 CPU構成になるため、HaasのGPU版には使わないでください。LinuxのVulkan指定は不変です。
 
-設定・履歴・モデルはGPU版と同じ `%APPDATA%\hex-haas`、ユーザー設定は
+設定・履歴・モデルはGPU版と同じ `%APPDATA%\hex-haas` と `%LOCALAPPDATA%\hex-haas`、ユーザー設定は
 `~/.config/hex-haas` です。切り替える前にHexを終了し、GPU版のexe/DLLを混ぜないでください。
 CPU版も自動更新・コード署名なしで、モデルは初回にダウンロードします。
 

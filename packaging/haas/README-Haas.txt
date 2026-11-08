@@ -23,7 +23,8 @@ Hex Haas — Windows x64（非公式フォークビルド）
     システムにあれば十分です）
 
 データの保存先
-  設定・履歴・モデル : %APPDATA%\hex-haas
+  設定・履歴 : %APPDATA%\hex-haas
+  モデル・ログ : %LOCALAPPDATA%\hex-haas
   hex.config.ts      : %USERPROFILE%\.config\hex-haas
   公式Hexのデータとは混ざりません。
 

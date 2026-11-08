@@ -39,14 +39,20 @@ pub fn support_dir() -> Result<PathBuf> {
     }
     let data =
         dirs::data_dir().ok_or_else(|| eyre!("application data directory is unavailable"))?;
-    let folder = if is_haas_build() {
+    Ok(data.join(data_folder_name()))
+}
+
+/// The data folder's name: `hex`, `hex-haas` for this fork, or `hex-test` for
+/// a macOS test build. The Windows local logs/models folder uses it too, so a
+/// fork's models never mix with the installed Hex's.
+fn data_folder_name() -> &'static str {
+    if is_haas_build() {
         "hex-haas"
     } else if is_macos_test_build() {
         "hex-test"
     } else {
         "hex"
-    };
-    Ok(data.join(folder))
+    }
 }
 
 pub fn logs_dir() -> Result<PathBuf> {
@@ -61,7 +67,8 @@ pub fn models_dir() -> Result<PathBuf> {
 }
 
 /// `name` in the support folder, except on Windows, where logs and models
-/// belong to this computer: `%LOCALAPPDATA%\hex`, not the Roaming
+/// belong to this computer: `%LOCALAPPDATA%\hex` (or the fork's
+/// `%LOCALAPPDATA%\hex-haas`), not the Roaming
 /// `%APPDATA%\hex`, which managed networks copy to a server at every sign-in.
 /// An older Hex's Roaming copy moves over once. While it can't (a running Hex
 /// holds its files), the Roaming copy keeps being used, so nothing downloads
@@ -78,15 +85,16 @@ fn machine_local(cell: &std::sync::OnceLock<PathBuf>, name: &str) -> Result<Path
     Ok(cell.get_or_init(|| path).clone())
 }
 
-/// `%LOCALAPPDATA%\hex` on Windows, unless a data folder is chosen for this
-/// run (`HEX_APPLICATION_SUPPORT_DIR`); elsewhere none.
+/// `%LOCALAPPDATA%\hex` on Windows (or this fork's `%LOCALAPPDATA%\hex-haas`),
+/// unless a data folder is chosen for this run (`HEX_APPLICATION_SUPPORT_DIR`);
+/// elsewhere none.
 fn local_support_dir() -> Option<PathBuf> {
     if !cfg!(windows) || std::env::var_os("HEX_APPLICATION_SUPPORT_DIR").is_some() {
         return None;
     }
     std::env::var_os("LOCALAPPDATA")
         .filter(|value| !value.is_empty())
-        .map(|local| PathBuf::from(local).join("hex"))
+        .map(|local| PathBuf::from(local).join(data_folder_name()))
 }
 
 /// `local`, after moving `roaming` there if only `roaming` exists. A move that
@@ -343,6 +351,23 @@ mod tests {
                 personal_commands_workspace().unwrap(),
                 dirs::home_dir().unwrap().join(".config").join("hex-haas")
             );
+        }
+        // The Windows local logs/models folder keeps the same fork name, so
+        // its models never mix with the installed Hex's Local folder.
+        if is_haas_build()
+            && cfg!(windows)
+            && std::env::var_os("HEX_APPLICATION_SUPPORT_DIR").is_none()
+        {
+            if let Some(local) = std::env::var_os("LOCALAPPDATA")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+            {
+                assert_eq!(
+                    local_support_dir().unwrap(),
+                    local.join("hex-haas"),
+                    "the local models/logs folder must not fall back to plain hex"
+                );
+            }
         }
     }
 }
