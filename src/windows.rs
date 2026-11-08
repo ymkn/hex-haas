@@ -268,6 +268,7 @@ pub fn run(shutdown: &'static AtomicBool) -> Result<()> {
             selection,
         } => stream_bench(&wav, speed, &selection.resolve()?),
         Command::Control(_) => unreachable!("handled before logging"),
+        Command::HaasUpgrade { .. } => unreachable!("handled before logging"),
     }
 }
 

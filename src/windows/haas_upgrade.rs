@@ -311,7 +311,11 @@ fn download_verify_and_swap(
             asset.size
         );
     }
-    let digest = format!("{:x}", hasher.finalize());
+    let digest: String = hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
     if digest != asset.sha256 {
         bail!("downloaded SHA-256 {digest} does not match the manifest's {}", asset.sha256);
     }
