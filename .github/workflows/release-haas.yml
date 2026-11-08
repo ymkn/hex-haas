@@ -64,11 +64,6 @@ jobs:
             source/tools/haas/shaderc.zip
             source/tools/haas/vulkan-headers.zip
             source/tools/haas/spirv-headers.zip
-            source/tools/haas/speech
-            source/tools/haas/cmake
-            source/tools/haas/shaderc
-            source/tools/haas/vulkan-headers
-            source/tools/haas/spirv-headers
           key: haas-tools-gpu-${{ hashFiles('source/scripts/setup-haas-build-tools.ps1', 'source/scripts/haas-common.ps1') }}
       - name: Install the Vulkan SDK
         uses: humbletim/install-vulkan-sdk@30ba978f977e81b72d091fc8888feb1fb26f9aff # v1.2
@@ -124,9 +119,6 @@ jobs:
             source/tools/haas-cpu/cmake.zip
             source/tools/haas-cpu/speech-source.zip
             source/tools/haas-cpu/ggml-source.zip
-            source/tools/haas-cpu/cmake
-            source/tools/haas-cpu/speech-source
-            source/tools/haas-cpu/ggml-source
           key: haas-tools-cpu-x64-${{ hashFiles('source/scripts/setup-haas-cpu-build-tools.ps1', 'source/scripts/haas-common.ps1') }}
       - name: Set up CPU build tools
         run: ./scripts/setup-haas-cpu-build-tools.ps1
@@ -180,11 +172,6 @@ jobs:
             source/tools/haas-cpu-arm64/llvm.tar.xz
             source/tools/haas-cpu-arm64/speech-source.zip
             source/tools/haas-cpu-arm64/ggml-source.zip
-            source/tools/haas-cpu-arm64/cmake
-            source/tools/haas-cpu-arm64/ninja
-            source/tools/haas-cpu-arm64/llvm
-            source/tools/haas-cpu-arm64/speech-source
-            source/tools/haas-cpu-arm64/ggml-source
           key: haas-tools-cpu-arm64-${{ hashFiles('source/scripts/setup-haas-cpu-build-tools.ps1', 'source/scripts/haas-common.ps1') }}
       - name: Set up CPU build tools
         run: ./scripts/setup-haas-cpu-build-tools.ps1 -Arch arm64

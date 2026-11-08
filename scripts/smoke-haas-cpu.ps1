@@ -74,5 +74,5 @@ if ($Phase -eq 'Binaries') {
         }
     } finally { $writer.Dispose() }
     & (Join-Path $dist 'hex.exe') model transcribe $wav --model haas_ja_v1 --language ja
-    if ($LASTEXITCODE) { throw "$label inference failed." }
+    if ($LASTEXITCODE) { throw "Haas $label inference failed." }
 }
