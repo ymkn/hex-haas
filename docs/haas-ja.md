@@ -65,7 +65,7 @@ hex haas-upgrade          # check, confirm, download, verify, swap in place
 hex haas-upgrade --check  # report only
 ```
 
-Each package carries `haas-build.json` (variant, channel, version, build); each release carries a `manifest.json` with the per-variant file name, size and SHA-256, and the download is verified against it before any file is replaced. The stable channel follows the newest `haas-v*` release; the daily channel follows the rolling `haas-daily` prerelease published by the daily upstream-sync workflow, which merges `anomalyco/hex` dev into the fork every morning (conflicts stop the sync and are reported on an issue instead). Packages from before the marker (up to v3.3.1) need `--variant gpu`, `--variant cpu` or `--variant arm64` on the first run. The running `hex.exe` is renamed to `hex.exe.upgrade-old` and replaced; later runs remove the old file. A still-running Hex locks `speech.exe`/`speech.dll`, and the lock check stops the swap before anything changes.
+Each package carries `haas-build.json` (variant, channel, version, build); each release carries a `manifest.json` with the per-variant file name, size and SHA-256, and the download is verified against it before any file is replaced. The stable channel follows the newest `hex-v*` release; the daily channel follows the rolling `haas-daily` prerelease published by the daily upstream-sync workflow, which merges `anomalyco/hex` dev into the fork every morning (conflicts stop the sync and are reported on an issue instead). Packages from before the marker (up to v3.3.1) need `--variant gpu`, `--variant cpu` or `--variant arm64` on the first run. The running `hex.exe` is renamed to `hex.exe.upgrade-old` and replaced; later runs remove the old file. A still-running Hex locks `speech.exe`/`speech.dll`, and the lock check stops the swap before anything changes.
 
 ## Verification
 
@@ -93,7 +93,7 @@ A physical shortcut/microphone/paste test has not been run. The packaged CLI and
 
 `Hex-Haas-<version>-windows-x64-cpu.zip` is separate from the existing GPU
 package. Get it from the manually dispatched **Haas CPU build** workflow's
-artifact, and `haas-v*` tag Releases include it next to the GPU zip with a
+artifact, and `hex-v*` tag Releases include it next to the GPU zip with a
 combined SHA256SUMS. Extract all
 three binaries together and run `hex.exe`. Do not mix CPU and GPU files.
 Requirements: Windows 10/11 x64, a CPU from 2013 onward (Haswell / Excavator

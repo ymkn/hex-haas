@@ -11,7 +11,7 @@
 //! lock-checked first, so a running Hex makes the command stop before it
 //! changes anything instead of leaving a half-swapped folder.
 //!
-//! Channels: `stable` follows the newest `haas-v*` release, `daily`
+//! Channels: `stable` follows the newest `hex-v*` release, `daily`
 //! follows the rolling `haas-daily` prerelease. Packages published before
 //! the marker existed have no `haas-build.json`; one run with `--variant`
 //! installs a current package and writes the marker.

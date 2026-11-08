@@ -1,6 +1,6 @@
 # Builds the Haas fork for Windows x64 and publishes it to GitHub Releases.
 #
-#   - A push of a `haas-v*` tag builds all three variants, packages them,
+#   - A push of a `hex-v*` tag builds all three variants, packages them,
 #     and creates one release with Hex-Haas-<version>-windows-x64.zip (GPU),
 #     Hex-Haas-<version>-windows-x64-cpu.zip (no Vulkan loader needed),
 #     Hex-Haas-<version>-windows-arm64-cpu.zip (native ARM64, CPU inference),
@@ -36,7 +36,7 @@ on:
         default: false
   push:
     tags:
-      - 'haas-v*'
+      - 'hex-v*'
 
 permissions:
   contents: write
@@ -226,7 +226,7 @@ jobs:
           if-no-files-found: error
 
   publish:
-    if: startsWith(github.ref, 'refs/tags/haas-v') || inputs.publish_daily
+    if: startsWith(github.ref, 'refs/tags/hex-v') || inputs.publish_daily
     needs: [windows-x64, windows-x64-cpu, windows-arm64-cpu]
     runs-on: windows-latest
     timeout-minutes: 15

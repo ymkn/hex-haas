@@ -328,7 +328,7 @@ The separate Windows x64 CPU package is built by
 `Hex-Haas-<version>-windows-arm64-cpu.zip`). The x64 CPU package needs AVX2
 but no Vulkan loader for inference; the ARM64 package is a native aarch64
 build (no AVX2, no emulation) that must be built on an ARM64 Windows host.
-Both keep the same `hex-haas` data, and ship in `haas-v*` tag
+Both keep the same `hex-haas` data, and ship in `hex-v*` tag
 releases next to the GPU zip (manual `release-haas-cpu.yml` dispatch still
 produces an artifact-only build). The x64 required import/startup/model
 download/synthetic-inference checks passed in CI on 2026-11-04;

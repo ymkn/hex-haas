@@ -112,16 +112,16 @@ Releases に `Hex-Haas-<version>-windows-x64.zip`（GPU版）、
 - コード署名はありません。`SHA256SUMS` でハッシュを確認し、SmartScreenの警告は「詳細情報」から実行を続けてください。
 - データは `%APPDATA%\hex-haas`（設定・履歴）と `%LOCALAPPDATA%\hex-haas`（モデル・ログ）に作られ、公式Hexとは混ざりません。更新は配置先フォルダーで `hex haas-upgrade` を実行して手動で行います（後述）。
 
-リリースの作り方（自分用）: `haas-v<バージョン>` 形式のタグをpushすると Actions の「Haas release」がGPU版・x64 CPU版・ARM64 CPU版をビルドして、3つのzipと統合したSHA256SUMS、それに `manifest.json`（バリアント別のファイル名・SHA-256・サイズ）を1つのリリースに登録します。タグなしの `workflow_dispatch` は同じビルドを検証し、成果物をworkflowのartifactとして残すだけです。ローカルでも `./scripts/build-haas.ps1` の後に `./scripts/package-haas.ps1`、CPU版は `./scripts/build-haas-cpu.ps1`（ARM64は `-Arch arm64`）の後に `./scripts/package-haas-cpu.ps1` で同じzipを作れます。
+リリースの作り方（自分用）: `hex-v<バージョン>` 形式のタグをpushすると Actions の「Haas release」がGPU版・x64 CPU版・ARM64 CPU版をビルドして、3つのzipと統合したSHA256SUMS、それに `manifest.json`（バリアント別のファイル名・SHA-256・サイズ）を1つのリリースに登録します。タグなしの `workflow_dispatch` は同じビルドを検証し、成果物をworkflowのartifactとして残すだけです。ローカルでも `./scripts/build-haas.ps1` の後に `./scripts/package-haas.ps1`、CPU版は `./scripts/build-haas-cpu.ps1`（ARM64は `-Arch arm64`）の後に `./scripts/package-haas-cpu.ps1` で同じzipを作れます。
 
-バージョン番号の付け方: フォーク側で勝手に上げることはせず、`Cargo.toml` の version は「本家（上流）のバージョン + `-haas.<連番>`」とします（例: 本家 3.3.0 ベースなら `3.3.0-haas.1`、その次のリリースは `3.3.0-haas.2`）。ここでいう本家のバージョンは、取り込み時点で上流の `Cargo.toml` に書かれている version そのものです。その値が変わったら連番は 1 から振り直します。タグは `haas-v<そのバージョン>`（例: `haas-v3.3.0-haas.1`）です。`hex haas-upgrade` の数値比較は `-` 区切りの連番も数値として拾うため、連番同士の新旧判定がそのまま効きます。なお、この方式の前にフォーク独自に付けた 3.3.1 までの導入済みパッケージは、アップデーター自体を持たないため、初回だけ手動で入れ替えてください（3.3.2 はリリース公開前に取り下げたため、導入済みのものは存在しません）。
+バージョン番号の付け方: フォーク側で勝手に上げることはせず、`Cargo.toml` の version は「本家（上流）のバージョン + `-haas.<連番>`」とします（例: 本家 3.3.0 ベースなら `3.3.0-haas.1`、その次のリリースは `3.3.0-haas.2`）。ここでいう本家のバージョンは、取り込み時点で上流の `Cargo.toml` に書かれている version そのものです。その値が変わったら連番は 1 から振り直します。タグは `hex-v<そのバージョン>`（例: `hex-v3.3.0-haas.1`）です。`hex haas-upgrade` の数値比較は `-` 区切りの連番も数値として拾うため、連番同士の新旧判定がそのまま効きます。なお、この方式の前にフォーク独自に付けた 3.3.1 までの導入済みパッケージは、アップデーター自体を持たないため、初回だけ手動で入れ替えてください（3.3.2 はリリース公開前に取り下げたため、導入済みのものは存在しません）。
 
 ## デイリービルドと端末側アップデート
 
 - Actions の「Haas daily sync and build」が毎日03:30（JST）に上流 `anomalyco/hex` の `dev` を `haas` にマージします。きれいにマージできればそのまま push し、3バリアントを再ビルドして prerelease `haas-daily` を差し替えます。コンフリクトしたらマージを取りやめ（`haas` は変更しません）、`haas-sync-conflict` ラベルの Issue で知らせます。上流にもフォークにも前回のデイリーから差分がない日はビルドしません。手動 dispatch の `force` で強制実行できます。
 - 各パッケージの zip には `haas-build.json`（variant / channel / version / build）が入り、各リリースには `manifest.json` が付きます。
 - 導入済み端末での更新は、Hex を終了してから配置フォルダーで `hex haas-upgrade` を実行します。自分のチャンネルの最新 `manifest.json` と比べて新しければ、同じバリアントの zip をダウンロードし、サイズと SHA-256 を検証してからファイルを入れ替えます。`--check` は確認のみ、`--yes` は確認プロンプト省略、`--channel daily|stable` はチャンネルの一時上書きです。
-- チャンネルはパッケージ側で決まります。タグ版は stable（最新の `haas-v*` リリースを追う）、デイリー版は daily（`haas-daily` を追う）。
+- チャンネルはパッケージ側で決まります。タグ版は stable（最新の `hex-v*` リリースを追う）、デイリー版は daily（`haas-daily` を追う）。
 - `haas-build.json` がない旧パッケージ（v3.3.1まで）は、初回だけ `hex haas-upgrade --variant gpu`（CPU版は `--variant cpu`、ARM64版は `--variant arm64`）とバリアントを指定してください。以後はマーカーで自動判定されます。
 - 入れ替えの際、実行中の `hex.exe` は `hex.exe.upgrade-old` に退避してから差し替えます（古いファイルは次回以降の実行時に削除を試みます）。配置フォルダーへの書き込み権限が必要です。Hex 本体が起動中だと `speech.exe` / `speech.dll` のロックで入れ替え前に停止します。
 
@@ -129,7 +129,7 @@ Releases に `Hex-Haas-<version>-windows-x64.zip`（GPU版）、
 
 Vulkanドライバーや `vulkan-1.dll` がないPCには、別パッケージ
 `Hex-Haas-<version>-windows-x64-cpu.zip`（x64）と
-`Hex-Haas-<version>-windows-arm64-cpu.zip`（ARM64）を使います。`haas-v*` タグの Release には
+`Hex-Haas-<version>-windows-arm64-cpu.zip`（ARM64）を使います。`hex-v*` タグの Release には
 GPU版と一緒に両CPU版 zip も登録されます（SHA256SUMS は3版をまとめた1ファイル）。
 単体確認用に Actions の「Haas CPU build」手動実行（artifactのみ）も残しています。
 上のGPU版とは別の成果物です。CPU版の3ファイルをまとめて展開し、
