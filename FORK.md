@@ -16,7 +16,7 @@ Haas対応以外の使い方は通常のHexと同じで、ログイン時起動�
 - モデル・ログ: `%LOCALAPPDATA%\hex-haas`（上流のWindows配置に従う。上流 v3.3.0 時点の `%APPDATA%` 配置から移動済み）
 - `hex.config.ts`: `~/.config/hex-haas`
 
-`dist/haas/hex.exe` を直接起動できます。専用の環境変数や起動先切り替えは不要です。ローカルビルドのため、公式のローカルビルドと同じく自動更新は行いません。
+`dist/haas/hex.exe` を直接起動できます。`Start-Hex-Haas.cmd`（`scripts/start-haas.ps1`）は、ビルド済みの版を GPU → x64 CPU → ARM64 CPU の順で探して起動します。専用の環境変数や起動先切り替えは不要です。ローカルビルドのため、公式のローカルビルドと同じく自動更新は行いません。
 
 ## ローカル作業場所とリモート
 
