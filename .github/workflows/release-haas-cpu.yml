@@ -1,5 +1,6 @@
-# Artifact-only CPU variant. Tags never trigger it; no release publication.
-# No Vulkan SDK, signing credential, or OIDC token is used in this build job.
+# Artifact-only CPU variants (x64 and ARM64). Tags never trigger it; no
+# release publication. No Vulkan SDK, signing credential, or OIDC token is
+# used in these build jobs.
 name: Haas CPU build
 
 on:
@@ -100,4 +101,102 @@ jobs:
           path: |
             out-cpu/*.zip
             out-cpu/SHA256SUMS
+          if-no-files-found: error
+
+  windows-arm64-cpu:
+    # Native ARM64 build on an ARM64 runner: clang-cl + Ninja (ggml's ARM CPU
+    # backend refuses MSVC), CPU inference only — no Vulkan, mirroring
+    # upstream's Windows ARM64 configuration.
+    runs-on: windows-11-arm
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: source
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: source
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - name: Set up CPU build tools
+        run: ./scripts/setup-haas-cpu-build-tools.ps1 -Arch arm64
+      - name: Build and check all three binaries for Vulkan imports
+        run: ./scripts/build-haas-cpu.ps1 -Arch arm64
+      - name: Smoke the ARM64 CPU binaries
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # The load-time proof is the dumpbin import scan in the build steps:
+          # none of the three binaries imports vulkan-1.dll, and all three are
+          # ARM64 machine-type binaries, so x86 emulation cannot explain them.
+          # A loader shipped inside the package would break that separation,
+          # so refuse only that; a system loader is noted, not fatal.
+          $packaged = @(Get-ChildItem dist\haas-cpu-arm64 -Filter vulkan-1.dll -Recurse | ForEach-Object { $_.FullName })
+          foreach ($loader in $packaged) {
+              throw "The CPU package must not contain a Vulkan loader, but contains $loader"
+          }
+          $system = @("$env:WINDIR\System32\vulkan-1.dll")
+          $system += ($env:PATH -split ';' | Where-Object { $_ } | ForEach-Object { Join-Path $_ 'vulkan-1.dll' })
+          foreach ($loader in $system) {
+              if (Test-Path $loader) { Write-Warning "This runner has a Vulkan loader at $loader; startup here does not by itself prove loader-free operation (the import scan does)." }
+          }
+          & ./dist/haas-cpu-arm64/hex.exe --version
+          if ($LASTEXITCODE) { throw 'ARM64 CPU Hex failed to start.' }
+          & ./dist/haas-cpu-arm64/speech.exe --version
+          if ($LASTEXITCODE) { throw 'ARM64 CPU speech.cpp failed to start.' }
+          & ./dist/haas-cpu-arm64/hex.exe model devices
+          if ($LASTEXITCODE) { throw 'ARM64 CPU device enumeration failed.' }
+      - name: Download Haas and run ARM64 CPU inference on a synthetic WAV
+        timeout-minutes: 40
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Required, not continue-on-error: Hugging Face access and a real
+          # model load/worker inference must succeed before uploading a zip.
+          # Japanese SAPI voices are NOT assumed available on the runner.
+          # A deterministic non-silent waveform exercises inference without
+          # SAPI, a microphone, playback, or a Japanese accuracy claim. Empty
+          # text is allowed; an inference error/nonzero exit is not.
+          # Native Japanese speech, shortcut/paste, and GUI rendering need a
+          # real ARM64 PC. The generous timeout reflects an unmeasured
+          # runner CPU: inference time itself is not gated, only success.
+          $env:HEX_APPLICATION_SUPPORT_DIR = Join-Path $env:RUNNER_TEMP 'hex-haas-arm64-cpu-smoke'
+          New-Item -ItemType Directory -Force $env:HEX_APPLICATION_SUPPORT_DIR | Out-Null
+          & ./dist/haas-cpu-arm64/hex.exe model install haas_ja_v1 --language ja
+          if ($LASTEXITCODE) { throw 'Haas model download failed; inference was NOT verified.' }
+          $wav = Join-Path $env:RUNNER_TEMP 'haas-cpu-synthetic.wav'
+          $rate = 16000
+          $count = 3 * $rate
+          $writer = [System.IO.BinaryWriter]::new([System.IO.File]::Create($wav))
+          try {
+              $writer.Write([System.Text.Encoding]::ASCII.GetBytes('RIFF'))
+              $writer.Write([int](36 + 2 * $count))
+              $writer.Write([System.Text.Encoding]::ASCII.GetBytes('WAVEfmt '))
+              $writer.Write([int]16)
+              $writer.Write([int16]1)
+              $writer.Write([int16]1)
+              $writer.Write([int]$rate)
+              $writer.Write([int](2 * $rate))
+              $writer.Write([int16]2)
+              $writer.Write([int16]16)
+              $writer.Write([System.Text.Encoding]::ASCII.GetBytes('data'))
+              $writer.Write([int](2 * $count))
+              for ($i = 0; $i -lt $count; $i++) {
+                  $t = $i / [double]$rate
+                  $sample = 6000 * [Math]::Sin(2 * [Math]::PI * 220 * $t) + 3000 * [Math]::Sin(2 * [Math]::PI * 440 * $t)
+                  $writer.Write([int16]$sample)
+              }
+          } finally { $writer.Dispose() }
+          & ./dist/haas-cpu-arm64/hex.exe model transcribe $wav --model haas_ja_v1 --language ja
+          if ($LASTEXITCODE) { throw 'Haas ARM64 CPU inference failed.' }
+      - name: Package
+        run: ./scripts/package-haas-cpu.ps1 -Arch arm64 -Destination ..\out-cpu-arm64
+      - name: Upload the ARM64 CPU package as an artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: Hex-Haas-windows-arm64-cpu
+          path: |
+            out-cpu-arm64/*.zip
+            out-cpu-arm64/SHA256SUMS
           if-no-files-found: error

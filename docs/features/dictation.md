@@ -324,14 +324,18 @@ build, it does not self-update. Checks include the catalog's
 
 The separate Windows x64 CPU package is built by
 `scripts/setup-haas-cpu-build-tools.ps1`, `scripts/build-haas-cpu.ps1`, and
-`scripts/package-haas-cpu.ps1`. It needs AVX2 but no Vulkan loader for
-inference, keeps the same `hex-haas` data, and ships in `haas-v*` tag
+`scripts/package-haas-cpu.ps1` (`-Arch arm64` for the native ARM64 package,
+`Hex-Haas-<version>-windows-arm64-cpu.zip`). The x64 CPU package needs AVX2
+but no Vulkan loader for inference; the ARM64 package is a native aarch64
+build (no AVX2, no emulation) that must be built on an ARM64 Windows host.
+Both keep the same `hex-haas` data, and ship in `haas-v*` tag
 releases next to the GPU zip (manual `release-haas-cpu.yml` dispatch still
-produces an artifact-only build). Its required import/startup/model
+produces an artifact-only build). The x64 required import/startup/model
 download/synthetic-inference checks passed in CI on 2026-11-04;
 AVD display, physical dictation and paste remain unverified. See the
-[CPU guide](../haas-ja.md#cpu-variant-windows-x64-no-vulkan-loader) for pins,
-build isolation, prerequisites and proof limits.
+[CPU guide](../haas-ja.md#cpu-variant-windows-x64-no-vulkan-loader) and the
+[ARM64 guide](../haas-ja.md#arm64-cpu-variant-windows-arm64-no-vulkan-loader)
+for pins, build isolation, prerequisites and proof limits.
 
 ### Copy Recent Dictation (Labs, macOS)
 

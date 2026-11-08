@@ -16,6 +16,11 @@ set -uo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
+# Keep MSVC flag-style env values ('/utf-8', '/EHsc') verbatim: without this,
+# MSYS converts them to Windows paths ('C:/Program Files/Git/utf-8') when it
+# spawns the native cargo, and every cc/cmake build fails on the mangled flag.
+export MSYS2_ENV_CONV_EXCL='CFLAGS;CXXFLAGS;CL'
+
 packages=(--workspace)
 if [[ "$(uname -s)" == Darwin ]]; then
     # zbus depends on the crates.io `hex`, so the root package is named with its
@@ -43,8 +48,16 @@ else
 fi
 
 stage "nix pins"
-python3 scripts/test-check-nix-git-pins.py || exit 14
-python3 scripts/check-nix-git-pins.py || exit 14
+# Windows machines without a python3 alias fall back to `python`, mirroring
+# the code-shape stage above; without either, the pins are not checked here
+# (the full suite still runs them on Linux).
+python_bin=$(command -v python3 || command -v python)
+if [[ -n "$python_bin" ]]; then
+    "$python_bin" scripts/test-check-nix-git-pins.py || exit 14
+    "$python_bin" scripts/check-nix-git-pins.py || exit 14
+else
+    printf 'python not found; skipping the nix pins stage\n'
+fi
 
 if [[ $# -eq 0 ]]; then
     stage "clippy"

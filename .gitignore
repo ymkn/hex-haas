@@ -19,5 +19,8 @@ __pycache__/
 /perf/seeds/.generated/
 /tools/haas/
 /tools/haas-cpu/
+/tools/haas-cpu-arm64/
+/target-cpu/
+/target-cpu-arm64/
 /haas-data/
 /haas-config/

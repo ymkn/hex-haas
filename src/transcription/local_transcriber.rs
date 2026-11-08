@@ -277,6 +277,8 @@ impl LocalTranscriber {
                 gpu: None,
                 preference: device(),
                 warm_ms: 0,
+                // The worker holds its own backend; transcribe.cpp never runs.
+                gpu_full: false,
             });
         }
         let loaded = Self::load_where(selection)?;

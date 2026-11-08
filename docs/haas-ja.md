@@ -142,3 +142,45 @@ checks passed in CI on 2026-11-04 (both the CPU workflow and the GPU
 release workflow): Windows compilation, real import scans, CLI startup and
 synthetic inference, and the GPU-link regression check. What remains
 unverified is the AVD side: physical dictation/paste and GUI display.
+
+## ARM64 CPU variant (Windows ARM64, no Vulkan loader)
+
+`Hex-Haas-<version>-windows-arm64-cpu.zip` is a native ARM64 (aarch64)
+build for Windows 11 ARM64 PCs (Snapdragon X / Surface and similar). It
+mirrors upstream's Windows ARM64 configuration: ggml's ARM CPU backend
+refuses MSVC, so the native core builds with clang-cl through Ninja with
+`GGML_NATIVE=OFF` and ggml's own threadpool (no OpenMP). Inference is CPU
+only: no Vulkan driver, SDK, or `vulkan-1.dll`, and no x86 emulation or
+AVX2 requirement (the x86-64-v3 gate in `transcription/cpu_floor` is
+`#[cfg(target_arch = "x86_64")]` and does not run on ARM64). CPU inference
+is slower than the x64 GPU build. GPU/Vulkan packages for ARM64 do not
+exist: speech.cpp Vulkan would need shaderc, which has no ARM64 Windows
+release. The build must run on an ARM64 Windows host (the pinned LLVM is
+an ARM64 binary); CI uses the `windows-11-arm` runner.
+
+```powershell
+./scripts/setup-haas-cpu-build-tools.ps1 -Arch arm64
+./scripts/build-haas-cpu.ps1 -Arch arm64
+./scripts/build-haas-cpu.ps1 -Arch arm64 -Check
+./scripts/build-haas-cpu.ps1 -Arch arm64 -Lint
+./scripts/build-haas-cpu.ps1 -Arch arm64 -TestFilter haas
+./scripts/package-haas-cpu.ps1 -Arch arm64
+./dist/haas-cpu-arm64/hex.exe --version
+./dist/haas-cpu-arm64/hex.exe model devices
+./dist/haas-cpu-arm64/hex.exe model install haas_ja_v1 --language ja
+./dist/haas-cpu-arm64/hex.exe model transcribe path/to/fixture.wav --model haas_ja_v1 --language ja
+```
+
+The ARM64 setup additionally pins CMake 4.4.5 (`cmake-4.4.5-windows-arm64.zip`),
+Ninja 1.12.1 (`ninja-winarm64.zip`), and LLVM 20.1.8
+(`clang+llvm-20.1.8-aarch64-pc-windows-msvc.tar.xz`), all hash-verified,
+beside the same speech.cpp and ggml pins as x64. MSVC ARM64 build tools
+(link.exe, import libraries, Windows SDK) come from Visual Studio; the
+scripts accept the ARM64 component or any install that actually ships
+`arm64` compiler binaries. Tools stay in `tools/haas-cpu-arm64/`, Cargo
+output in `target-cpu-arm64/` (`CARGO_BUILD_TARGET=aarch64-pc-windows-msvc`
+keeps every cargo entry point there), and binaries in `dist/haas-cpu-arm64/`.
+The build script refuses to run on a non-ARM64 host because the pinned
+clang-cl is an ARM64 binary. Both dumpbin import scans and an ARM64
+machine-type header check gate the build; the CI ARM64 job adds the same
+CLI startup, model download, and synthetic-WAV inference gates as x64.

@@ -5,7 +5,7 @@
 - Fork: https://github.com/ymkn/hex-haas
 - 上流: https://github.com/anomalyco/hex
 - 改修ブランチ: `haas`
-- ベース: 公式 `v3.3.0`（`v3.0.0` `7b05b5fd1fa0e3b9c333209cd1644d9603693d5c` に `v3.1.1`、`v3.3.0` を順にマージ）
+- ベース: 公式 `v3.3.0`（`v3.0.0` `7b05b5fd1fa0e3b9c333209cd1644d9603693d5c` に `v3.1.1`、`v3.3.0` を順にマージ）、さらに 2026-11-08 に `upstream/dev`（`bc996e85a83fa6310ee646fb54aa23c0214ce67a`）をマージ
 - `dev` は上流用として残し、個人の変更は `haas` にだけコミットします。
 
 Haasは speech.cpp v0.10.0 の常駐worker経由で動きます。Whisperなど既存モデルは元の認識処理を使います。15秒以内の音声は分割せず、Haas自身の句読点出力を保持します。詳細・制約・検証結果は [docs/haas-ja.md](docs/haas-ja.md) を参照してください。
@@ -101,20 +101,24 @@ GitHubへ保存するのはソース・スクリプト・文書だけです。�
 
 ## ビルド済みパッケージを取得する
 
-Releases に `Hex-Haas-<version>-windows-x64.zip` を置いています。ソースをビルドせずに使えます。
+Releases に `Hex-Haas-<version>-windows-x64.zip`（GPU版）、
+`Hex-Haas-<version>-windows-x64-cpu.zip`（CPU版）、
+`Hex-Haas-<version>-windows-arm64-cpu.zip`（ARM64 CPU版）を置いています。
+ソースをビルドせずに使えます。
 
 - 展開して `hex.exe` を実行するだけです。`speech.exe` と `speech.dll` は同じフォルダーに置きます。
 - 必要なものは Windows 10/11 x64 と Vulkan対応GPUドライバーのみ。Haasモデルは初回起動後にモデル選択からダウンロードします（huggingface.co）。
 - コード署名はありません。`SHA256SUMS` でハッシュを確認し、SmartScreenの警告は「詳細情報」から実行を続けてください。
 - データは `%APPDATA%\hex-haas` に作られ、公式Hexとは混ざりません。自動更新はありません。
 
-リリースの作り方（自分用）: `haas-v<バージョン>` 形式のタグをpushすると Actions の「Haas release」がGPU版とCPU版をビルドして、両方のzipと統合したSHA256SUMSを1つのリリースに登録します。タグなしの `workflow_dispatch` は同じビルドを検証し、成果物をworkflowのartifactとして残すだけです。ローカルでも `./scripts/build-haas.ps1` の後に `./scripts/package-haas.ps1` で同じzipを作れます。
+リリースの作り方（自分用）: `haas-v<バージョン>` 形式のタグをpushすると Actions の「Haas release」がGPU版・x64 CPU版・ARM64 CPU版をビルドして、3つのzipと統合したSHA256SUMSを1つのリリースに登録します。タグなしの `workflow_dispatch` は同じビルドを検証し、成果物をworkflowのartifactとして残すだけです。ローカルでも `./scripts/build-haas.ps1` の後に `./scripts/package-haas.ps1`、CPU版は `./scripts/build-haas-cpu.ps1`（ARM64は `-Arch arm64`）の後に `./scripts/package-haas-cpu.ps1` で同じzipを作れます。
 
-## GPUなしのCPUバリアント（Windows x64）
+## GPUなしのCPUバリアント（Windows x64 / ARM64）
 
 Vulkanドライバーや `vulkan-1.dll` がないPCには、別パッケージ
-`Hex-Haas-<version>-windows-x64-cpu.zip` を使います。`haas-v*` タグの Release には
-GPU版と一緒に CPU版 zip も登録されます（SHA256SUMS は両版をまとめた1ファイル）。
+`Hex-Haas-<version>-windows-x64-cpu.zip`（x64）と
+`Hex-Haas-<version>-windows-arm64-cpu.zip`（ARM64）を使います。`haas-v*` タグの Release には
+GPU版と一緒に両CPU版 zip も登録されます（SHA256SUMS は3版をまとめた1ファイル）。
 単体確認用に Actions の「Haas CPU build」手動実行（artifactのみ）も残しています。
 上のGPU版とは別の成果物です。CPU版の3ファイルをまとめて展開し、
 `dist/haas-cpu/hex.exe`（zipでは `hex.exe`）を直接起動します。
@@ -150,7 +154,40 @@ CPU構成になるため、HaasのGPU版には使わないでください。Linu
 `~/.config/hex-haas` です。切り替える前にHexを終了し、GPU版のexe/DLLを混ぜないでください。
 CPU版も自動更新・コード署名なしで、モデルは初回にダウンロードします。
 
-CIには全3バイナリのdumpbin検査（loader不在の証明はこのimport走査が担う）、CLI起動・デバイス列挙、
+## ARM64 CPUバリアント（Windows ARM64）
+
+Snapdragon X 搭載Surfaceなど Windows 11 ARM64 PC向けのネイティブARM64ビルドです。
+x64エミュレーションではなくaarch64バイナリーで、x64 CPU版のAVX2前提（x86-64-v3）
+チェックはARM64では動きません。推論はCPUのみで、Vulkanは不要です。ARM64のGPU
+（Vulkan）版は存在しません。speech.cppのVulkan対応に必要なshadercにはARM64
+Windows版リリースがないためです。設定・履歴・モデルはx64版と同じ保存先です。
+
+ggmlのARMバックエンドはMSVCを拒否するため、上流のWindows ARM64構成と同じく
+clang-cl + Ninjaでネイティブコアをビルドします（`GGML_NATIVE=OFF`、OpenMPなし）。
+CMake 4.4.5・Ninja 1.12.1・LLVM 20.1.8（ARM64 Windows版clang-cl）を固定バージョンで
+取得しハッシュ検証します。LLVMがARM64バイナリーのため、ビルドはARM64 Windows
+ホスト専用です（他アーキテクチャーのホストではスクリプトが止まります）。CIは
+`windows-11-arm` ランナーで行います。
+
+```powershell
+./scripts/setup-haas-cpu-build-tools.ps1 -Arch arm64
+./scripts/build-haas-cpu.ps1 -Arch arm64
+./scripts/build-haas-cpu.ps1 -Arch arm64 -Check
+./scripts/build-haas-cpu.ps1 -Arch arm64 -Lint
+./scripts/build-haas-cpu.ps1 -Arch arm64 -TestFilter haas
+./scripts/package-haas-cpu.ps1 -Arch arm64
+./dist/haas-cpu-arm64/hex.exe --version
+./dist/haas-cpu-arm64/hex.exe model devices
+```
+
+ARM64用のツール・ネイティブ成果物・実行ファイルは `tools/haas-cpu-arm64/`、
+`target-cpu-arm64/`、`dist/haas-cpu-arm64/`（zipは `dist/package-cpu/`）に分離し、
+Gitから除外しています。MSVC ARM64ビルドツール（link.exe・インポートライブラリー・
+Windows SDK）はVisual Studio側から使います。詳細な検証定義は
+[docs/haas-ja.md](docs/haas-ja.md) のARM64節を参照してください。
+
+CIには全バイナリのdumpbin検査（loader不在の証明はこのimport走査が担う。ARM64は
+さらにmachine型がARM64であることの検査も行う）、CLI起動・デバイス列挙、
 Haasモデル取得と非無音の合成WAV推論を必須ゲートとして用意しています。
 日本語SAPI音声には依存せず、日本語の精度は検証しません。モデル取得・推論失敗を
 許容してartifactを出すことはありません。これらは実行前の検証定義であり、
