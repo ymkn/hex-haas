@@ -39,7 +39,7 @@ const FRAME: Duration = Duration::from_micros(16_667);
 
 /// Scrawl's ink and laser colours: content drawn on the screen, like a
 /// pen's, not interface chrome, so they stay the same in either appearance.
-fn ink_red() -> Color {
+pub(crate) fn ink_red() -> Color {
     rune::color::hex("#ff3b30").unwrap_or(Color::WHITE)
 }
 
@@ -190,6 +190,14 @@ pub(crate) struct InkState {
     pointer: [f32; 2],
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pressed_at: [f32; 2],
+    /// The recorded output the pen was last placed for, by the portal's
+    /// `mapping_id` name (Linux).
+    #[cfg(target_os = "linux")]
+    recorded_output: Option<String>,
+    /// Whether the pen was moved to a named output, so a later recording
+    /// without one puts it back on the primary display (Linux).
+    #[cfg(target_os = "linux")]
+    moved: bool,
 }
 
 impl InkState {
@@ -213,6 +221,10 @@ impl InkState {
             drawing: false,
             pointer: [0.0; 2],
             pressed_at: [0.0; 2],
+            #[cfg(target_os = "linux")]
+            recorded_output: None,
+            #[cfg(target_os = "linux")]
+            moved: false,
         }
     }
 }
@@ -222,6 +234,8 @@ fn poll(s: &mut InkState, _now: f64, tx: &mut Tx) -> bool {
         return false;
     }
     s.source = crate::capture_host::ink_source();
+    #[cfg(target_os = "linux")]
+    place_pen(s);
     let Some(source) = &s.source else {
         if s.shown {
             s.shown = false;
@@ -315,6 +329,47 @@ fn poll(s: &mut InkState, _now: f64, tx: &mut Tx) -> bool {
     changed
 }
 
+/// Moves the pen to the output the portal records, when it names one: the
+/// overlay opens there, and [`crate::capture_host::draw`] sizes strokes to
+/// that output's logical points instead of the stream's pixels. A later
+/// recording without a named output puts a moved pen back on the primary
+/// display.
+#[cfg(target_os = "linux")]
+fn place_pen(s: &mut InkState) {
+    let recorded = scrawl_capture::capture::recorded_output();
+    if recorded == s.recorded_output {
+        return;
+    }
+    let found = recorded.as_deref().and_then(crate::linux::output::find);
+    if let Some(name) = &recorded {
+        tracing::info!(
+            output = %name,
+            global = found.map(|output| output.global),
+            points = ?found.map(|output| output.points),
+            "the ink overlay follows the recorded output"
+        );
+    }
+    crate::linux::output::set_pen_points(found.map(|output| output.points));
+    if let Some(overlay) = &s.overlay {
+        match found {
+            // A new display recreates the layer surface on that output.
+            Some(output) => {
+                overlay.set_display(rune::DisplayTarget::Native(rune::NativeDisplayId::Wayland(
+                    output.global,
+                )));
+                s.moved = true;
+            }
+            // An unnamed recording leaves a pen that never moved where it is.
+            None if s.moved => {
+                overlay.set_display(rune::DisplayTarget::Primary);
+                s.moved = false;
+            }
+            None => {}
+        }
+    }
+    s.recorded_output = recorded;
+}
+
 /// Told when drawing starts or stops (the capsule lights its pen).
 static ON_DRAWING: std::sync::OnceLock<Box<dyn Fn(bool) + Send + Sync>> =
     std::sync::OnceLock::new();
@@ -339,8 +394,10 @@ pub(crate) struct InkOverlay {
 }
 
 impl InkOverlay {
-    /// Adds the overlay, prewarmed and hidden; it shows over a capture's
-    /// target once its engine records.
+    /// Adds the overlay, hidden; it shows over a capture's target once its
+    /// engine records. Hidden, it holds no GPU surface (a full-screen
+    /// swapchain held tens of megabytes between captures), nor on macOS and
+    /// Windows a window.
     pub(crate) fn install<S: 'static>(app: &mut rune::App<S>) -> Self {
         use rune::{
             DisplayTarget, OverlayInput, OverlayLevel, OverlayOptions, OverlayPlacement,
@@ -358,6 +415,7 @@ impl InkOverlay {
                 keys: rune::KeyPolicy::OnDemand,
                 ..Default::default()
             })
+            .release_gpu_when_hidden()
             .poll(poll)
             .on_created(|c| {
                 if let Some(window) = c.window_number {
@@ -546,7 +604,7 @@ fn draw_surface(drawing: bool, scale: f32) -> El {
 
 /// One canvas holding `segments` (from, to, width), cropped to their bounds
 /// plus `pad` so a blur or opacity layer covers only what it draws.
-fn layer(
+pub(crate) fn layer(
     segments: impl Iterator<Item = ([f32; 2], [f32; 2], f32)>,
     color: Color,
     pad: f32,

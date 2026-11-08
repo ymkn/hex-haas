@@ -245,7 +245,24 @@ impl TrackTranscript {
         // A model without word timings (Apple Speech) took over mid-track.
         self.finish();
         let segments = transcript.segments;
-        let segmented = !segments.is_empty();
+        // A model that gives no usable time range for a segment (Cohere
+        // reports one segment at zero) keeps its text over the whole chunk.
+        let timed = |segment: &TranscriptSegment| {
+            let start = (segment.start_ms.max(0) as u64).min(duration_ms);
+            let end = (segment.end_ms.max(0) as u64).min(duration_ms);
+            segment.text.trim().is_empty() || end > start
+        };
+        let segmented = !segments.is_empty() && segments.iter().all(timed);
+        let text = if segmented || !transcript.text.trim().is_empty() {
+            transcript.text
+        } else {
+            segments
+                .iter()
+                .map(|segment| segment.text.trim())
+                .filter(|text| !text.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
         let mut incoming: Vec<TranscriptEntry> = if segmented {
             segments
                 .into_iter()
@@ -262,7 +279,7 @@ impl TrackTranscript {
                 })
                 .collect()
         } else {
-            let text = transcript.text.trim();
+            let text = text.trim();
             (!text.is_empty())
                 .then(|| TranscriptEntry {
                     source: self.source,
@@ -1877,6 +1894,12 @@ pub(super) fn echo_report(
     use std::fmt::Write as _;
 
     let manifest = super::read_manifest(directory).ok();
+    if manifest
+        .as_ref()
+        .is_some_and(|manifest| manifest.audio_removed_at_ms.is_some())
+    {
+        return Err(eyre!("this meeting's audio was deleted"));
+    }
     let offset_ms = microphone_offset_ms.unwrap_or_else(|| {
         manifest
             .as_ref()
@@ -2088,7 +2111,7 @@ impl LocalTime {
         )
     }
 
-    fn file_stamp(&self) -> String {
+    pub(super) fn file_stamp(&self) -> String {
         format!(
             "{:04}-{:02}-{:02} {:02}{:02}",
             self.year, self.month, self.day, self.hour, self.minute
@@ -2132,31 +2155,12 @@ pub(super) fn render_markdown(manifest: &MeetingManifest, entries: &[TranscriptE
     for turn in turns {
         markdown.push_str(&format!(
             "**{}** · {}\n{}\n\n",
-            turn.source.label(),
+            manifest.speaker_label(turn.source),
             format_duration(turn.start_ms),
             turn.text.trim()
         ));
     }
     markdown
-}
-
-fn file_title(title: &str) -> String {
-    let cleaned = title
-        .chars()
-        .map(|character| match character {
-            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '-',
-            character if character.is_control() => ' ',
-            character => character,
-        })
-        .collect::<String>();
-    let cleaned = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
-    let cleaned = cleaned.trim_matches(|character| character == '.' || character == '-');
-    let truncated = cleaned.chars().take(80).collect::<String>();
-    if truncated.trim().is_empty() {
-        "Meeting".into()
-    } else {
-        truncated.trim().into()
-    }
 }
 
 /// Writes the user-facing Markdown copy without replacing an existing file.
@@ -2167,21 +2171,8 @@ pub(super) fn export_markdown(
 ) -> Result<PathBuf> {
     fs::create_dir_all(folder)
         .wrap_err_with(|| format!("could not create {}", folder.display()))?;
-    let stem = format!(
-        "{} {}",
-        LocalTime::from_ms(manifest.created_at_ms).file_stamp(),
-        file_title(&super::display_title(manifest))
-    );
-    let path = (1..=100)
-        .map(|attempt| {
-            folder.join(if attempt == 1 {
-                format!("{stem}.md")
-            } else {
-                format!("{stem} ({attempt}).md")
-            })
-        })
-        .find(|path| !path.exists())
-        .ok_or_else(|| eyre!("too many meeting files named {stem}"))?;
+    let stem = super::export_name::file_stem(manifest, &super::display_title(manifest));
+    let path = super::export_name::path_without_collision(folder, &stem, None)?;
     let temporary = folder.join(format!(".{stem}.md.tmp"));
     let mut file = File::create(&temporary)?;
     file.write_all(render_markdown(manifest, entries).as_bytes())?;
@@ -2586,6 +2577,76 @@ mod tests {
             transcript(vec![segment(1_200, 2_500, "Maybe Friday.")]),
         );
         assert_eq!(view(&track), ["Settled words.", "Maybe Friday."]);
+    }
+
+    #[test]
+    fn a_segment_without_usable_times_keeps_its_text_over_the_chunk() {
+        // Cohere Transcribe reports one segment at zero start and end.
+        let mut track = TrackTranscript::new(MeetingSource::System, 1_000);
+        let chunk = Chunk {
+            start: 0,
+            overlap: 0,
+            tail: 0,
+            samples: vec![0.1; 10 * RATE],
+        };
+        track.accept(
+            &chunk,
+            Transcript {
+                text: String::new(),
+                segments: vec![TranscriptSegment {
+                    start_ms: 0,
+                    end_ms: 0,
+                    text: " hello from the call ".into(),
+                }],
+                words: Vec::new(),
+            },
+        );
+        track.finish();
+        assert_eq!(
+            track.entries,
+            [entry(
+                MeetingSource::System,
+                1_000,
+                11_000,
+                "hello from the call"
+            )]
+        );
+    }
+
+    #[test]
+    fn segments_without_usable_times_still_join_at_the_seam() {
+        let mut track = TrackTranscript::new(MeetingSource::System, 0);
+        let zero = |text: &str| Transcript {
+            text: String::new(),
+            segments: vec![TranscriptSegment {
+                start_ms: 0,
+                end_ms: 0,
+                text: text.into(),
+            }],
+            words: Vec::new(),
+        };
+        let first = Chunk {
+            start: 0,
+            overlap: 0,
+            tail: 2 * RATE,
+            samples: vec![0.1; 10 * RATE],
+        };
+        track.accept(&first, zero("we can ship it on Friday"));
+        let second = Chunk {
+            start: 8 * RATE,
+            overlap: 2 * RATE,
+            tail: 0,
+            samples: vec![0.1; 10 * RATE],
+        };
+        track.accept(&second, zero("on Friday then we test"));
+        track.finish();
+        assert_eq!(
+            track.entries,
+            [
+                entry(MeetingSource::System, 0, 10_000, "we can ship it on Friday"),
+                entry(MeetingSource::System, 8_000, 18_000, "then we test"),
+            ]
+        );
     }
 
     pub(super) static MODEL_LOADS: std::sync::atomic::AtomicUsize =
@@ -3899,6 +3960,55 @@ mod tests {
         .unwrap();
         manifest.app = Some("Zoom".into());
         manifest
+    }
+
+    #[test]
+    fn an_empty_track_transcribes_to_nothing() {
+        let directory = std::env::temp_dir().join(format!(
+            "hex-meeting-empty-track-{}-{}",
+            std::process::id(),
+            crate::desktop::events::now_ms()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("microphone.wav");
+        hound::WavWriter::create(
+            &path,
+            hound::WavSpec {
+                channels: 1,
+                sample_rate: RATE as u32,
+                bits_per_sample: 32,
+                sample_format: hound::SampleFormat::Float,
+            },
+        )
+        .unwrap()
+        .finalize()
+        .unwrap();
+        let track = transcribe_file(
+            |_: &Chunk| -> Result<Transcript> {
+                panic!("an empty track has nothing to transcribe")
+            },
+            &path,
+            TrackTranscript::new(MeetingSource::Microphone, 0),
+            &mut EchoEnvelope::default(),
+        )
+        .unwrap();
+        assert!(track.entries.is_empty());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn imported_meetings_label_their_one_track_speaker() {
+        let mut manifest = manifest();
+        manifest.imported = true;
+        let markdown = render_markdown(
+            &manifest,
+            &[entry(MeetingSource::System, 1_000, 2_000, "Hi.")],
+        );
+        assert!(
+            markdown.contains("**Speaker** · 00:01\nHi.\n"),
+            "{markdown}"
+        );
+        assert!(!markdown.contains("**Them**"), "{markdown}");
     }
 
     #[test]

@@ -233,6 +233,10 @@ fn command(host: &dyn Host, command: ControlCommand) -> ControlReply {
                 Ok(reply)
             }))
         }
+        ControlCommand::Screenshot { .. } => reply(Err(ControlError::new(
+            "unsupported",
+            "screenshots are macOS only",
+        ))),
         command @ (ControlCommand::ScrawlCapture { .. }
         | ControlCommand::ScrawlCaptureList { .. }
         | ControlCommand::ScrawlCaptureShow { .. }
@@ -247,6 +251,7 @@ fn dictation_message(action: CaptureAction) -> &'static str {
         CaptureAction::Start => "Starting dictation",
         CaptureAction::Stop => "Stopping dictation",
         CaptureAction::Toggle => "Toggling dictation",
+        CaptureAction::Cancel => "Cancelling dictation",
     }
 }
 
@@ -544,7 +549,12 @@ fn status(host: &dyn Host) -> Result<ControlReply, ControlError> {
         memory_footprint_bytes: super::memory_footprint(),
         listener: ListenerReport {
             running: state.listener.running,
-            status: match &state.listener.warning {
+            status: match state
+                .listener
+                .notice
+                .as_ref()
+                .or(state.listener.warning.as_ref())
+            {
                 Some(warning) => format!("{} ({warning})", state.listener.status),
                 None => state.listener.status.clone(),
             },
@@ -617,8 +627,11 @@ mod tests {
                 settings: AppSettings::default(),
                 listener: DesktopListenerSnapshot {
                     running: true,
+                    warming: false,
                     status: "Enabled".into(),
                     warning: None,
+                    notice: None,
+                    last_failure: None,
                     shortcuts: Default::default(),
                     shortcuts_configurable: false,
                 },
@@ -722,7 +735,7 @@ mod tests {
     fn a_printing_stop_answers_with_the_transcript() {
         let host = FakeHost::default();
         let stop = |print| ControlCommand::Dictation {
-            action: CaptureAction::Stop.into(),
+            action: CaptureAction::Stop,
             print,
             raw: false,
         };
@@ -734,7 +747,7 @@ mod tests {
         );
         assert_eq!(code(&ask(&host, stop(false))), "ok");
         let start_print = ControlCommand::Dictation {
-            action: CaptureAction::Start.into(),
+            action: CaptureAction::Start,
             print: true,
             raw: false,
         };

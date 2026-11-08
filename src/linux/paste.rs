@@ -1,3 +1,4 @@
+use std::ffi::OsStr;
 use std::io::{ErrorKind, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
@@ -227,12 +228,56 @@ pub(crate) fn wayland_offers(interface: &str) -> bool {
 }
 
 fn on_path(program: &str) -> bool {
-    std::env::var_os("PATH").is_some_and(|path| {
-        std::env::split_paths(&path).any(|dir| {
+    on_path_in(std::env::var_os("PATH").as_deref(), program)
+}
+
+fn on_path_in(path: Option<&OsStr>, program: &str) -> bool {
+    path.is_some_and(|path| {
+        std::env::split_paths(path).any(|dir| {
             std::fs::metadata(dir.join(program))
                 .is_ok_and(|file| file.is_file() && file.permissions().mode() & 0o111 != 0)
         })
     })
+}
+
+/// Every Wayland copy and paste runs `wl-copy`, from the `wl-clipboard`
+/// package that direct installs do not bring.
+const WL_COPY: &str = "wl-copy";
+
+/// How a paste explains a Wayland session without `wl-copy`: the spawn error
+/// alone ("No such file or directory") never named the package.
+const WL_COPY_MISSING: &str =
+    "wl-copy is not installed. Install the wl-clipboard package, then try again.";
+
+/// What Settings and `hex status` warn with while this Wayland session can't
+/// copy or paste at all.
+pub(crate) fn missing_wayland_helper() -> Option<&'static str> {
+    if !LinuxSession::detect().is_wayland() {
+        return None;
+    }
+    missing_wl_copy(std::env::var_os("PATH").as_deref())
+}
+
+/// The notice Settings and `hex status` show while one runs.
+pub(crate) fn listener_warning(running: bool) -> Option<String> {
+    if !running {
+        return None;
+    }
+    missing_wayland_helper().map(str::to_owned)
+}
+
+/// `Some` when `path` has no executable `wl-copy`; split out so a test needn't
+/// change the process environment.
+fn missing_wl_copy(path: Option<&OsStr>) -> Option<&'static str> {
+    (!on_path_in(path, WL_COPY)).then_some(WL_COPY_MISSING)
+}
+
+/// Fails before spawning a helper that isn't there, naming what to install.
+fn require_wl_copy() -> Result<()> {
+    match missing_wl_copy(std::env::var_os("PATH").as_deref()) {
+        Some(message) => Err(eyre!("{message}")),
+        None => Ok(()),
+    }
 }
 
 /// A Wayland paste that only reached the clipboard.
@@ -295,6 +340,7 @@ impl LinuxPaster {
                     .wrap_err("could not own the X11 clipboard")
             }
             Backend::Wayland(_) => {
+                require_wl_copy()?;
                 let mut copy = Command::new("wl-copy");
                 copy.args(["--type", "text/plain;charset=utf-8"]);
                 run_helper(copy, text.as_bytes(), &self.stop, HELPER_TIMEOUT)
@@ -320,15 +366,16 @@ impl LinuxPaster {
     /// unless something newer replaced the paste first.
     fn paste_as(&mut self, mime: Mime, bytes: &[u8]) -> Result<()> {
         let restore = self.restore.clone();
+        let selection = self.selection.current();
         let mut state = restore.lock().unwrap_or_else(PoisonError::into_inner);
         state.generation = state.generation.wrapping_add(1);
         // A paste before the previous one restored keeps that one's original.
         let previous_pending = state
             .inserted
             .take()
-            .is_some_and(|(mime, bytes)| self.selection.holds(mime.wayland(), &bytes));
+            .is_some_and(|(mime, bytes)| selection.holds(mime.wayland(), &bytes));
         if !previous_pending {
-            state.original = match self.selection.snapshot() {
+            state.original = match selection.snapshot() {
                 Ok(snapshot) => Some(snapshot),
                 Err(error) => {
                     tracing::info!(
@@ -342,7 +389,7 @@ impl LinuxPaster {
         let result = self.send_paste(mime, bytes);
         if result.is_ok() {
             state.inserted = Some((mime, bytes.to_vec()));
-            schedule_restore(restore.clone(), state.generation, self.selection);
+            schedule_restore(restore.clone(), state.generation, selection);
         } else {
             // A paste that only reached the clipboard leaves it for Ctrl+V.
             state.original = None;
@@ -361,6 +408,7 @@ impl LinuxPaster {
                 paster.paste(mime, bytes, &self.stop, &self.keys, paste_with_shift)?
             }
             Backend::Wayland(wayland) => {
+                require_wl_copy()?;
                 let mut copy = Command::new("wl-copy");
                 copy.args(["--type", mime.wayland()]);
                 run_helper(copy, bytes, &self.stop, HELPER_TIMEOUT)
@@ -464,20 +512,57 @@ impl X11Paster {
             .store(atoms.clipboard, target, bytes)
             .wrap_err("could not own the X11 clipboard")?;
         thread::sleep(Duration::from_millis(60));
-        for (type_, key) in [
-            (KEY_PRESS, self.control),
-            (KEY_PRESS, self.shift),
-            (KEY_PRESS, self.v),
-            (KEY_RELEASE, self.v),
-            (KEY_RELEASE, self.shift),
-            (KEY_RELEASE, self.control),
-        ] {
-            if key == self.shift && !paste_with_shift {
-                continue;
+        let mut pressed = Vec::new();
+        let result = (|| -> Result<()> {
+            for (type_, key) in [
+                (KEY_PRESS, self.control),
+                (KEY_PRESS, self.shift),
+                (KEY_PRESS, self.v),
+                (KEY_RELEASE, self.v),
+                (KEY_RELEASE, self.shift),
+                (KEY_RELEASE, self.control),
+            ] {
+                if key == self.shift && !paste_with_shift {
+                    continue;
+                }
+                if type_ == KEY_PRESS {
+                    // A failed call may still reach the server, so release it too.
+                    pressed.push(key);
+                }
+                xtest::fake_input(&self.connection, type_, key, 0, self.root, 0, 0, 0)?.check()?;
+                // A failed release stays recorded: the key may still be down,
+                // and releasing one already up is harmless.
+                if type_ == KEY_RELEASE
+                    && let Some(index) = pressed.iter().rposition(|held| *held == key)
+                {
+                    pressed.remove(index);
+                }
             }
-            xtest::fake_input(&self.connection, type_, key, 0, self.root, 0, 0, 0)?.check()?;
+            self.connection.flush()?;
+            Ok(())
+        })();
+        if let Err(error) = result {
+            tracing::warn!(
+                error = format!("{error:#}"),
+                "could not send the X11 paste shortcut"
+            );
+            for key in pressed.into_iter().rev() {
+                let released = (|| -> Result<()> {
+                    xtest::fake_input(&self.connection, KEY_RELEASE, key, 0, self.root, 0, 0, 0)?
+                        .check()?;
+                    Ok(())
+                })();
+                if let Err(error) = released {
+                    tracing::warn!(
+                        key,
+                        error = format!("{error:#}"),
+                        "could not release an X11 paste key"
+                    );
+                }
+            }
+            let _ = self.connection.flush();
+            return Err(error);
         }
-        self.connection.flush()?;
         Ok(())
     }
 
@@ -635,6 +720,28 @@ mod tests {
         let mut command = Command::new("/bin/sh");
         command.args(["-c", script]);
         command
+    }
+
+    #[test]
+    fn a_missing_wl_copy_names_the_package_to_install() {
+        let missing = missing_wl_copy(Some(OsStr::new("/hex-test-no-such-directory")));
+        assert_eq!(missing, Some(WL_COPY_MISSING));
+
+        // A `wl-copy` on PATH that is executable is enough.
+        let directory = std::env::temp_dir().join(format!("hex-paste-path-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let helper = directory.join("wl-copy");
+        std::fs::write(&helper, b"").unwrap();
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(missing_wl_copy(Some(directory.as_os_str())), None);
+
+        // A file that cannot run is no better than no helper at all.
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(
+            missing_wl_copy(Some(directory.as_os_str())),
+            Some(WL_COPY_MISSING)
+        );
+        let _ = std::fs::remove_dir_all(directory);
     }
 
     #[test]

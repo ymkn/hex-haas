@@ -221,8 +221,11 @@ fn model_row(p: Paint, index: usize, model: &ChoiceRow) -> El {
     let tag = model
         .recommended
         .then(|| Badge::new(tr("Recommended")).build(p.k).key("recommended"));
+    // The radio inside is the choice assistive technology reads; the row
+    // only widens where a press lands.
     row()
         .key(format!("model{index}"))
+        .role("none")
         .min_h(METRICS.row_h_described)
         .px(METRICS.row_px)
         .py(10.0)
@@ -603,6 +606,7 @@ fn try_flights(s: &Onboard) -> Vec<(Flight, super::field_text::Slot<'static>)> {
 
 fn try_page(p: Paint, s: &Onboard) -> El {
     let holding = s.step == Step::TryHearing || s.live_hold_from.is_some();
+    let warming = s.live.as_ref().is_some_and(|live| live.warming);
     let head = match s.step {
         Step::TryHeard => heading(
             p,
@@ -611,6 +615,7 @@ fn try_page(p: Paint, s: &Onboard) -> El {
             tr("That's Hex"),
             lead(p, tr("It types wherever your cursor is, in any app.")),
         ),
+        _ if warming => heading(p, s, "try", tr("Your turn"), lead(p, live::warming_copy())),
         _ => heading(
             p,
             s,
@@ -717,9 +722,12 @@ fn interactive_try_stage(p: Paint, s: &Onboard) -> El {
     let shortcut = s.caps.join("");
     let stage = practice_stage(p);
     let reduced = s.reduced.get();
+    let warming = s.live.as_ref().is_some_and(|live| live.warming);
     let editor = TextArea::new(&s.practice)
         .placeholder(if s.dictated.hearing() {
             String::new()
+        } else if warming {
+            live::warming_copy().to_owned()
         } else {
             tr_fill("Hold {} and say a sentence…", &shortcut)
         })

@@ -36,16 +36,13 @@ use crate::desktop::host::{
     DesktopAction, DesktopListenerSnapshot, DesktopShortcut, DesktopTranscriptionSnapshot,
     DesktopUpdateStatus,
 };
+use crate::desktop::tray_icon;
 use crate::desktop::tray_menu::{TrayCommand, TrayView};
 use crate::history::History;
 use crate::rune_ui::Ui;
 use crate::transcription::models::TranscriptionModelId;
 use crate::windows::app::WindowsDesktopHost;
 
-/// The tray icon: the white Hex mark as raw 32×32 RGBA, recolored black for
-/// a light taskbar ([`tray_icon_pixels`]).
-const TRAY_ICON_SIZE: u32 = 32;
-const TRAY_ICON_RGBA: &[u8] = include_bytes!("../../resources/windows/tray-32.rgba");
 /// How often the runtime refreshes the listener while nothing is asked.
 const RUNTIME_TICK: Duration = Duration::from_millis(250);
 
@@ -89,6 +86,8 @@ pub(crate) enum ShortcutTarget {
     Capture,
     /// Dictate without processing.
     RawDictation,
+    /// Toggle mode's cancel shortcut.
+    Cancel,
 }
 
 /// What the runtime last published for the window.
@@ -101,6 +100,7 @@ pub(crate) struct Published {
     pub(crate) transcription: DesktopTranscriptionSnapshot,
     pub(crate) update_status: DesktopUpdateStatus,
     pub(crate) update_notes: Option<crate::desktop::host::UpdateNotes>,
+    pub(crate) update_blocked: Option<&'static str>,
     pub(crate) settings: AppSettings,
     /// The running listener's state, for the tray.
     pub(crate) state: Option<crate::desktop::events::VoiceState>,
@@ -160,20 +160,20 @@ pub fn open(event_path: PathBuf, shutdown: &'static AtomicBool, start_hidden: bo
     let Some(instance) = crate::windows::app::AppInstance::claim(start_hidden)? else {
         return Ok(());
     };
+    name_ui_thread();
     crate::labs::log_launch();
     shutdown.store(false, Ordering::Relaxed);
-    let (settings, settings_error) = AppSettings::load_for_launch();
+    let launch = AppSettings::load_for_launch();
+    let settings_error = launch
+        .note
+        .map(crate::app_settings::LaunchNote::into_message);
+    let settings = launch.settings;
     let history = History::open_default(settings.history_retention)
         .inspect_err(|error| tracing::warn!(%error, "could not open retained history"))
         .ok();
-    crate::windows::gpu_fallback::arm();
+    crate::windows::gpu_fallback::watch();
     let mut app = crate::rune_ui::app(Default::default())
-        .args(Vec::new())
-        .on_frame_encoded(|frame| {
-            if frame.outcome() == rune::FrameOutcome::Drawn {
-                crate::windows::gpu_fallback::disarm();
-            }
-        })
+        .args(crate::rune_ui::window_args())
         .on_window(|window| {
             let _ = window.with_raw_handle(|handle| {
                 if let rune::raw_window_handle::RawWindowHandle::Win32(handle) = handle.as_raw() {
@@ -184,7 +184,29 @@ pub fn open(event_path: PathBuf, shutdown: &'static AtomicBool, start_hidden: bo
             });
         });
     let window = app.handle();
-    let tray = match create_tray(window.clone()) {
+    // Adding the tray icon waits for Explorer, so it runs on its own thread
+    // while the overlays install.
+    let adding_tray = {
+        let window = window.clone();
+        std::thread::Builder::new()
+            .name("hex-tray-setup".into())
+            .spawn(move || create_tray(window))
+    };
+    let hud = crate::rune_hud::install(&mut app);
+    crate::rune_ui::live_text::install(&mut app, crate::rune_hud::live_text_place);
+    // The capture capsule, picker, and ink.
+    let _capture_overlays =
+        crate::rune_ui::capture_capsule::feed::CaptureOverlays::install(&mut app);
+    let meetings = crate::meeting::runtime::Meetings::install(&mut app, shutdown)
+        .inspect_err(|error| tracing::error!(%error, "meetings could not start"))
+        .ok();
+    let added_tray = match adding_tray {
+        Ok(thread) => thread
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+        Err(_) => create_tray(window.clone()),
+    };
+    let tray = match added_tray {
         Ok(tray) => {
             app = if start_hidden {
                 app.windowless()
@@ -200,14 +222,6 @@ pub fn open(event_path: PathBuf, shutdown: &'static AtomicBool, start_hidden: bo
             None
         }
     };
-    let hud = crate::rune_hud::install(&mut app);
-    crate::rune_ui::live_text::install(&mut app, crate::rune_hud::live_text_place);
-    // The capture capsule, picker, and ink.
-    let _capture_overlays =
-        crate::rune_ui::capture_capsule::feed::CaptureOverlays::install(&mut app);
-    let meetings = crate::meeting::runtime::Meetings::install(&mut app, shutdown)
-        .inspect_err(|error| tracing::error!(%error, "meetings could not start"))
-        .ok();
     let (requests, receiver) = mpsc::channel();
     let shared = Arc::new(Shared::default());
     RUNTIME
@@ -218,7 +232,12 @@ pub fn open(event_path: PathBuf, shutdown: &'static AtomicBool, start_hidden: bo
         })
         .map_err(|_| eyre!("the Hex runtime already started"))?;
     let (control_calls, control_receiver) = mpsc::sync_channel(8);
-    let local_api = crate::local_api::LocalApi::start_for_app(&event_path, control_calls, None);
+    let (dictation_controls, dictations) = mpsc::sync_channel(8);
+    let local_api = crate::local_api::LocalApi::start_for_app(
+        &event_path,
+        control_calls,
+        Some(dictation_controls),
+    );
     let quit = window.clone();
     let runtime_tray = tray.clone();
     let runtime_shared = shared.clone();
@@ -235,6 +254,7 @@ pub fn open(event_path: PathBuf, shutdown: &'static AtomicBool, start_hidden: bo
                 shutdown,
                 hud,
                 runtime_tray.as_deref(),
+                dictations.into(),
             );
             quit.quit();
         })?;
@@ -266,6 +286,17 @@ pub fn open(event_path: PathBuf, shutdown: &'static AtomicBool, start_hidden: bo
     Ok(())
 }
 
+/// Names the main thread, which runs Rune's event loop and draws, so
+/// profilers and debuggers tell it from Hex's other threads (which the
+/// standard library names when they start).
+fn name_ui_thread() {
+    use windows_sys::Win32::System::Threading::{GetCurrentThread, SetThreadDescription};
+    let name: Vec<u16> = "hex-ui".encode_utf16().chain([0]).collect();
+    // SAFETY: `name` is a NUL-terminated UTF-16 string that outlives the
+    // call, and the pseudo handle names the calling thread.
+    unsafe { SetThreadDescription(GetCurrentThread(), name.as_ptr()) };
+}
+
 // ---------------------------------------------------------------------------
 // Runtime thread
 
@@ -280,19 +311,20 @@ fn run_runtime(
     shutdown: &AtomicBool,
     indicator: crate::rune_hud::HudSender,
     tray: Option<&rune::Tray>,
+    dictations: crate::dictation::service::DictationQueue,
 ) {
     let mut tray_view = None;
     let mut tray_meetings = None;
     indicator.set_position(settings.indicator_position);
-    let hud = indicator.clone();
-    let mut host =
-        WindowsDesktopHost::new(event_path, settings, settings_error, history, indicator);
+    let mut host = WindowsDesktopHost::new(
+        event_path,
+        settings,
+        settings_error,
+        history,
+        indicator,
+        dictations,
+    );
     loop {
-        // A HUD frame counts as this launch's first drawing too, for a
-        // launch that never opens the window.
-        if crate::windows::gpu_fallback::armed() && hud.presented() {
-            crate::windows::gpu_fallback::disarm();
-        }
         let mut next = match requests.recv_timeout(RUNTIME_TICK) {
             Ok(request) => Some(request),
             Err(RecvTimeoutError::Timeout) => None,
@@ -380,7 +412,9 @@ impl WindowsControl {
         })?;
         listener
             .send(command)
-            .map_err(|_| ControlError::new("busy", "Hex's listener stopped; try again"))
+            .map_err(|_| ControlError::new("busy", "Hex's listener stopped; try again"))?;
+        crate::windows::dictation::wake();
+        Ok(())
     }
 }
 
@@ -643,23 +677,11 @@ fn taskbar_is_light() -> bool {
         .is_ok_and(|light| light != 0)
 }
 
-/// The tray mark for the taskbar's theme: the white mark on a dark taskbar,
-/// the same shape in black on a light one, where white would vanish.
-fn tray_icon_pixels(light_taskbar: bool) -> Vec<u8> {
-    let mut pixels = TRAY_ICON_RGBA.to_vec();
-    if light_taskbar {
-        for pixel in pixels.as_chunks_mut::<4>().0 {
-            pixel[..3].fill(0);
-        }
-    }
-    pixels
-}
-
 fn create_tray(window: rune::AppHandle<Ui>) -> Result<rune::Tray> {
     let icon = rune::TrayIcon::rgba(
-        TRAY_ICON_SIZE,
-        TRAY_ICON_SIZE,
-        tray_icon_pixels(taskbar_is_light()),
+        tray_icon::SIZE,
+        tray_icon::SIZE,
+        tray_icon::pixels(taskbar_is_light()),
     );
     let view = TrayView::default();
     let spec = rune::TraySpec::new("hex", "Hex", icon)
@@ -724,21 +746,4 @@ fn create_tray(window: rune::AppHandle<Ui>) -> Result<rune::Tray> {
         _ => {}
     })?;
     Ok(tray)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn light_taskbar_gets_a_dark_mark_with_the_same_shape() {
-        let dark = tray_icon_pixels(false);
-        let light = tray_icon_pixels(true);
-        assert_eq!(dark, TRAY_ICON_RGBA);
-        assert_eq!(light.len(), (TRAY_ICON_SIZE * TRAY_ICON_SIZE * 4) as usize);
-        for (shown, mark) in light.as_chunks::<4>().0.iter().zip(dark.as_chunks::<4>().0) {
-            assert_eq!(&shown[..3], &[0, 0, 0]);
-            assert_eq!(shown[3], mark[3]);
-        }
-    }
 }

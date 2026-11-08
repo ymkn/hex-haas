@@ -1,5 +1,4 @@
 /target
-/target-cpu/
 /.venv
 /logs
 /perf/transcription-corpus
@@ -17,6 +16,7 @@ __pycache__/
 /ios/HEXMobile.xcodeproj
 /result
 /result-*
+/perf/seeds/.generated/
 /tools/haas/
 /tools/haas-cpu/
 /haas-data/

@@ -2,8 +2,11 @@
 
 Hold the configured shortcut, speak, and release. Hex transcribes locally and
 inserts the result at the current focus. New captures do not cancel accepted
-work, and dictation has no cancel: every intentional dictation finishes and
-pastes (#786).
+work. Only Toggle mode has a cancel: its cancel shortcut, Escape by default,
+discards the recording (#786, #1022); every other intentional dictation
+finishes and pastes. The exception is a Labs › Caps Lock dictation capture on
+macOS: it is hands-free in every shortcut mode, so its own Escape binding
+cancels it even in Hold.
 
 This map covers the macOS release path. Linux shares the basic journey, not
 every timing, input, or recovery guarantee; see the
@@ -43,6 +46,25 @@ recorder temporarily grabs the pointer while its window has focus and releases
 it on save, cancellation, focus loss or window close. Windows waits for the
 click that opened the recorder to be released before accepting a mouse button.
 
+macOS with Labs › Caps Lock dictation on (`labs.caps_lock_dictation`, off by
+default): a physical Caps Lock press toggles a hands-free dictation instead of
+typing. From idle it starts a capture that stays recording without a hold; the
+next press finishes it through the same transcription, processing, and paste
+path as Toggle's lock. A hold capture, a pending double tap, or another
+shortcut's recording is left alone, the normal shortcut keeps working when
+nothing records and stands down while a Caps Lock capture runs, and Escape
+cancels the Caps Lock capture in every shortcut mode (in Toggle mode, Toggle's
+other cancel shortcut does not; only Escape does). A Caps Lock remapped to
+Control or Escape never changes AlphaShift, so it never toggles dictation. Each
+press also clears the system Caps Lock state, so following keys stay
+lowercase, and the key's light is solid while any capture records (including a
+normal-shortcut or Annotate capture), blinks while Hex transcribes or
+processes, and is off otherwise. Turning the lab off or quitting Hex clears the
+light and restores normal Caps Lock behaviour. The light needs Input Monitoring
+(which Hex already asks for); without it dictation still works and the light
+stays under macOS's control. Implemented November 7, 2026, not verified on
+hardware; details and checks in [labs.md](labs.md).
+
 Wayland's XDG shortcut syntax has no mouse-button trigger. Use the desktop's
 mouse bindings to run `hex dictation start`/`stop` (hold) or `hex dictation toggle`
 (toggle), or `hex paste-last`. Existing mouse
@@ -68,9 +90,18 @@ remapped to Menu with GNOME's keyboard options and
 reach X11 grabs as keysyms 0xff67/0xff13/0xff14 and the portal as `Menu`,
 `Pause`, `Scroll_Lock`. Off, `hex settings` refuses them, the window's
 recorder refuses them, and a saved shortcut on one goes back to its default
-when settings load or the toggle turns off. Limit: Rune doesn't report these
-keys to the window's recorder, so set them with `hex settings`. Details and
-checks in [labs.md](labs.md).
+when settings load or the toggle turns off. On, the window's recorder takes
+them too (#1187). Details and checks in [labs.md](labs.md).
+
+Linux with Labs › Section key alone on (`labs.section_key_alone`, off by
+default; issue 1050): the ISO § key, left of 1, may be a shortcut with no
+modifier. The window's recorder takes § pressed alone and shows §, and
+`hex settings set dictation_hotkey §` (or `section`) saves it. It reaches X11
+grabs as keysym 0xa7 and the portal as `section`. Off, the recorder answers
+"Add a modifier" as before, `hex settings` refuses it, and a saved § shortcut
+without a modifier goes back to its default when settings load or the toggle
+turns off. While bound, § is Hex's in every app. Details and checks in
+[labs.md](labs.md).
 
 Checks: `mouse_buttons_record_with_or_without_modifiers`,
 `mouse_bindings_persist_and_conflict_only_with_the_same_trigger`,
@@ -111,7 +142,7 @@ navigation key press with the Fn flag, and the recorder leaves it out of the
 binding, so a recorded F14 (or ⌘F14 for Voice Action) never matched and never
 started. Matching now ignores that flag only for a binding on one of those keys
 that does not ask for Fn; Fn stays significant everywhere else. Check:
-`function_keys_match_despite_the_fn_flag_macos_adds` in `suppression.rs`
+`function_keys_match_despite_the_fn_flag_macos_adds` in `suppression/tests.rs`
 (constructed events; no physical-keyboard run).
 
 **Fixed October 30, 2026 (issue 462):** the Globe key can also send its own key
@@ -121,7 +152,29 @@ with it and discarded most presses as a chord 60–130 ms after they started.
 For a shortcut that holds Fn, key code 179 is now neither a chord key nor HID
 chord evidence; any other key still is. Check:
 `globe_key_events_are_not_a_chord_with_the_function_shortcut` in
-`suppression.rs` (constructed events; no physical-keyboard run).
+`suppression/tests.rs` (constructed events; no physical-keyboard run).
+
+**Implemented November 7, 2026 (issue 37), unverified:** remapping Caps Lock to
+Control makes macOS's HID keyboard filter rewrite its usage (0x39) to Right
+Control (0xE4) before CoreGraphics sees it, so a Right Control shortcut also
+started from Caps Lock. Hex now reads the raw HID modifier state below that
+filter (`IOHIDManager`, opened without seizing the keyboards), and when Caps
+Lock is physically held while a side-specific modifier bit has no matching
+physical key, it drops the side and keeps the general modifier flag, which
+matches as either side. A real Right Control press (physical usage 0xE4) is
+untouched. Hex never requests Input Monitoring, so the tracker runs only when
+Hex already has it: turn Hex on under System Settings › Privacy & Security ›
+Input Monitoring and restart Hex. `IOHIDCheckAccess` gates the tracker; without
+that permission it stays off (logged once), the flags are unchanged, and Right
+Control still starts from a remapped Caps Lock. The shortcut recorder applies
+the same normalization only while the listener's input monitor is running, so
+recording a remapped Caps Lock saves a side-less Control. This is implemented
+but not verified on physical hardware; see the missing-evidence note in
+[recovery.md](recovery.md#remapped-control).
+Check: `normalized_remapped_caps_lock_starts_only_a_side_less_control_binding`
+and `a_remapped_caps_lock_does_not_hold_a_real_right_control_capture` in
+`suppression/tests.rs`, plus the normalization tests in
+`app_settings/hotkeys.rs` (constructed snapshots; no physical remap run in CI).
 
 ### Chord Shortcuts
 
@@ -180,14 +233,25 @@ Alt alone never matches there; bind Right Ctrl instead. Checks:
 `one_modifier_alone_is_a_shortcut_and_alt_or_windows_mask_their_release`,
 `a_key_joining_a_held_modifier_ends_it_quietly_unless_it_records` in
 [windows/input.rs](../../src/windows/input.rs), cross-compiled only; the menu
-mask and AltGr behavior have not run on a Windows PC. Linux
+mask and AltGr behavior have not run on a Windows PC.
+
+**Fixed November 4, 2026 (issue 1254):** a Windows key chord holding Alt or
+Windows (Alt+0, say) swallows its key, so the app saw Alt pressed and released
+alone. Chrome took that as a menu tap and moved focus to its menu button, and
+the paste landed there instead of the page. When Hex swallows the key of a
+chord (dictation, Dictate without processing, Paste Last, Annotate) that holds
+Alt or Windows, that modifier's release is now masked like a modifier-only
+shortcut's: swallowed, VK 0xE8 tapped, release replayed (not with Share
+shortcut). Check: the `holds_menu_modifier` assertions in
+`one_modifier_alone_is_a_shortcut_and_alt_or_windows_mask_their_release`
+(cross-compiled only; not run in Chrome on a Windows PC). Linux
 binds what the portal and X11 grabs take, a key with modifiers and no side:
 releasing modifiers pressed alone in the recorder says Linux needs a key (or
 can't bind both sides) and suggests adding one, such as Space.
 
 Checks: the `both_options_*` tests and
 `one_sided_options_never_start_with_both_held_but_either_side_does` in
-`suppression.rs`, `shortcuts_store_as_chords_and_old_files_convert_once` and
+`suppression/tests.rs`, `shortcuts_store_as_chords_and_old_files_convert_once` and
 `both_sides_conflict_only_with_either_side_and_match_only_together` in
 `app_settings.rs`, `both_options_record_as_one_chord_of_two_keys` in
 `rune_ui/macos_host.rs`, `both_sides_must_go_down_together` in
@@ -303,6 +367,17 @@ Whole-clip run starts -> labs::skip_pauses()        // dictate.skip-pauses
 
 Details and checks in [labs.md](labs.md).
 
+**Fixed November 3, 2026 (issue 1194):** a clip longer than the model's
+window (Cohere's 35 s) is transcribed in chunks, and a chunk that was only
+silence (a locked dictation left waiting before the words) went to the model
+anyway; Cohere invented long repeating text for it, pasted before the real
+sentence. Each chunk of such a clip now goes through the speech detector
+first and is skipped when it hears no speech; without the detector every
+chunk still runs. Clips that fit the window are unchanged. Check:
+`a_long_clip_skips_only_chunks_the_detector_hears_no_speech_in` in
+[gguf_session.rs](../../src/transcription/gguf_session.rs) (detector verdict
+overridden; not run with Cohere on real audio).
+
 ### Vocabulary Quality Checks
 
 `hex benchmark-transcription` accepts a scoring vocabulary and expected terms,
@@ -333,7 +408,7 @@ Intentional recording -> No automatic duration limit
 ```
 
 Source: `handle_hotkey_action` in [recognition.rs](../../src/recognition.rs).
-Checks in [suppression.rs](../../src/suppression.rs):
+Checks in [suppression/tests.rs](../../src/suppression/tests.rs):
 `callback_timestamps_preserve_nanoseconds_and_short_tap_discard`,
 `callback_press_reaches_intentional_hold_on_the_audio_clock`.
 These cover constructed callback/reducer timing, not physical event delivery.
@@ -388,6 +463,148 @@ read as held, and pastes. Checks:
 `accepted_output_waits_through_another_capture` in
 [linux/paste.rs](../../src/linux/paste.rs) (constructed state; not run on a
 desktop).
+
+**Added November 3, 2026 (issue 1111):** on GNOME Wayland the previous
+clipboard never came back after a paste, because Mutter offers neither
+ext-data-control nor wlr-data-control. Labs › Restore clipboard on GNOME
+(`gnome-clipboard-restore`, off by default, Linux) now snapshots, checks, and
+restores it through XWayland's CLIPBOARD selection, which Mutter bridges to
+Wayland apps both ways. It applies only on a Wayland session without
+data-control and only while this user's Xwayland process already runs with
+`DISPLAY` set, so Hex never starts XWayland; the generation and
+still-holds-the-paste rules are unchanged. While it is off there, Settings ›
+Output shows a note pointing to it. Checks:
+`xwayland_restores_only_by_opt_in_without_data_control`,
+`xwayland_is_looked_for_only_when_it_could_be_used`, and
+`xwayland_counts_only_this_users_process` in
+[linux/clipboard.rs](../../src/linux/clipboard.rs);
+`gnome_desktops_point_to_the_clipboard_lab_until_it_is_on` (constructed state;
+not run on GNOME).
+
+### Live Typing (Labs, Linux Wayland)
+
+```ts
+Labs › Live typing on (labs.live_typing, off by default, Wayland only)  // labs.live-typing
+Capture becomes intentional (hold threshold, or the Toggle press)
+  -> Takes a dictation::live_text::TypingDemand, then Begin: get_input_method(seat)
+  -> The stream opens afterwards, so the engine sees the demand and publishes partials
+  -> Each stable + tentative change -> The newest preedit is sent (older ones coalesce), underlined in the focused field
+  -> Escape, a short tap, silence, a lost microphone, a failed job, or the listener quitting -> Cancel: clear, destroy
+Release -> Process the final text -> Finish
+  ├── Active text input and one line within 4000 bytes -> The owner claims the commit first,
+  │     then clear preedit, commit_string, destroy -> inserted, clipboard untouched
+  ├── A caller that gives up first -> abandoned; owner only clears (up to 250 ms), then LinuxPaster.paste
+  ├── No decision in 350 ms and the owner already claimed -> wait up to 750 ms and do not paste
+  └── CPU engine or non-streaming model -> No words while speaking; the final text still commits here
+```
+
+The input method exists from that intentional start until Finish or Cancel,
+which includes post-release processing; a short tap or chord that never
+becomes intentional creates none. It does not need a stream: a CPU engine or
+a model that cannot stream shows no provisional words, but the finished text
+still goes in through the input method instead of the clipboard. Hex's own
+first-run practice field on Linux is an ordinary focused field, so it takes
+the preedit and the final commit too while Live typing is on. A newer
+capture's Begin takes over from an older job, whose Finish then returns false
+and pastes. `zwp_input_method_manager_v2` is a wlroots-family protocol (Sway,
+Hyprland, and other wlroots compositors); KWin and Mutter do not offer it, so
+KDE and GNOME paste through the RemoteDesktop portal or `wtype` instead. A
+compositor with another input method (fcitx, ibus) reports `unavailable` and
+Live typing stays inert.
+
+History, last dictation, tones, and Output are unchanged: a committed
+dictation counts as pasted. Live text off does **not** disable Live typing:
+the capture takes its own `TypingDemand` at that same intentional start
+before the stream opens, which the engine sees and the plate does not. The
+plate itself is decided once when the stream opens, so toggling Labs › Live
+text mid-capture changes nothing. On X11 or with the toggle off, nothing
+starts and the capture behaves exactly as before.
+
+The commit claim is one shared atomic state: the owner changes Pending →
+Committing before it queues any commit request, and a waiting caller changes
+Pending → Abandoned when it gives up. Only one can win. If the caller wins,
+it waits up to 250 ms for the owner's clear; after that it pastes anyway, so
+a wedged compositor can leave a preedit visible until it tears the input
+method down. After an abandoned Finish, Live typing starts no new captures
+and pastes instead until Hex restarts; a session that had already begun
+still finishes and cancels. A residual protocol race remains: a `done` event can arrive
+after `dispatch_pending` and before `commit(serial)`, so a commit can use a
+serial one behind; the affected preedit or commit is then ignored by the
+compositor. A commit ignored for a stale serial has already returned
+“inserted”, so that dictation is lost rather than pasted (wlroots does not
+enforce the serial today). Checks (unit tests only):
+`provisional_words_become_one_preedit_line`,
+`a_preedit_stops_at_a_character_boundary`,
+`only_one_line_text_within_the_limit_commits_through_the_input_method`,
+`the_cursor_sits_after_the_preedit`,
+`done_events_number_the_commit_serial_and_apply_activation`,
+`the_owner_wins_the_commit_before_queueing_it`,
+`a_waiting_caller_wins_abandonment_before_the_owner_claims`,
+`a_started_session_cancels_when_dropped`,
+`a_session_that_never_started_sends_nothing`,
+`finishing_a_session_never_sends_cancel`,
+`only_the_newest_preedit_waits_and_it_wakes_once`,
+`a_full_control_queue_stops_new_sessions_but_not_old_ones`, and
+`a_stopped_owner_still_finishes_and_cancels_a_session_that_began` in
+[linux/live_typing.rs](../../src/linux/live_typing.rs);
+`a_typing_demand_feeds_the_engine_without_wanting_the_plate` in
+[dictation/live_text.rs](../../src/dictation/live_text.rs); and
+`the_plate_follows_the_decision_made_when_the_stream_opened` in
+[dictation.rs](../../src/dictation.rs). **Not verified on
+a real compositor**: no GTK/Qt field or Sway/Hyprland run; KWin and Mutter
+fall back to paste by design.
+
+**Fixed November 3, 2026 (issue 1158):** on Linux with PipeWire, Hex's
+microphone stream (held open while the microphone is kept ready) was named
+by the ALSA plugin after the binary, with spaces and varying by packaging,
+so audio idle inhibitors couldn't be told to ignore it and the screen never
+locked. Every ALSA stream Hex opens now carries `application.name` and
+`node.name` `hex` (`PIPEWIRE_ALSA`, set at startup beside
+`state.restore-target`). Check: `streams_carry_a_stable_name_without_spaces`
+in [linux/input_route.rs](../../src/linux/input_route.rs) (property string
+only; not run against PipeWire or an inhibitor).
+
+**Fixed November 4, 2026 (issue 1309):** on Linux (PipeWire), about a second
+of speech or background audio from before the press was transcribed. The
+press was placed at the end of the newest microphone chunk, and ALSA's default
+period can be most of a second, so the 450 ms pre-roll counted from there.
+Hex now asks for a 20 ms period (falling back to the device default), places
+presses and releases on the stream clock (`StreamClock` in
+[linux/dictation.rs](../../src/linux/dictation.rs)), and keeps exactly the
+pre-roll before the press, dropping earlier audio from chunks still to arrive
+(`DictationCapture::start_at_press`). The hold threshold counts from the
+press, and a replaced or reopened stream starts its clock over; a press
+before its first chunk records from that chunk. Checks:
+`a_press_inside_a_large_chunk_keeps_exactly_the_pre_roll` and
+`a_press_ahead_of_large_chunks_measures_the_hold_from_the_press` in
+[dictation.rs](../../src/dictation.rs),
+`a_press_between_large_chunks_is_placed_on_the_stream_clock` and
+`a_reopened_stream_carries_no_old_clock` in linux/dictation.rs (constructed
+chunks; not run against PipeWire or a physical microphone).
+
+**Changed November 4, 2026 (issue 1309 follow-up):** with "While dictating"
+set to Mute or Pause media, the pre-roll came from before the mute took
+effect and picked up whatever was playing. On every OS, those hotkey captures
+now keep no pre-roll (`dictation::hotkey_pre_roll`); Do nothing keeps 450 ms
+(Duck kept it until issue 1468, below). There is no separate setting. Check:
+`suppressing_audio_while_dictating_keeps_no_pre_roll` in
+[dictation.rs](../../src/dictation.rs) (constructed audio; not run on a
+device).
+
+**Changed November 7, 2026 (issue 1468):** with "While dictating" set to
+Lower audio, lowering ramped over a full second after the 300 ms hold
+threshold, and the 450 ms pre-roll came from before the lower took effect, so
+the start of every dictation stayed loud. Lowering now reaches its target in
+about 120 ms (`LOWER` in
+[audio/output_ducking.rs](../../src/audio/output_ducking.rs)), Duck keeps no
+pre-roll like Mute and Pause media, and restoring still eases back over one
+second. Checks:
+`ducking_preserves_balance_silence_and_restores` and
+`lowering_finishes_at_its_own_duration_while_restoring_is_still_ramping` in
+audio/output_ducking.rs, and
+`suppressing_audio_while_dictating_keeps_no_pre_roll` in
+[dictation.rs](../../src/dictation.rs) (constructed audio; not run on a device
+or physical output).
 
 **Fixed November 2, 2026 (issue 978):** a Windows paste refused to run when
 the clipboard held only a format Hex can't snapshot (an app's private
@@ -475,11 +692,13 @@ General > Shortcut mode (under Shortcut)               // dictate.shortcut-mode
 Tap
   Press -> Start (pre-roll as usual) -> Release keeps recording
   -> Fresh shortcut press -> Finish (with the release tail)
-  -> Escape -> Nothing: it reaches the app (#786)
+  -> Cancel shortcut (Escape by default) -> Cancelled, see Toggle Cancel below
   // Shortcut chords during the first 300 ms still discard
-  macOS, Labs › Tap or hold on (labs.tap_or_hold, off by default, #711):
+  macOS and Linux, Labs › Tap or hold on (labs.tap_or_hold, off by default, #711, #1144):
   ├── Release 300 ms or more after the press -> Finish (with the release tail)
-  └── Sooner -> Keeps recording, as above
+  ├── Sooner -> Keeps recording, as above
+  └── Linux: key repeats keep the first press's time; the dictation shortcut
+      and Dictate without processing alike; hex dictation commands unchanged
   Linux: release never arrives (Hyprland Lua bind, Alt up before Z)
   ├── Press 1 s or more after the last press -> Finish
   └── Sooner -> Ignored as a key repeat (KWin repeats held shortcuts)
@@ -580,7 +799,7 @@ LOCKED -> Speak hands-free -> Fresh shortcut press -> Finish
        -> Missed key release -> Neutral keyboard repairs tracking -> Still LOCKED
 ```
 
-Checks in [suppression.rs](../../src/suppression.rs):
+Checks in [suppression/tests.rs](../../src/suppression/tests.rs):
 `callback_double_tap_locks_for_modifier_and_key_bindings`,
 `callback_hold_and_double_tap_boundaries_are_milliseconds`,
 `second_tap_finishes_as_press_and_hold_when_double_tap_cannot_lock`,
@@ -593,6 +812,9 @@ These cover gesture decisions, not hardware keyboard-layout or remapping equival
 ```ts
 Keep ready -> Press shortcut                          // dictate.boundaries
   -> Include up to 450 ms of available pre-roll
+     └── "While dictating" mutes, pauses, or lowers -> No pre-roll (it predates it)
+  -> Linux: press and release placed on the stream clock (newest chunk's end
+     plus the time since it arrived), so large chunks add no pre-press audio
   -> Delayed handling still uses original event boundaries
   -> Release excludes audio captured after physical release + 200 ms
 
@@ -685,6 +907,27 @@ silent), `restoring_without_a_mute_runs_its_callback_first`, and
 (unmute, then tone) is checked by reading the code, not on a muted device, and a
 physical F12 release has not been recorded.
 
+**Growing tail, November 3, 2026 (issue 1101):** stopping while still saying
+the last word cut it partway, and the model guessed another word. The 200 ms
+tail is now the minimum: when sustained speech (100 ms of 20 ms frames 12 dB
+over the noise floor, syllable gaps up to 40 ms) runs into its end, capture
+continues until 160 ms of quiet or 600 ms after the release
+(`DictationCapture::release_tail`, `MAX_RELEASE_TAIL`). A key click is too
+short to count. The stop tone may be: speech then also has to be heard once
+the current set's stop sound (`feedback::stop_tone_length`) plus 60 ms has
+passed, so a release followed only by the tone waits until then and keeps
+200 ms. The release event stays exact. The macOS audio owner and the Linux
+and Windows loops (`ReleaseWait`) wait at most the base tail plus 100 ms, or
+700 ms once speech grows it; a lost microphone finishes with what arrived.
+Escape, short taps, voice controls, programmatic stops, and meetings still
+get no tail. Checks in dictation.rs:
+`a_word_said_through_the_release_keeps_the_tail_open_until_it_ends`,
+`a_release_after_the_speech_keeps_the_base_tail_without_waiting_longer`,
+`speech_that_carries_on_stops_the_tail_at_its_cap`, and
+`the_stop_tone_or_a_key_click_never_grows_the_tail` (synthetic tones through
+the capture timeline at 16 kHz). Not measured on a microphone or a real
+speaker playing the tone.
+
 ### Streaming Finish
 
 ```ts
@@ -696,12 +939,15 @@ Model advertises streaming, GPU device             // dictate.streaming
   Shortcut capture passes the hold threshold (Toggle on Windows and Linux: on press)
     -> Open one live stream; feed the 16 kHz backlog, then every 160 ms
        // same audio as the final clip, pre-roll included; never blocks capture
-  Release -> Collect the 200 ms tail -> Finish with the complete clip
+  Release -> Collect the release tail (200 ms, up to 600 ms while speech goes on)
+    -> Finish with the complete clip
     -> Feed any unfed remainder
     -> macOS Unified English: feed 400 ms of silence, as the whole clip gets
     -> Finalize -> Final text
        ├── Stream failed, produced no text, or was fed > 250 ms past the clip
        │   -> Transcribe the whole clip offline (source=fallback)
+       ├── ≥ 300 ms of speech the stream heard lies > 400 ms past its text's end
+       │   -> Transcribe the whole clip offline (source=fallback)   // #1101
        ├── No final text within 1.5 s -> Abort the stream -> Whole clip
        └── Model switched during the capture -> Stream closed -> Whole clip
   Short tap, chord discard, microphone failure -> Drop the stream
@@ -722,6 +968,12 @@ Model advertises streaming, GPU device             // dictate.streaming
   ├── Provisional: never pasted, copied, or kept (the final text replaces it)
   ├── A failed or interrupted stream clears the text while the capture goes on
   └── process.log: `partials` on "finished live stream"; per change at debug (no words)
+  Labs + labs.live_typing (Linux Wayland) -> The same text is the focused field's preedit  // labs.live-typing
+  ├── Begin at the intentional start, before the stream opens; destroyed at Finish or Cancel, so another input method keeps the seat
+  ├── Non-streaming model -> No words while speaking, but the final text still commits through the input method
+  ├── Finish -> The owner wins the commit claim, clears the preedit, commits the processed text, no clipboard
+  ├── Caller gives up first (350 ms) -> Owner only clears (up to 250 ms), then Paste
+  └── Owner already claimed the commit -> Wait up to 750 ms; never paste over it
   Picker -> "Streams" tag on catalog models whose artifact streams   // setup.model-card
   Picker -> The saved language's Recommended/Fastest/Most accurate cards first  // setup.model-routing
   ├── el: Cohere; tr, ms, fil, fa, mk, ar, ja, fi, sv, da: Whisper turbo first
@@ -737,6 +989,14 @@ Model advertises streaming, GPU device             // dictate.streaming
   ├── ru: GigaAM v3 Recommended (ai-sage's e2e RNN-T, Russian only, 274 MB, no
   │   hint; 5.37% WER on FLEURS Russian test against Parakeet v3's 6.52% and
   │   Whisper turbo's 5.36%, Hex's run), then Whisper turbo for Vocabulary (#952)
+  ├── no: NB-Whisper Medium Recommended (National Library of Norway, Norwegian
+  │   only, always with the `no` hint, 539 MB; 6.68% WER on FLEURS Norwegian
+  │   test against Whisper turbo's 8.94%, Hex's run), then Whisper turbo for
+  │   Vocabulary (#1150)
+  ├── en, fr, de, es, pt, it, ja: Granite Speech 5.0 (IBM's TurboCTC, 506 MB,
+  │   no hint) follows without a badge: on FLEURS test it trailed Parakeet
+  │   Unified/v3 in every European language and tied Whisper turbo in Japanese
+  │   (5.04% CER against 5.02%), Hex's run (#1252)
   └── Every other available model follows without a badge, selectable and
       deletable; never auto-switched or auto-downloaded (setup.language-select)
 ```
@@ -869,7 +1129,7 @@ only about 8 dB louder than the room missed the meeting detector's 12 dB
 speech margin, so the whole dictation counted as one pause and the stream
 heard only its first 2.5 s ("This in a test on the" for a 17 s clip over
 −35 dBFS noise). `PauseCap` now cuts only frames within 4 dB of the noise
-floor (or under −70 dBFS since #841) (`SpeechFrames::is_quiet`); anything louder is
+floor (or under −70 dBFS since #841) (`FrameLevel::quiet`); anything louder is
 kept. Noisier rooms keep more pause audio rather than lose speech. Check:
 `quiet_speech_over_steady_noise_is_never_cut_as_a_pause` (synthetic noise
 bursts, a fake stream; no real-model or microphone run).
@@ -896,6 +1156,39 @@ pause cap and the meeting pause detector alike. Check:
 speech over −58 dBFS noise on a −26 dBFS DC offset; synthetic, a fake
 stream). The DC offset is inferred from the reporter's logs (clips that pass
 the −50 dBFS silence gate yet read as quiet), not measured on the device.
+
+**Fixed November 3, 2026 (issue 1101):** a short last phrase after a pause of
+about 1 s could be missing from the paste while the clip held it: the stream
+finalized without it, and a stream with text was never retranscribed.
+`PauseCap` now records where each speech frame (the meeting detector's 12 dB
+margin) the stream heard ends, and after finalizing compares that with the
+end of the stream's last token. At least 300 ms of speech more than 400 ms
+past the text makes the stream unusable, so the whole clip is transcribed
+offline (`source=fallback`, reason "the stream's text ends at … ms but … ms
+of speech follows"). A key click or stop tone in the 200 ms tail is shorter
+than that. Checks:
+`a_stream_that_dropped_a_phrase_after_a_pause_falls_back_to_the_whole_clip`
+and `a_short_sound_after_the_text_does_not_discard_the_stream` (synthetic
+tones, a fake stream). **Observed November 3, 2026, apollo (Radeon 8060S,
+Vulkan), Unified English Q8, an ad hoc probe through `PauseCap` and the real
+stream:** a FLEURS clip cut to speech, 1 s of digital silence, and a 1.2 s
+phrase from the same speaker lost the phrase in the stream (with or without
+the macOS 400 ms trailing silence) while the whole clip kept it ("…channels
+25 to 30 years"); the check flagged it. Seven ordinary clips (JFK, FLEURS,
+product names, 1.7–15 s) finished from the stream; an 84 s speech ending in
+applause fell back. The stream's own loss is not fixed upstream.
+
+**Nemotron 3.5 ASR, observed November 3, 2026, apollo (Vulkan, Q8, Auto):**
+ten clips through `PauseCap` and the real cache-aware stream (JFK, FLEURS
+English and German, product names, and speech, a 1–1.2 s pause, and a short
+phrase from the same or another speaker) matched the whole clip word for word
+(one clip differed on a single product name), and none lost the late phrase,
+so the drop did not reproduce with this model. Its tokens carry real
+timings, but it puts the closing full stop on the clip's last frame, which
+would have hidden a dropped phrase; the text's end is now the last token with
+letters or digits (`spoken_text_end_ms`), and no clip fell back. Check:
+`a_closing_full_stop_at_the_clips_end_does_not_cover_a_dropped_phrase`. Not
+macOS or a microphone.
 
 ### Ongoing Jobs And Output
 
@@ -1105,29 +1398,45 @@ Source: `control_chord` in [windows/paste.rs](../../src/windows/paste.rs).
 Check: `paste_chords_press_shift_inside_control_and_leave_a_held_control_alone`
 (the synthesized key sequence only; no paste into a real Windows app).
 
-### No Cancel
+### Toggle Cancel
 
 ```ts
-Escape                                               // dictate.no-cancel
-  ├── Recording (held, locked, toggled) -> Nothing; the key reaches the app
-  │   -> Not a chord either, even beside a held modifier-only shortcut
-  ├── Accepted jobs -> Nothing; they finish and paste in order
-  ├── Annotate drawing -> Stops drawing only (Annotate's own Escape)
-  └── Programmatic dictation (local API) -> Its owner cancels through /cancel
-     -> The lease ends an abandoned one
-hex dictation cancel -> Removed; an older `hex` gets `removed`
-Linux portal -> No Cancel dictation shortcut; Escape never bound
+Settings › General, Shortcut mode = Tap (Toggle)     // dictate.toggle-cancel
+  -> Cancel row: the shortcut (`cancel_hotkey`), Escape by default
+     ├── Recorder -> any chord the OS's rules allow (Escape ends the recorder)
+     ├── Restore -> back to Escape
+     └── Wayland -> no recorder: bind `hex dictation cancel` in the desktop
+  Hold modes -> no row, no cancel
+Toggled recording (held or locked) -> Cancel shortcut
+  -> Recording discarded: nothing transcribed, pasted, or kept in History
+  -> Cancel tone; the HUD shows it cancelled
+  -> The key is kept from the app (press, repeats, release)
+  -> Jobs already transcribing -> finish and paste in order
+Idle, or any Hold mode -> Cancel shortcut -> Nothing: it reaches the app
+hex dictation cancel -> Discards whatever records, any mode; idle -> unchanged
+Annotate drawing -> Escape stops drawing first
+Programmatic dictation (local API) -> Its owner cancels through /cancel
 ```
 
-Until #786, Escape cancelled the active capture, then the newest unfinished
-job, and an accidental Escape wiped a 5-minute dictation. Short taps, chords,
-and silent captures still discard; Hex itself ends a capture only when its
-input or microphone is lost. Checks: `escape_never_ends_a_held_capture` and
-`toggle_mode_escape_leaves_a_locked_capture_recording` in
+Until #786, Escape cancelled the active capture in every mode, then the newest
+unfinished job, and an accidental Escape wiped a 5-minute dictation. #795
+removed cancel; the people who asked for it back use Toggle, so it returned
+there only, and never reaches past the recording. Hex takes the key only while
+a toggled recording runs: macOS's session tap suppresses it only while the
+listener arms it, Windows' hook only while its capture records, and X11
+grabs it only for the recording. A shortcuts portal would hold the key from
+every app for as long as Hex runs, so Wayland binds nothing for it. Checks:
+`the_cancel_shortcut_discards_only_a_toggled_recording` and
+`the_cancel_key_is_suppressed_only_while_armed` in
 [suppression.rs](../../src/suppression.rs) (macOS, not compiled on Linux),
-`escape_never_ends_a_dictation` in [linux/input.rs](../../src/linux/input.rs),
-`only_a_capture_claims_escape` in [recognition.rs](../../src/recognition.rs),
-and `an_older_cancel_gets_removed` in [control.rs](../../src/control.rs).
+`cancel_discards_a_toggled_recording`, `cancel_is_ignored_in_hold_mode`, and
+`cancel_is_not_taken_while_idle` in [linux/input.rs](../../src/linux/input.rs),
+`cancel_is_wanted_only_while_a_toggled_capture_records` in
+[windows/input.rs](../../src/windows/input.rs),
+`the_cancel_shortcut_shows_in_toggle_and_restores_escape` and the
+`toggle-cancel` goldens in [tests/panes.rs](../../src/rune_ui/tests/panes.rs),
+and `cancel_parses_and_takes_no_flags` in [control.rs](../../src/control.rs).
+The X11 grab and the hooks' suppression have no automated end-to-end check.
 
 ### Feedback
 
@@ -1143,8 +1452,14 @@ Record -> Release -> Transcribing/processing/paste -> Finished // dictate.feedba
         the microphone is open and the hold counts
   Dictation pasted >= 2 s after the stop tone -> Done tone      // dictate.done-tone
      -> Pasted sooner (the usual case) -> Stop tone only; `DONE_MIN_AFTER_STOP`
+     -> Stop tone still waiting on Lower audio -> Stop only, never done first
      -> Empty, failed, cancelled, Paste Last, programmatic -> No done tone
   Failure -> Error tone; wake/sleep keep macOS Pop/Tink      // dictate.error-tone
+     -> Settings listener card: "Last dictation failed: …"   // macOS, Windows
+        -> clears once a later dictation completes
+        -> a known microphone cause explains itself; other failures keep their wording
+     -> Labs › Failure notices: why beside the HUD for ~6 s  // dictate.failure-notice, off by default
+        -> a new capture dismisses it; no old failure is replayed at launch
      -> Classic has none: macOS Basso, Signature's error on Windows and Linux
      -> A lost microphone or input -> No tone; the capture ends
   Tone requested -> Playback worker opens the default output, then plays
@@ -1156,6 +1471,41 @@ Record -> Release -> Transcribing/processing/paste -> Finished // dictate.feedba
   Cold audio stack exceeds preload admission -> Warn once; recognition continues
      -> Loader keeps running; later tones play once the output opens
 ```
+
+A failed dictation also stays visible in Settings' listener card as "Last
+dictation failed: …" until a later dictation completes. macOS now reads the
+listener's own event log on its runtime thread, as Windows already did. The
+listener's own stopped warning and a dictation failure are separate fields, so
+`hex status` keeps treating only the former as a stopped listener; the card
+shows the stopped warning first. A failure whose timestamp predates this run's
+start is ignored. Known
+microphone causes say what to do in every interface language — a built-in
+microphone switched off by a closed lid, or no microphone available; other
+failures keep their logged wording. Sources and checks:
+`DesktopActivity::visible_failure_since`, `last_completed_at`, and
+`failure_explanation` in [desktop/activity.rs](../../src/desktop/activity.rs),
+`newest_failure_shows_until_a_later_transcript_completes`,
+`a_startup_reader_ignores_the_previous_sessions_failure`, and
+`known_microphone_failures_get_an_actionable_explanation`, and the listener
+card in [rune_ui/settings.rs](../../src/rune_ui/settings.rs). Proof limit: the
+projection and wording are unit-tested; the macOS event-log wiring and listener
+card are not natively verified.
+
+With Labs › Failure notices on (`labs.failure_notices`, off by default), the
+same explanation also appears for about six seconds as one click-through line
+beside the HUD, reusing the Live text plate and placement. A new capture hides
+it at once, and the message travels with the HUD's failure event, so a launch
+never replays an old failure. The HUD's coral flash, its 600 ms, tones, and
+capture behavior are unchanged. A job failure that arrives while a newer
+capture records is skipped. Checks:
+`a_failure_notice_lasts_six_seconds`,
+`a_new_capture_dismisses_a_failure_notice_at_once`,
+`only_a_notices_own_deadline_dismisses_it`,
+`a_failure_arriving_after_a_queued_words_end_stays_visible`, and
+`a_failure_notice_takes_the_plate_from_the_live_words` in
+[rune_ui/live_text.rs](../../src/rune_ui/live_text.rs) cover the timing and
+plate; the overlay itself is not natively verified on macOS or Windows. See
+[Labs](labs.md) for its per-OS scope.
 
 **Fixed November 1, 2026 (issue 873):** on macOS the HUD remembered its last
 placement and skipped sending it to Rune again when it matched, so a HUD Rune
@@ -1221,7 +1571,8 @@ restored from git; it has no done tone, errors play macOS Basso as they
 did, and onboarding success plays its stop sound (the other sets have their own).
 The done sound of every set plays only when the paste lands at least
 `DONE_MIN_AFTER_STOP` (2 s) after the stop sound, as after a slow rewrite; the
-Sounds sheet's demo still plays it. Checked by `done_plays_only_after_a_slow_paste`.
+Sounds sheet's demo still plays it. Checked by
+`done_plays_only_after_a_slow_paste` and `done_never_plays_before_a_delayed_stop_tone`.
 
 Each set is a folder in `resources/audio/sounds/` made by
 [`scripts/sounds/synth.py`](../../scripts/sounds/synth.py)
@@ -1232,7 +1583,7 @@ audible sample. Every sound is normalized to one loudness per kind (start
 -25.5 LUFS max momentary, stop and done -27, error -26.5, success
 -25), so a volume sounds the same in every set. Classic's start and stop come
 up 2.5 and 3 dB (a soft limiter touches 0.1% of the start's samples). There
-is no cancel sound since #786. Every OS plays the
+is a cancel sound for Toggle's cancel shortcut. Every OS plays the
 error sound for a failed dictation or paste (`fail` in `linux/dictation.rs`
 and `windows/dictation.rs`), including an empty transcript, which macOS
 treats as nothing pasted. Checks:
@@ -1325,6 +1676,13 @@ behaviors. The cross-application flag explicitly allows the overlay to join
 another application's fullscreen Space (#75); panel style flags on an ordinary
 `NSWindow` were not sufficient.
 
+Each time the HUD shows, Rune clears and resets those collection behaviors
+before ordering the panel in, and orders it out first if it is still shown on
+another Space (#1084). Changing the activation policy (the Dock icon follows
+Settings) could leave the panel tied to one Space while AppKit still reported
+the old mask, and re-setting an unchanged mask does nothing. Not yet observed
+on hardware; only the macOS compile is checked.
+
 At the top position the HUD sits 6 pt below the menu bar (`rune_hud::hud_placement::TOP_OFFSET`), or below the
 notch (`NSScreen.safeAreaInsets`) where a fullscreen Space hides the menu bar
 and `visibleFrame` reaches the top of a notched screen. Screens without a notch
@@ -1345,7 +1703,10 @@ capture starts, as macOS does (#486; `rune_hud::display`). Windows and X11
 read the pointer and pick its monitor; Windows keeps it inside that
 monitor's work area and draws it at that monitor's scale. A layer-shell
 surface pins no output, so niri, Sway and Hyprland put it on the focused
-output. GNOME and KDE keep the primary display. On Windows and X11, while
+output. GNOME and KDE on Wayland keep the primary display; on X11 they
+follow the pointer like any other X11 desktop (#1200; check
+`only_gnome_and_kde_on_wayland_keep_the_primary_display`, not run on a
+two-monitor GNOME X11 session). On Windows and X11, while
 the HUD shows it checks the pointer's display every 250 ms (`Hud::follow_pointer`,
 Rune's `refollow_pointer`), and the HUD and live text move there, without
 animating or taking focus, once two checks in a row find the pointer on the
@@ -1362,8 +1723,8 @@ a DX12 DirectComposition swapchain composites alpha on Windows: a Vulkan
 surface is a swapchain on the HWND, which this window shows black (#499) or
 not at all (#510, a hybrid laptop where the integrated GPU's Vulkan driver
 claimed premultiplied alpha). Rune draws transparent Windows surfaces only
-through DX12, on the lowest-power adapter, and fails the overlay when none
-can (93c7a04b; from reading the code and Windows' rules, not yet observed on
+through DX12, on the lowest-power adapter that drives a display, and fails
+the overlay when none can (93c7a04b; from reading the code and Windows' rules, not yet observed on
 Windows). If the window, its GPU surface or the show fails (including a
 cloaked window), Rune reports why (`OverlayHandle::failure`). Hex logs the
 HUD's surface (backend, adapter, alpha mode) once, and treats a dictation

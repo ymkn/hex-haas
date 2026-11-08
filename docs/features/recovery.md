@@ -49,27 +49,51 @@ Launch -> read settings.json
 ├── Unknown keys -> ignored
 ├── Invalid field -> log its key and reason -> that field's default
 │   └── Valid siblings and unrelated sections stay
-├── Invalid JSON / unreadable file -> log why -> defaults in memory
-└── Save over invalid settings -> preserve exact original first
-    ├── settings.json.unreadable-<sha256>, owner-only; same bytes backed up once
-    └── Backup fails / original cannot be read -> save fails, original stays
+├── Invalid JSON / not a JSON object -> log why -> defaults in memory
+│   └── launch says so; invalid JSON names serde's line and column
+├── Unreadable file -> log why -> defaults in memory
+│   └── no launch note; a save fails rather than overwrite it
+└── Save
+    ├── Invalid JSON / not an object on disk -> save refused
+    │   └── fix or remove the file; original stays exactly as it was
+    ├── This process loaded a file that wasn't an object -> save refused
+    │   └── even after the file is fixed; a restart (or the Linux poll) clears it
+    └── Invalid fields -> preserve exact original first
+        ├── settings.json.unreadable-<sha256>, owner-only; same bytes backed up once
+        └── Backup fails / original cannot be read -> save fails, original stays
 ```
 
 Loading repaired settings does not itself rewrite the file. A later settings
-save (including a migration save) takes the backup before replacing it.
+save (including a migration save) takes the backup before replacing invalid
+fields. A file that is not valid JSON, or is valid JSON but not an object, is
+never backed up or replaced: every save is refused until Hex restarts, and
+launch keeps running with defaults in memory while naming the parse error. A
+process that loaded such a file keeps refusing saves even after the file is
+fixed, because its in-memory settings may be stale defaults. Reading the fixed
+file does not clear that refusal; the refusal says to restart. On Linux only,
+the two-second poll clears it when it adopts a valid or removed file.
 Backups are never automatically removed. On Linux, the running Hex checks
 `settings.json` every two seconds and adopts an edit made outside the window
 (by hand or by an agent), so its modes reach the listener and the next save
-keeps it (#970); macOS and Windows still read it only at launch or through
-`hex settings set`. Unchosen `meetings.retention` is
+keeps it (#970). The check runs only when the file's mtime changes. A file that
+isn't a JSON object is never adopted: the running settings stay, the parse
+error appears in the settings error surface, and the message is not logged on
+every tick. A later check that reads a valid file, or finds the file removed,
+adopts it (even when it equals the running settings), clears that error, and
+clears the process's refusal marker, so the window's next save works without a
+restart. macOS and Windows still read the file only at launch, through
+`hex settings set`, or through their own save-and-reload path. Unchosen
+`meetings.retention` is
 written as an absent key, so older builds with a non-optional retention still
 read the file; existing `null` values also load in the current build.
 
 Source and checks: [settings persistence](../../src/app_settings/persistence.rs)
 and its [tests](../../src/app_settings/persistence/tests.rs): old-shape retention,
-invalid enums, nested types, list entries, unknown keys, invalid JSON,
-exactly-once private backups, interrupted saves, and backup failure. These
-checks use temporary files; they do not exercise a real app launch.
+invalid enums, nested types, list entries, unknown keys, invalid JSON and
+non-object documents (defaults, refused saves, no backup), a file fixed while
+the process still holds stale settings (refused until the explicit clear),
+exactly-once private backups, interrupted saves, and backup failure. These checks use
+temporary files; they do not exercise a real app launch or the Linux poll.
 
 ### Finish Without Losing Other Work
 
@@ -104,7 +128,7 @@ LOCKED + key release missed while hands-free          // would block the finish 
 
 delayed pre-recovery input -> fenced                  // cannot corrupt the fresh hold
 ```
-Checks in [suppression.rs](../../src/suppression.rs):
+Checks in [suppression/tests.rs](../../src/suppression/tests.rs):
 `neutral_keyboard_rearms_after_a_missing_modifier_release`,
 `delayed_neutral_callback_after_recovery_preserves_the_next_hold`,
 `stale_key_recovery_requires_complete_neutrality_and_no_intervening_input`,
@@ -144,7 +168,7 @@ not even a key repeat, for 5 s (TRACKED_KEY_REPEAT_TIMEOUT)
 LOCKED + Escape -> Nothing, stale keys or not (#786)
 fenced edges, edges before a disabled tap, suspension -> no neutral evidence
 ```
-Checks in [suppression.rs](../../src/suppression.rs):
+Checks in [suppression/tests.rs](../../src/suppression/tests.rs):
 `option_soon_after_command_tab_records`,
 `shortcut_press_after_command_tab_from_dirty_records`,
 `typing_after_command_tab_does_not_block_the_next_press`,
@@ -178,7 +202,7 @@ SecondaryFn navigation metadata
 
 strip Fn globally from shortcut matching              // UNSAFE: not the recovery rule
 ```
-Checks in [suppression.rs](../../src/suppression.rs):
+Checks in [suppression/tests.rs](../../src/suppression/tests.rs):
 `arrow_function_metadata_does_not_block_the_next_option_hold`,
 `function_recovery_preserves_unknown_and_flags_only_fn_holds`.
 Proof limit: supplied modifier evidence, not universal native Fn behavior.
@@ -192,7 +216,7 @@ event tap disabled
   -> invalidate uncertain modifier evidence           // no inferred release
   -> fresh input -> next valid gesture -> expected output
 ```
-Checks in [suppression.rs](../../src/suppression.rs):
+Checks in [suppression/tests.rs](../../src/suppression/tests.rs):
 `tap_failure_cancels_recording_after_live_opt_in`,
 `blind_input_periods_invalidate_function_modifier_evidence`.
 Proof limit: reducer response to a supplied interruption, not macOS disabling
@@ -259,12 +283,29 @@ MacBook lid closed (macOS)                            // built-in mic is off but
   ├── default or saved mic is built in -> first other real input stands in
   │     -> Settings: "… is off while the lid is closed, so Hex listens to …"
   ├── no other input -> "the built-in microphone is off while the lid is closed"
+  │     └── failed dictation -> Settings listener card explains it   // macOS
+  │           "Last dictation failed: Built-in mic is off with the lid closed.
+  │            Open the lid or connect a mic."
+  │           -> clears once a later dictation completes; the listener's own failure keeps priority
   └── lid opens or closes -> re-resolve like a device-list change // IOKit clamshell notification
         -> switch once capture is idle
 Bluetooth default input (macOS, avoid_bluetooth_microphone on) // transport type, read per resolve
   -> built-in mic stands in, else the first other real input
   ├── no other usable input -> the Bluetooth default
   └── setting changes -> re-resolve like a device-list change -> switch once idle
+virtual input or iPhone Continuity microphone (macOS: ccwd/ccwl transport) // #1100
+  -> never stands in: the phone prompts and can fail to open
+  ├── lid closed, nothing else -> "the built-in microphone is off while the lid is closed"
+  └── the default, the saved microphone, or --device -> used as named
+
+warm stream keeps running but delivers only exact zeros (macOS and Linux hotkey dictation, #1122)
+  -> that dictation is discarded as near-silent, as before
+  -> its finish reopens the microphone like a stream failure // logged once
+  -> next dictation records from a fresh stream
+
+open stream stops delivering audio without an error (any OS, #1206)
+  -> 4 s with no chunk (STREAM_STALL_TIMEOUT) -> treated as a stream failure
+  -> reopened like any interrupted stream, idle or not // logged "microphone stopped delivering audio"
 
 programmatic dictation (local API) when the stream interrupts or gaps
   ├── audio delivered before the loss -> kept under its id // recover.programmatic-loss
@@ -282,13 +323,21 @@ Checks in [audio.rs](../../src/audio.rs):
 `a_closed_lid_passes_over_the_built_in_microphone`,
 `only_the_internal_microphone_is_switched_off_by_the_lid`,
 `a_headphone_jack_microphone_is_used_with_the_lid_closed`,
+`an_iphone_microphone_never_stands_in`,
+`continuity_capture_transports_are_recognised` (pure resolution and fourcc
+values; no iPhone observed with the lid closed),
 `where_the_os_reports_new_devices_only_a_failed_open_is_retried`,
-`only_an_idle_capture_lets_the_microphone_switch`;
+`only_an_idle_capture_lets_the_microphone_switch`,
+`a_stream_that_stops_delivering_audio_is_reopened`;
 [dictation/audio.rs](../../src/dictation/audio.rs):
 `recovered_owner_delivers_audio_and_accepts_a_new_capture`,
 `microphone_loss_keeps_only_a_programmatic_captures_delivered_audio`,
 `microphone_loss_with_only_pre_roll_keeps_nothing`,
-`finish_after_an_unread_microphone_loss_takes_the_kept_clip`;
+`finish_after_an_unread_microphone_loss_takes_the_kept_clip`,
+`a_dictation_of_digital_silence_reopens_the_microphone`;
+[linux/dictation.rs](../../src/linux/dictation.rs):
+`submit_capture_reports_when_a_clip_is_digital_silence`,
+`a_warm_silent_stream_reopens_once_unless_released`;
 [recognition.rs](../../src/recognition.rs):
 `microphone_loss_keeps_a_programmatic_clip_for_finish` (the hold, not a `/finish`
 through the running listener).
@@ -299,7 +348,11 @@ device reconnect or full native mic-to-target result. The closed-lid cases are
 pure resolution and a fixture scene; the IOKit lid read and its notification
 have not been observed on a real MacBook closing and opening its lid, and the
 headphone-jack UID and data-source codes come from CoreAudio's documented
-values, not a jack microphone observed with the lid closed.
+values, not a jack microphone observed with the lid closed. The listener card's
+lid-closed wording is a pure mapping and shared projection test
+(`known_microphone_failures_get_an_actionable_explanation`,
+`a_startup_reader_ignores_the_previous_sessions_failure`); the macOS
+card is not natively verified.
 
 `recover.cold-open`: "Release when idle" opens for a gesture, not an idle retry
 loop. Each attempt must own its opening result.
@@ -323,16 +376,23 @@ ready stream fails while the press is held
   │     └── ready -> capture from the original press -> expected output
   └── after the threshold -> fail with "Microphone capture was interrupted"
 CoreAudio processor overload (Xrun) -> warn and keep the stream // not a failure
-gap in the microphone timeline (any OS, warm or cold)
-  ├── 50–250 ms -> filled with silence, capture continues // logged, #619
-  └── over 250 ms -> fail as a capture discontinuity
+gap in the microphone timeline (warm or cold)
+  ├── macOS: 50–250 ms -> filled with silence, capture continues // #619
+  │     └── over 250 ms -> fail as a capture discontinuity
+  └── Linux: 50 ms–4 s -> filled with silence // timestamps are wall-clock derived
+        └── over 4 s -> restart the capture; audio across it is never stitched
 ```
 Checks in [dictation/audio.rs](../../src/dictation/audio.rs):
 `cold_capture_restart_rejects_late_open_results_and_closes_after_finish`,
 `enabling_warm_microphone_preserves_pending_capture_and_recovers_after_cancellation`,
 `cold_stream_failure_before_hold_threshold_reopens_for_the_same_press`,
 `cold_stream_failure_after_hold_threshold_still_fails_the_capture`,
-`a_short_microphone_gap_is_filled_with_silence_instead_of_failing_the_capture`; in
+`a_short_microphone_gap_is_filled_with_silence_instead_of_failing_the_capture`;
+in [linux/dictation/gap.rs](../../src/linux/dictation/gap.rs):
+`a_short_microphone_gap_is_padded_with_silence`,
+`a_gap_past_the_stream_stall_timeout_is_not_stitched`; in
+[linux/dictation.rs](../../src/linux/dictation.rs):
+`a_short_microphone_gap_is_padded_into_a_finished_clip`; in
 [audio.rs](../../src/audio.rs): `overload_glitches_do_not_interrupt_the_stream`,
 `cold_open_retries_the_selected_microphone_before_falling_back`.
 
@@ -358,11 +418,34 @@ latency or the macOS microphone indicator.
 Bluetooth headset's stream skipped about 130–145 ms of audio soon after it
 started, and every gap over 50 ms failed the held capture with the error tone.
 Gaps up to 250 ms are now filled with silence on the timeline, so the capture
-(and its pre-roll ring) keeps going; longer gaps still fail it. The Annotate
-sink still records the gap itself. Not verified on the reporter's headset; the
+(and its pre-roll ring) keeps going; longer gaps still fail it. The Linux
+listener pads gaps up to 4 s into its capture, because its cpal timestamps are
+wall-clock derived; a longer gap ends the capture and starts a fresh one, so
+audio from either side is never stitched together. On both platforms, the
+Annotate sink still records the timestamp gap itself.
+Not verified on the reporter's headset; the
 report that a Bluetooth device was used with `avoid_bluetooth_microphone` on
 was not reproduced (a saved Bluetooth microphone, or no other usable input,
 keeps it by design).
+
+**Fixed after dev ([#1122](https://github.com/anomalyco/hex/issues/1122)):**
+after a WhatsApp desktop call ended, the warm built-in microphone stream kept
+running without an error but delivered only exact zeros, so every dictation
+was discarded as near-silent (`zero_fraction` 1.0) until Hex restarted. A
+finished dictation whose audio through the release is exactly zero now
+reopens the stream the way a stream failure does; a cold microphone
+(release-while-idle) already opens fresh for each press. Linux hotkey
+dictation does the same for a warm microphone; service and programmatic
+captures do not check it, and one released while idle opens fresh. The
+first such dictation is still discarded. Not verified with a real WhatsApp
+call.
+
+**Fixed after 3.3.0 ([#1206](https://github.com/anomalyco/hex/issues/1206)):**
+after a burst of overrun warnings while idle, a warm USB microphone's stream
+stopped delivering audio without reporting an error, so every dictation held
+only the stale pre-roll and was discarded as no speech until Hex restarted. An
+open stream that delivers nothing for 4 s now counts as failed and is reopened
+with the usual bounded recovery. Not verified on the reporter's microphone.
 
 ### Fence Late Capture Notifications
 
@@ -394,6 +477,24 @@ Check in [recognition.rs](../../src/recognition.rs):
 `command_preparation_does_not_block_the_listener_or_propagate_failure`.
 Proof limit: controlled loader responsiveness, not a full model download or
 microphone session. See the [index](README.md) for dependency recovery actions.
+
+`recover.gpu-full`: on Linux and Windows a model, language, or Speech engine
+change loads beside the running model, so a small GPU (2 GB) can run out of
+memory for the second copy (#1170).
+
+```ts
+new model loads beside the running one -> GPU out of memory -> CPU copy loads
+  -> the CPU copy is dropped (not swapped in); the GPU isn't remembered as failed
+  -> once nothing records or transcribes -> engine drops its model, then loads
+     the new one in its place (GPU again, CPU only if it still doesn't fit)
+  -> commands sent meanwhile wait for the load; nothing recorded is lost
+```
+Source: `ModelSwap::place`/`take_reload` in
+[transcription/local_transcriber.rs](../../src/transcription/local_transcriber.rs)
+and `Command::Reload` in [transcription/engine.rs](../../src/transcription/engine.rs).
+Check: `a_model_without_room_on_the_gpu_reloads_in_place_once` (swap state
+only). Not observed on a real 2 GB GPU. A second process (another `hex`
+command that loads a model itself) still loads its own copy.
 
 `recover.command-pressure`: command recognition is best-effort; dictation
 audio is not.
@@ -439,6 +540,10 @@ Retry/Dismiss. Hiding a failure is not restarting its worker.
 listener worker fails -> reap worker -> show failure
   ├── Retry -> new managed listener -> fresh capture -> expected output
   └── Dismiss -> clear error                            // not evidence of recovery
+
+Wayland listener starts without wl-copy -> process.log warns once; Settings and
+`hex status` carry the warning
+  -> capture and transcription still run; copy and paste fail naming wl-clipboard
 
 close the window -> Hex keeps running
   └── uncommitted shortcut capture -> cancel edit -> restore prior listening
@@ -513,10 +618,18 @@ GUI startup -> require OS main thread -> initialize_layout // recover.keyboard-l
      └── Command layer (UCKeyTranslate with cmdKey) -> separate map
                                      // no worker-side TIS/TSM query
 
+Selected input source changes (Dvorak -> U.S.)       // recover.keyboard-layout-change
+  -> observer marks it -> pump on the main thread -> refresh_layout
+  -> rebuild with the same fills -> publish whole       // workers see old or new
+  -> changed -> resolve runtime shortcuts again from the last applied settings
+     ├── letter key -> the key that types the letter now
+     ├── other keys -> recorded key code
+     └── listener rebinds each shortcut once its machine is idle
+
 Synthetic shortcut with Command (⌘V)
   ├── Command layer has the character -> that keycode // "Dvorak – QWERTY ⌘"
   └── otherwise -> plain snapshot as above
-Shortcuts without Command and recorded hotkeys -> plain snapshot only
+Shortcuts without Command -> plain snapshot only
 
 Headless lookup without snapshot -> shared native lock -> current layout query
   -> current layout misses ASCII character -> ASCII-capable fallback
@@ -526,8 +639,17 @@ Sources: [keyboard.rs](../../src/keyboard.rs),
 [macos_rune.rs](../../src/macos_rune.rs).
 The lock alone is not GUI thread safety: successful main-thread prewarming and
 pure cached misses prevent later GUI workers from querying native layout APIs.
-The GUI snapshot remains fixed until restart. CLI lookups without a snapshot
-still query the current layout; this fix does not remove their live resolution.
+Until t1304 the GUI snapshot stayed fixed until restart: launched on Dvorak and
+switched to U.S., ⌘V posted keycode 47 (U.S. `.`), so dictations logged
+"pasted" but nothing appeared. One input-source observer now runs for the
+app's life (keyboard model switching reads the same one while it is on), and
+each change rebuilds the snapshot on the main thread.
+`a_published_layout_replaces_the_one_before`,
+`readers_see_a_whole_layout_while_it_is_replaced`, and
+`letter_shortcuts_resolve_again_on_a_new_layout` cover the swap and the
+shortcut re-resolution; the TIS notification and a real switch followed by a
+paste are unverified on a Mac. CLI lookups without a snapshot still query the
+current layout.
 Non-Latin active layouts (Russian, Hebrew, …) produce no ASCII letters with an
 empty modifier state, so a snapshot built from them alone would miss paste
 shortcuts like ⌘V. macOS resolves such shortcuts against the ASCII-capable
@@ -619,16 +741,42 @@ These five known gaps still limit recovery claims; they are not proposed feature
 ### Remapped Control
 
 ```ts
-remapped keyboard -> Quartz modifier event -> InputEvent::Flags
-                                              └── keycode discarded
-side-less Control fixture -> does not prove remapped-key identity
-listen-only native metadata -> establish distinguishability before choosing a fix
+Caps Lock remapped to Control
+  -> IOHIDKeyboardFilter rewrites usage 0x39 to Right Control (0xE4)
+  -> Quartz flags carry Right Control; the event keycode cannot tell them apart
+  -> raw IOHIDManager below the filter reads Caps Lock 0x39 and E0-E7
+  -> side bit set, its physical key not held, Caps Lock held
+     -> drop the side bit, keep the general flag -> matches as either side
+  -> physical E4 held -> a genuine Right Control press is untouched
+  -> Caps Lock's flags event reaches the tap before the raw callback
+     marks Caps Lock held -> flags pass unchanged
+     -> Right Control still starts; correctness needs the raw callback first,
+        which is not guaranteed
+  -> raw callback lags a real side key while Caps Lock is held
+     -> that one event can lose the side until the next event
+  -> IOHIDCheckAccess not granted, open fails, or start times out
+     -> tracker inactive, CoreGraphics flags unchanged (today's behavior)
 ```
-Source/check: [suppression.rs](../../src/suppression.rs),
-`remapped_control_does_not_start_or_hold_right_control_dictation`;
-issue [#37](https://github.com/anomalyco/hex/issues/37).
-Missing evidence: affected-keyboard metadata showing whether Quartz preserves
-enough identity to distinguish the remapped key.
+Source: [suppression/physical_keys.rs](../../src/suppression/physical_keys.rs)
+(IOHIDManager on its own run loop, one `PhysicalKeyMonitor` per input monitor,
+started only when `IOHIDCheckAccess(kIOHIDRequestTypeListenEvent)` is granted),
+[app_settings/hotkeys.rs](../../src/app_settings/hotkeys.rs) (`PhysicalModifierKeys`
+and `normalized_modifier_flags`), [suppression.rs](../../src/suppression.rs)
+(flags-changed and key-event flags), and
+[rune_ui/macos_host.rs](../../src/rune_ui/macos_host.rs) (the shortcut recorder).
+Checks: the normalization tests in `app_settings/hotkeys.rs`,
+`normalized_remapped_caps_lock_starts_only_a_side_less_control_binding`, and
+`a_remapped_caps_lock_does_not_hold_a_real_right_control_capture` in
+`suppression/tests.rs` (constructed snapshots and events).
+Issue [#37](https://github.com/anomalyco/hex/issues/37).
+Missing evidence: a physical Caps Lock-to-Control remap has not been run in CI
+or on hardware, and ordering the raw callback before the Caps Lock flags event
+is unproven. Hex never requests Input Monitoring, so the tracker runs only when
+Hex already has it (turn Hex on under System Settings › Privacy & Security ›
+Input Monitoring and restart Hex); otherwise it stays off and Right Control
+still starts from a remapped Caps Lock. The shortcut recorder normalizes only
+while the listener's input monitor is running; a start that takes too long is
+told to give up rather than delay the listener.
 
 ### Native Muting And Missed Holds
 
