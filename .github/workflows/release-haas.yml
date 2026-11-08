@@ -42,7 +42,19 @@ permissions:
   contents: write
 
 jobs:
+  stamp:
+    # One build stamp for the whole run (UTC, the same yyyyMMdd-HHmm format
+    # the daily caller passes and haas-upgrade orders by). Runs even when a
+    # build id is supplied; the value is then simply unused.
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.stamp.outputs.build }}
+    steps:
+      - id: stamp
+        run: echo "build=$(date -u +%Y%m%d-%H%M)" >> "$GITHUB_OUTPUT"
+
   windows-x64:
+    needs: stamp
     runs-on: windows-latest
     timeout-minutes: 120
     steps:
@@ -83,7 +95,11 @@ jobs:
         shell: pwsh
         env:
           HAAS_CHANNEL: ${{ inputs.channel || 'stable' }}
-          HAAS_BUILD: ${{ inputs.build_id }}
+          # workflow_call (daily) passes an explicit build id. Otherwise
+          # use the stamp job's single value for the whole run: the publish
+          # job cross-checks that all three markers agree, so the build
+          # stamp must not be each job's own packaging minute.
+          HAAS_BUILD: ${{ inputs.build_id || needs.stamp.outputs.build }}
           HAAS_SOURCE: ${{ github.sha }}
         run: ./scripts/package-haas.ps1 -Destination ..\out
       - name: Upload the package as an artifact
@@ -98,6 +114,7 @@ jobs:
           if-no-files-found: error
 
   windows-x64-cpu:
+    needs: stamp
     runs-on: windows-latest
     timeout-minutes: 120
     defaults:
@@ -132,7 +149,11 @@ jobs:
       - name: Package
         env:
           HAAS_CHANNEL: ${{ inputs.channel || 'stable' }}
-          HAAS_BUILD: ${{ inputs.build_id }}
+          # workflow_call (daily) passes an explicit build id. Otherwise
+          # use the stamp job's single value for the whole run: the publish
+          # job cross-checks that all three markers agree, so the build
+          # stamp must not be each job's own packaging minute.
+          HAAS_BUILD: ${{ inputs.build_id || needs.stamp.outputs.build }}
           HAAS_SOURCE: ${{ github.sha }}
         run: ./scripts/package-haas-cpu.ps1 -Destination ..\out-cpu
       - name: Upload the CPU package as an artifact
@@ -147,6 +168,7 @@ jobs:
           if-no-files-found: error
 
   windows-arm64-cpu:
+    needs: stamp
     # Native ARM64 build on an ARM64 runner; see release-haas-cpu.yml for the
     # same steps without release publication.
     runs-on: windows-11-arm
@@ -185,7 +207,11 @@ jobs:
       - name: Package
         env:
           HAAS_CHANNEL: ${{ inputs.channel || 'stable' }}
-          HAAS_BUILD: ${{ inputs.build_id }}
+          # workflow_call (daily) passes an explicit build id. Otherwise
+          # use the stamp job's single value for the whole run: the publish
+          # job cross-checks that all three markers agree, so the build
+          # stamp must not be each job's own packaging minute.
+          HAAS_BUILD: ${{ inputs.build_id || needs.stamp.outputs.build }}
           HAAS_SOURCE: ${{ github.sha }}
         run: ./scripts/package-haas-cpu.ps1 -Arch arm64 -Destination ..\out-cpu-arm64
       - name: Upload the ARM64 CPU package as an artifact
