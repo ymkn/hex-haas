@@ -66,6 +66,9 @@ if ($Arch -eq 'arm64') {
     } else {
         Remove-Item Env:CMAKE_GENERATOR -ErrorAction SilentlyContinue
     }
+    $msvcVersion = (Get-Content "$vs\VC\Auxiliary\Build\Microsoft.VCToolsVersion.default.txt").Trim()
+    $dumpbin = "$vs\VC\Tools\MSVC\$msvcVersion\bin\Hostx64\x64\dumpbin.exe"
+    if (!(Test-Path $dumpbin)) { throw 'MSVC dumpbin.exe was not found.' }
 }
 $env:CMAKE_BUILD_PARALLEL_LEVEL = '4'
 $env:CFLAGS = '/utf-8'
