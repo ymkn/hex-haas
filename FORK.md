@@ -114,6 +114,8 @@ Releases に `Hex-Haas-<version>-windows-x64.zip`（GPU版）、
 
 リリースの作り方（自分用）: `haas-v<バージョン>` 形式のタグをpushすると Actions の「Haas release」がGPU版・x64 CPU版・ARM64 CPU版をビルドして、3つのzipと統合したSHA256SUMS、それに `manifest.json`（バリアント別のファイル名・SHA-256・サイズ）を1つのリリースに登録します。タグなしの `workflow_dispatch` は同じビルドを検証し、成果物をworkflowのartifactとして残すだけです。ローカルでも `./scripts/build-haas.ps1` の後に `./scripts/package-haas.ps1`、CPU版は `./scripts/build-haas-cpu.ps1`（ARM64は `-Arch arm64`）の後に `./scripts/package-haas-cpu.ps1` で同じzipを作れます。
 
+バージョン番号の付け方: フォーク側で勝手に上げることはせず、`Cargo.toml` の version は「本家（上流）のバージョン + `-haas.<連番>`」とします（例: 本家 3.3.0 ベースなら `3.3.0-haas.1`、その次のリリースは `3.3.0-haas.2`）。ここでいう本家のバージョンは、取り込み時点で上流の `Cargo.toml` に書かれている version そのものです。その値が変わったら連番は 1 から振り直します。タグは `haas-v<そのバージョン>`（例: `haas-v3.3.0-haas.1`）です。`hex haas-upgrade` の数値比較は `-` 区切りの連番も数値として拾うため、連番同士の新旧判定がそのまま効きます。なお、この方式の前にフォーク独自に付けた 3.3.1 までの導入済みパッケージは、アップデーター自体を持たないため、初回だけ手動で入れ替えてください（3.3.2 はリリース公開前に取り下げたため、導入済みのものは存在しません）。
+
 ## デイリービルドと端末側アップデート
 
 - Actions の「Haas daily sync and build」が毎日03:30（JST）に上流 `anomalyco/hex` の `dev` を `haas` にマージします。きれいにマージできればそのまま push し、3バリアントを再ビルドして prerelease `haas-daily` を差し替えます。コンフリクトしたらマージを取りやめ（`haas` は変更しません）、`haas-sync-conflict` ラベルの Issue で知らせます。上流にもフォークにも前回のデイリーから差分がない日はビルドしません。手動 dispatch の `force` で強制実行できます。
