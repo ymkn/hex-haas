@@ -445,11 +445,20 @@ fn contributed_options_are_labs_toggles_off_by_default() {
     assert!(rt.find("share-dictation-shortcut").is_none());
     open_labs(&mut rt);
     assert!(rt.find("lab-mouse-shortcuts").is_none(), "macOS only");
-    assert!(rt.find("lab-keep-on-clipboard").is_none(), "macOS only");
-    assert!(rt.find("lab-copy-only").is_none(), "macOS only");
+    assert!(
+        rt.find("lab-keep-on-clipboard").is_some(),
+        "macOS and Windows"
+    );
+    assert!(rt.find("lab-copy-only").is_some(), "macOS and Windows");
     assert!(rt.find("lab-spoken-formatting").is_some(), "every OS");
     assert!(rt.find("lab-filler-words").is_some(), "every OS");
     assert!(rt.find("lab-spoken-symbols").is_some(), "every OS");
+    assert!(!rt.state.settings.labs.keep_on_clipboard);
+    tap(&mut rt, "lab-keep-on-clipboard");
+    assert!(rt.state.settings.labs.keep_on_clipboard);
+    assert!(!rt.state.settings.labs.copy_only);
+    tap(&mut rt, "lab-copy-only");
+    assert!(rt.state.settings.labs.copy_only);
     assert!(!rt.state.settings.share_dictation_shortcut);
     tap(&mut rt, "lab-share-shortcut");
     assert!(rt.state.settings.share_dictation_shortcut);
@@ -1252,6 +1261,31 @@ fn an_update_is_a_secondary_button_with_a_dot_and_its_own_label() {
     }
     refresh(&mut rt);
     assert!(texts(&rt).iter().any(|text| text == "Download update"));
+}
+
+#[test]
+fn release_notes_link_shows_only_with_its_lab() {
+    let mut rt = runtime("portal", true, PANE_SIZE);
+    rt.state.build_preview = Some(BuildKind::Release);
+    refresh(&mut rt);
+    assert!(
+        rt.find("release-notes").is_none(),
+        "off, the footer is unchanged"
+    );
+
+    rt.state.settings.labs.release_notes_link = true;
+    refresh(&mut rt);
+    assert!(rt.find("release-notes").is_some());
+    assert!(texts(&rt).iter().any(|text| text == "Release notes"));
+
+    for (kind, name) in [(BuildKind::Local, "local"), (BuildKind::Test, "test")] {
+        rt.state.build_preview = Some(kind);
+        refresh(&mut rt);
+        assert!(
+            rt.find("release-notes").is_none(),
+            "the lab is on, but a {name} build has no published notes"
+        );
+    }
 }
 
 #[test]
@@ -2156,6 +2190,21 @@ fn unload_when_idle_shows_its_minutes_on_its_card_while_on() {
     tap(&mut rt, "lab-unload-idle");
     assert!(rt.state.settings.labs.unload_idle);
     assert!(rt.find("unload-idle-minutes").is_some());
+}
+
+#[test]
+fn caps_lock_light_shows_its_choices_on_its_card_while_on() {
+    let mut rt = runtime("mac-labs", true, (980.0, 4000.0));
+    rt.update(|ui, _| ui.lab_store.group = Some(crate::labs::Feature::CapsLockDictation.group()));
+    settle(&mut rt);
+    assert!(rt.find("caps-lock-light").is_none(), "hidden while off");
+    assert_eq!(
+        rt.state.settings.labs.caps_lock_light,
+        crate::app_settings::CapsLockLight::Steady
+    );
+    tap(&mut rt, "lab-caps-lock-dictation");
+    assert!(rt.state.settings.labs.caps_lock_dictation);
+    assert!(rt.find("caps-lock-light").is_some());
 }
 
 #[test]

@@ -62,6 +62,7 @@ impl Feature {
             | Self::HideMenuBarIcon
             | Self::QuitClosesWindow
             | Self::SettingsSearch
+            | Self::ReleaseNotesLink
             | Self::Playground => Group::Dictation,
             Self::SmartSpacing
             | Self::SpokenFormatting
@@ -70,6 +71,7 @@ impl Feature {
             | Self::KeepOnClipboard
             | Self::CopyOnly
             | Self::GnomeClipboardRestore
+            | Self::TypedText
             | Self::TerminalPaste
             | Self::OutputFixes => Group::Output,
             Self::KeepRecordings | Self::HistoryStats | Self::RecentDictations => Group::History,
@@ -89,6 +91,7 @@ impl Feature {
             Self::Screenshots | Self::AnnotateReplay | Self::GnomeAnnotate => Group::Annotate,
             Self::MouseShortcuts
             | Self::SecondDictationShortcut
+            | Self::TerminalPasteShortcut
             | Self::SidedChords
             | Self::TapOrHold
             | Self::RestoreShortcutDefault

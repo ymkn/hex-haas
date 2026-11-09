@@ -51,6 +51,9 @@ impl Feature {
             Self::SecondDictationShortcut => {
                 "Another shortcut that dictates like the main one (second_dictation_hotkey), such as a key on an external keyboard"
             }
+            Self::TerminalPasteShortcut => {
+                "Another dictation shortcut that always pastes with Ctrl+Shift+V (terminal_paste_hotkey)"
+            }
             Self::SmartSpacing => "Add a space before a dictation pasted right after a word",
             Self::SpokenSymbols => {
                 "Turn spoken \"comma\", \"colon\", \"hashtag\", \"underscore\", and similar words into symbols joined to their words"
@@ -105,6 +108,9 @@ impl Feature {
                 "Keep the audio of dictations saved to History, so you can transcribe them again with another model"
             }
             Self::SettingsSearch => "Find any setting in General with a search field",
+            Self::ReleaseNotesLink => {
+                "Show a link to this build's release notes in the sidebar footer"
+            }
             Self::HideMenuBarIcon => {
                 "Hide Hex's menu bar icon; shortcuts keep working, and opening Hex again shows Settings"
             }
@@ -113,6 +119,9 @@ impl Feature {
             }
             Self::GnomeClipboardRestore => {
                 "Put the previous clipboard back after a paste on GNOME Wayland, through the XWayland clipboard while XWayland is running"
+            }
+            Self::TypedText => {
+                "Run the focused app's Output steps on the text already typed in the focused field and replace it (typed_text_hotkey)"
             }
             Self::MeetingNotesVocabulary => {
                 "Meeting titles and summaries read your vocabulary, so names are spelled the way you wrote them"

@@ -378,6 +378,12 @@ fn rows(ui: &Ui) -> Vec<Row> {
         tr("Settings search"),
         tr("Find any setting in General with a search field"),
     ));
+    rows.push(row(
+        Feature::ReleaseNotesLink,
+        None,
+        tr("Release notes link"),
+        tr("Show a link to this build's release notes in the sidebar footer"),
+    ));
     if caps.meetings {
         rows.push(row(
             Feature::LiveChapters,
@@ -467,6 +473,24 @@ fn rows(ui: &Ui) -> Vec<Row> {
             tr("Changing input source selects its mapped model and language; manual choices still work"),
         ));
     }
+    // macOS's and Windows' pasters can leave a dictation on the clipboard.
+    if matches!(
+        caps.os,
+        super::platform::Os::Macos | super::platform::Os::Windows
+    ) {
+        rows.push(row(
+            Feature::KeepOnClipboard,
+            None,
+            tr("Keep dictation on clipboard"),
+            tr("Leave the dictation on the clipboard after pasting instead of restoring what was there"),
+        ));
+        rows.push(row(
+            Feature::CopyOnly,
+            None,
+            tr("Copy dictation only"),
+            tr("Put the dictation on the clipboard instead of pasting it"),
+        ));
+    }
     if caps.os == super::platform::Os::Macos {
         rows.push(row(
             Feature::MouseShortcuts,
@@ -485,18 +509,6 @@ fn rows(ui: &Ui) -> Vec<Row> {
             Some(&GLOBE),
             tr("Also pause the browser"),
             tr("While dictating with Pause media: YouTube and other tabs, resumed only if Hex paused them"),
-        ));
-        rows.push(row(
-            Feature::KeepOnClipboard,
-            None,
-            tr("Keep dictation on clipboard"),
-            tr("Leave the dictation on the clipboard after pasting instead of restoring what was there"),
-        ));
-        rows.push(row(
-            Feature::CopyOnly,
-            None,
-            tr("Copy dictation only"),
-            tr("Put the dictation on the clipboard instead of pasting it"),
         ));
         // macOS's listener only, so Linux renders of macOS scenes leave it out.
         if cfg!(target_os = "macos") {
@@ -601,6 +613,12 @@ fn rows(ui: &Ui) -> Vec<Row> {
             None,
             tr("Restore clipboard on GNOME"),
             tr("Put back what you copied before a dictation, through XWayland. Works only while XWayland is already running"),
+        ));
+        rows.push(row(
+            Feature::TypedText,
+            Some(&KEYBOARD),
+            tr("Transform typed text"),
+            tr("Adds a shortcut that runs your Output steps on text you typed and replaces it."),
         ));
         rows.push(row(
             Feature::GnomeMeetingCapsules,
@@ -735,6 +753,14 @@ fn rows(ui: &Ui) -> Vec<Row> {
             tr("Paste with Ctrl+Shift+V so terminals accept it"),
         ));
     }
+    if caps.os != super::platform::Os::Macos {
+        rows.push(row(
+            Feature::TerminalPasteShortcut,
+            Some(&TERMINAL),
+            tr("Terminal paste shortcut"),
+            tr("Another dictation shortcut that always pastes with Ctrl+Shift+V"),
+        ));
+    }
     #[cfg(hex_capture)]
     if ui.platform.scrawl.is_some() {
         let locked = crate::policy::Policy::current().locks(crate::policy::Lock::Annotate);
@@ -783,6 +809,7 @@ fn row_key(lab: Lab) -> &'static str {
         Feature::FillerWords => "lab-filler-words",
         Feature::SubtitleExport => "lab-subtitle-export",
         Feature::SecondDictationShortcut => "lab-second-dictation-shortcut",
+        Feature::TerminalPasteShortcut => "lab-terminal-paste-shortcut",
         Feature::SmartSpacing => "lab-smart-spacing",
         Feature::SpokenSymbols => "lab-spoken-symbols",
         Feature::PickerSortFilter => "lab-picker-sort-filter",
@@ -802,11 +829,13 @@ fn row_key(lab: Lab) -> &'static str {
         Feature::SectionKeyAlone => "lab-section-key",
         Feature::KeepRecordings => "lab-keep-recordings",
         Feature::SettingsSearch => "lab-settings-search",
+        Feature::ReleaseNotesLink => "lab-release-notes-link",
         Feature::HideMenuBarIcon => "lab-hide-menu-bar-icon",
         Feature::QuitClosesWindow => "lab-quit-closes-window",
         Feature::CapsLockDictation => "lab-caps-lock-dictation",
         Feature::MovableMeetingCapsules => "lab-movable-meeting-capsules",
         Feature::GnomeClipboardRestore => "lab-gnome-clipboard-restore",
+        Feature::TypedText => "lab-typed-text",
         Feature::MeetingNotesVocabulary => "lab-meeting-notes-vocabulary",
         Feature::NotchIndicator => "lab-notch-indicator",
         Feature::MeetingFinishedEvent => "lab-meeting-finished-event",
@@ -881,6 +910,20 @@ fn extras(ui: &Ui, p: Paint, entry: &Row) -> Option<El> {
                 )
                 .child(unload_after(ui, p)),
         ),
+        Lab::Feature(Feature::CapsLockDictation) => Some(
+            row()
+                .key("caps-lock-light-row")
+                .gap(8.0)
+                .center_y()
+                .flex_wrap()
+                .child(
+                    text(tr("Recording light"))
+                        .key("label")
+                        .font(controls::DESCRIPTION)
+                        .color(p.muted()),
+                )
+                .child(caps_lock_light(ui, p)),
+        ),
         #[cfg(all(target_os = "macos", hex_capture))]
         Lab::Feature(Feature::Screenshots) => Some(screenshots::body(
             ui,
@@ -889,6 +932,23 @@ fn extras(ui: &Ui, p: Paint, entry: &Row) -> Option<El> {
         )),
         _ => None,
     }
+}
+
+/// Whether the Caps Lock light stays solid or blinks slowly while recording.
+fn caps_lock_light(ui: &Ui, p: Paint) -> El {
+    use crate::app_settings::CapsLockLight;
+    let labels: Vec<&str> = CapsLockLight::ALL
+        .iter()
+        .map(|light| tr(light.name()))
+        .collect();
+    let selected = CapsLockLight::ALL
+        .iter()
+        .position(|light| *light == ui.settings.labs.caps_lock_light)
+        .unwrap_or(0);
+    controls::segmented(p, "caps-lock-light", &labels, selected, |ui, index| {
+        let light = CapsLockLight::ALL[index];
+        ui.update(|settings| settings.labs.caps_lock_light = light);
+    })
 }
 
 /// How long the model sits unused before it unloads.

@@ -37,6 +37,7 @@ hex
 │   ├── stop --print               print the transcript instead of pasting it (below)
 │   └── start|toggle --raw         paste the transcript as heard, skipping the Output steps
 ├── paste-last                     paste the last dictation (Option-Shift-V); refused while recording
+├── typed-text                     Labs › Transform typed text (Linux): replace the focused field's text
 ├── meetings
 │   ├── record [--title T]         as the menu bar's Record Meeting; needs meetings.enabled
 │   ├── stop                       Stop & Transcribe
@@ -104,7 +105,8 @@ nothing; with nothing recording it refuses with `not-recording`. A failure,
 or the 60 s timeout prints nothing, exits 1, and never
 falls back to pasting. `--print` with any other action is a usage error
 (exit 2). The command is the same on Linux and Windows, where `hex dictation`
-and `hex paste-last` reach the listener's own queue as its shortcut would.
+and `hex paste-last` reach the listener's own queue as its shortcut would;
+Linux's `hex typed-text` does too.
 
 `dictation start --raw` and `toggle --raw` start a dictation that pastes the
 transcript as heard, skipping the Output pane's steps, as the Dictate without
@@ -131,6 +133,13 @@ same.
 `paste-last` needs a listening Hex (`not-ready` during setup) and is refused
 with `busy` while anything records or a shortcut gesture is in progress. The
 menu bar's Paste Last Dictation does nothing in that case.
+
+`typed-text` (Linux) runs the same job as Labs › Transform typed text's
+shortcut, for desktops without the shortcuts portal. It needs a listening Hex
+and the lab on (`disabled` when it is off), and refuses while Terminal paste
+shortcut is on (`disabled`), because its Ctrl+V would become Ctrl+Shift+V. It
+sends Ctrl+A and Ctrl+C, so it is not meant for terminals. While a capture
+records or finishes, it answers done but the listener drops the job.
 
 `model import`, `rename`, `repair`, and `remove` run in this process on every
 OS; `hex models` is an alias for `hex model`. An import's id is `custom-` and
@@ -167,10 +176,11 @@ build and waits for it to answer (#915); one not run by the unit has to be
 quit from its window or tray.
 
 `model install` with Hex running downloads in the background, as Settings
-does; on Linux and Windows with no Hex running it downloads in this process,
-printing progress (the source-install step `hex model install`). `model
-status`, `devices`, `check`, and `transcribe` are local tools on Linux and
-Windows and take the selected model unless one is named; macOS answers
+does; on Linux and Windows with no Hex running it downloads here and then
+selects the model, printing progress (the source-install step `hex model
+install`). A Hex that starts while the download runs makes the switch instead.
+`model status`, `devices`, `check`, and `transcribe` are local tools on Linux
+and Windows and take the selected model unless one is named; macOS answers
 `unsupported`.
 
 `start` and `restart` keep the `HEX_*` environment (`HEX_RETAIN_DICTATION_AUDIO`,
@@ -263,6 +273,7 @@ status | quit {force} | restart {force}
 dictation {action, print?}                       action: start | stop | toggle | cancel;
                                                  print (stop only) answers `transcript`
 paste-last
+typed-text
 meeting-record {title?} | meeting-stop | meeting-copy-last
 settings-get {key?} | settings-set {key, value}
 model-list | model-use {model, language?} | model-install {model, language?} | model-cancel

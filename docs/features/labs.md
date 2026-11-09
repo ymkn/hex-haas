@@ -31,6 +31,7 @@ Feature             Pane  Toggle (settings.json, hex settings)   On: what it doe
 ├── Failure notices no    labs.failure_notices                   when a dictation fails, its explanation sits beside the HUD for about 6 s, or until the next capture starts
 ├── Live typing     no    labs.live_typing                       (Linux Wayland) provisional words as an underlined input-method preedit in the focused field; the final text is committed there instead of pasted
 ├── Settings search no    labs.settings_search                  a search field atop General filters its rows, Advanced's included
+├── Release notes link no labs.release_notes_link               the sidebar footer links this build's release notes: the dev changelog on a dev build, GitHub's release on a stable version
 ├── Live chapters   no    labs.live_chapters           (macOS)   chapters a meeting while it records, boundary pass after Stop
 ├── Vocabulary biasing no labs.vocabulary_biasing                Parakeet transcription biased toward the vocabulary (#452/#457)
 ├── Switch model with keyboard language  no  keyboard_model_switching.enabled  (macOS, Windows, X11)
@@ -41,15 +42,17 @@ Feature             Pane  Toggle (settings.json, hex settings)   On: what it doe
 ├── Unload model when idle no labs.unload_idle + labs.unload_idle_minutes (5/15/30/60, default 15)
 │                                        the engine frees the speech model after that long unused (#442)
 ├── Restore shortcut default no labs.restore_shortcut_default   Paste last dictation's row offers its default back (#613)
-├── Keep dictation on clipboard no labs.keep_on_clipboard (macOS) a pasted dictation stays on the clipboard; the previous one is not restored (#200)
-├── Copy dictation only no labs.copy_only (macOS)    a dictation goes to the clipboard and is never pasted; Paste last dictation still pastes (#629)
+├── Keep dictation on clipboard no labs.keep_on_clipboard (macOS, Windows) a pasted dictation stays on the clipboard; the previous one is not restored (#200)
+├── Copy dictation only no labs.copy_only (macOS, Windows)    a dictation goes to the clipboard and is never pasted; Paste last dictation still pastes (#629)
 ├── Spoken formatting no labs.spoken_formatting      spoken "new line"/"line break", "new paragraph", "open/close quote", "quote … unquote" become line breaks and quotation marks; Spanish "nuevo párrafo", "nueva línea", "abre/cierra comillas", … too (#630, #1040)
 ├── Spoken symbols  no    labs.spoken_symbols          spoken "hashtag", "underscore", "comma", … become symbols joined to their words: "#release", "my_variable", "done, thanks"; Spanish "arroba", "guion bajo", "coma", … too (#678, #1040)
 ├── Remove filler words no labs.filler_words          English dictations lose um, umm, uh, uhh, erm, er, ah, with no model (#631)
 ├── Subtitle export no    labs.subtitle_export         (macOS)   hex meetings show --srt|--vtt writes a meeting as timed subtitles (#633)
 ├── Second dictation shortcut no labs.second_dictation_shortcut + second_dictation_hotkey (macOS)
 │                                        another shortcut dictates like the main one (#627); General shows its recorder while on
-├── Caps Lock dictation no labs.caps_lock_dictation       (macOS)   a Caps Lock press starts and stops hands-free dictation; its light shows recording, processing, and off
+├── Terminal paste shortcut no labs.terminal_paste_shortcut + terminal_paste_hotkey (Windows, Linux)
+│                                        another shortcut dictates like the main one and always pastes with Ctrl+Shift+V; General shows its recorder while on
+├── Caps Lock dictation no labs.caps_lock_dictation + labs.caps_lock_light (macOS)   a Caps Lock press starts and stops hands-free dictation; its light waits for the microphone, then shows recording (steady or slow blink), processing, and off
 ├── Smart spacing   no    labs.smart_spacing           (macOS)   a dictation pasted right after a word gets one leading space (#632)
 ├── Sided modifier chords no labs.sided_modifier_chords (macOS) the recorder keeps each modifier's side in a modifier-only chord: R⌘ R⌥ (#710)
 ├── Tap or hold      no    labs.tap_or_hold             (macOS, Linux) in Toggle mode, a press held past 300 ms dictates until it lifts; a short tap still locks (#711, #1144)
@@ -95,6 +98,24 @@ Feature             Pane  Toggle (settings.json, hex settings)   On: what it doe
 │                                        keeping transcript, notes, summary, and Markdown
 ├── Restore clipboard on GNOME no labs.gnome_clipboard_restore (Linux) on a Wayland desktop without data-control (GNOME), a paste snapshots and restores
 │                                        the clipboard through XWayland, only while this user's Xwayland already runs; never starts it (#1111)
+├── Transform typed text no labs.typed_text + typed_text_hotkey (Linux) Settings › Output shows a Typed text section whose shortcut is unbound by
+│                                        default; the shortcut or `hex typed-text` takes the clipboard (adopting a paste's pending restore), clears it,
+│                                        sends Ctrl+A then Ctrl+C, runs the focused app's Output steps on the copied text (skipping spoken
+│                                        formatting, spoken symbols, and filler words), clears and re-copies to confirm the selection still holds
+│                                        that text, then pastes the result over it and restores the clipboard 500 ms later unless a newer copy
+│                                        replaced it. A failed paste restores it too. Select-all replaces the whole field; on GNOME text is read
+│                                        through wl-paste and cleared through wl-copy --clear. A clear that leaves text behind aborts.
+│                                        It sends Ctrl+A/Ctrl+C, so it is not meant for terminals, and refuses before any key while
+│                                        Terminal paste is on, because its Ctrl+V would become Ctrl+Shift+V.
+│                                        // checks: typed_text_is_its_own_bit_and_off_by_default (labs.rs), the shortcut's rules
+│                                        // (app_settings.rs), typed_text_fires_only_while_idle_and_changes_no_capture_state (linux/input.rs),
+│                                        // typed_text_skips_the_dictation_only_labs (dictation/processor.rs),
+│                                        // typed_text_joins_the_commands_only_while_its_lab_is_on (linux/gnome_shortcuts.rs), the fake-backed
+│                                        // typed-text job tests and a_changed_second_copy_aborts_the_replacement (linux/typed_text.rs),
+│                                        // a_new_clipboard_job_adopts_the_pending_restore and
+│                                        // a_failed_dictation_paste_leaves_the_transcript_on_the_clipboard (linux/paste.rs),
+│                                        // the_gnome_shortcut_key_tracks_typed_text (linux/app.rs); not observed with a real shortcut
+│                                        // and target application
 ├── Floating meeting capsules on GNOME no labs.gnome_meeting_capsules (Linux) on a Wayland desktop without layer-shell (GNOME), the recording offer and
 │                                        recording capsule open on XWayland (Rune xwayland_input: override-redirect, clicks in the input shape, never keyboard
 │                                        focus), decided at each show, only while this user's Xwayland already runs; never starts it. Off, an offer opens
@@ -222,7 +243,12 @@ on, its card shows "Unload after" (5, 15, 30, or 60 minutes; default 15).
 has reached it for that long and nothing records (`audio::idle_sleep::held()`: a
 dictation past its hold or a meeting; a macOS capture from its press via
 `dictation_busy`), freeing its RAM and VRAM; between commands no request
-runs. Apple Speech stays loaded. The unloaded model still counts as held
+runs. With the lab on, a launch loads no GGUF model: the first dictation,
+local API request, meeting chunk, or model switch loads it, so memory stays
+free even when nobody dictates. On Linux, a model Settings has just prepared
+for the listener starts loaded and unloads after the idle period. Until it
+loads, whether it can stream comes from the model's definition.
+Apple Speech stays loaded. The unloaded model still counts as held
 (`TranscriptionEngine::holds`), so dictation, meetings, and the local API send
 their work to the engine as before, and the worker reloads it before the
 first command that needs it: audio fed meanwhile waits in the queue, so
@@ -231,7 +257,9 @@ catches up, falling back to the whole clip if it can't finish in time; the
 HUD shows its transcribing state while a released clip waits on the reload,
 with no look of its own. A failed reload fails that job and is retried by the
 next. Check: `unload_idle_carries_its_minutes` in [labs.rs](../../src/labs.rs);
-the unload and reload themselves have no automated check.
+`a_parked_engine_holds_its_selection_and_reloads_it_before_the_first_job` in
+[transcription/engine.rs](../../src/transcription/engine.rs) covers a parked
+start and its first job. The unload itself has no automated check.
 
 Restore shortcut default (`restore-shortcut-default`, issue 613): while on,
 General › Advanced › Paste last dictation shows a Restore default shortcut
@@ -266,40 +294,74 @@ in a real window; the Labs page goldens were regenerated for macOS
 (`mac-labs`, `mac-labs-link`, light and dark), Windows (`windows-labs`,
 light), and Linux (`linux-labs`, light).
 
-Keep dictation on clipboard (`keep-on-clipboard`, issue 200, macOS): while
-on, a pasted dictation stays on the clipboard. `paste::Paster` reads
-`labs::keep_on_clipboard()` as each paste commits: it writes the transcript
-without the nspasteboard.org transient markers (so clipboard managers may
-record it), schedules no 500 ms restore, and drops any earlier snapshot and
-pending restore (`ClipboardRestore::keep`), so a later restoring paste never
-brings back an older clipboard. Into Chromium 155/156, where Hex types the
-text instead of pasting, it also writes the transcript to the clipboard after
-typing. Off, pasting and clipboard restore are exactly as before. Checks:
+Release notes link (`release-notes-link`, every OS): while on, the sidebar
+footer shows a small Release notes link under the version and update status.
+Only a release build shows it, and that exclusion is by build kind, not
+version string: local and test builds (`HEX_LOCAL_BUILD=1`,
+`HEX_TEST_BUILD=1`) get no link even when their version is plain. Then
+`updater::notes::release_notes_url` chooses from `crate::VERSION`: a dev
+version (`0.0.0-dev-N`) opens `https://anoma.ly/hex/dev#<version>`, a plain
+`major.minor.patch` opens
+`https://github.com/anomalyco/hex/releases/tag/v<version>`, and an odd
+version shows no link. The gate is the footer row
+([sidebar.rs](../../src/rune_ui/sidebar.rs) reads
+`labs::Feature::ReleaseNotesLink`), so off, the footer is exactly as before
+and What's new keeps its place under a staged update. Checks:
+`a_dev_build_opens_the_changelog_at_itself`,
+`a_stable_build_opens_its_github_release`, and
+`an_odd_version_has_no_release_notes` in
+[notes.rs](../../src/updater/notes.rs), and
+`release_notes_link_shows_only_with_its_lab` in
+[tests/panes.rs](../../src/rune_ui/tests/panes.rs). Not yet observed in a
+real window.
+
+Keep dictation on clipboard (`keep-on-clipboard`, issue 200, macOS and
+Windows): while on, a pasted dictation stays on the clipboard. `paste::Paster`
+reads `labs::keep_on_clipboard()` as each paste commits: it writes the
+transcript without the nspasteboard.org transient markers (so clipboard
+managers may record it), schedules no 500 ms restore, and drops any earlier
+snapshot and pending restore (`ClipboardRestore::keep`), so a later restoring
+paste never brings back an older clipboard. Into Chromium 155/156, where Hex
+types the text instead of pasting, it also writes the transcript to the
+clipboard after typing. On Windows, `windows::paste::WindowsPaster` reads the
+same gate as each paste commits: it writes an ordinary clipboard entry (not
+marked out of clipboard history or cloud sync), calls its
+`ClipboardRestore::keep`, sends Ctrl+V as usual, and schedules no restore, so
+the dictation stays in Windows clipboard history (Win+V). Off, pasting and
+clipboard restore are exactly as before. Checks:
 `a_kept_paste_leaves_nothing_to_restore` and
 `a_kept_transcript_is_an_ordinary_clipboard_entry` in
 [paste.rs](../../src/paste.rs) (macOS only);
+`keeping_the_paste_cancels_a_pending_restore` in
+[windows/paste.rs](../../src/windows/paste.rs) (Windows only);
 `contributed_options_are_labs_toggles_off_by_default` in
 [panes.rs](../../src/rune_ui/tests/panes.rs). Not yet observed: a real paste
-on a Mac with the toggle on.
+on a Mac or Windows PC with the toggle on.
 
-Copy dictation only (`copy-only`, issue 629, macOS): while on, a finished
-dictation (the dictation shortcut, Dictate without processing, or
-`hex dictation` without `--print`) is put on the clipboard and nothing is
-sent to the focused app: no ⌘V, no typed text (Chromium 155/156 included),
-and no 500 ms restore, so selected text is never replaced. The paste worker
-(`parakeet::finish_output`) reads `labs::copy_only()` as each dictation's
-output commits and hands `paste::Paster` `PasteMode::CopyOnly`, which writes
-the transcript as an ordinary clipboard entry (no nspasteboard.org transient
-markers), drops any earlier snapshot and pending restore
-(`ClipboardRestore::keep`), and ends the continuation, so the next dictation
-is not joined to it. History and Paste last dictation update as for a paste,
-and Paste last dictation and meeting pastes still paste. Off, output is
-exactly as before. Checks:
+Copy dictation only (`copy-only`, issue 629, macOS and Windows): while on, a
+finished dictation (on macOS the dictation shortcut, Dictate without
+processing, or `hex dictation` without `--print`; on Windows any dictation
+job) is put on the clipboard and nothing is
+sent to the focused app: no ⌘V or Ctrl+V, no typed text (Chromium 155/156
+included), and no 500 ms restore, so selected text is never replaced. The
+paste worker (`parakeet::finish_output`) reads `labs::copy_only()` as each
+dictation's output commits and hands `paste::Paster` `PasteMode::CopyOnly`,
+which writes the transcript as an ordinary clipboard entry (no
+nspasteboard.org transient markers), drops any earlier snapshot and pending
+restore (`ClipboardRestore::keep`), and ends the continuation, so the next
+dictation is not joined to it. On Windows, `windows::dictation` reads the same
+gate as each job's output commits and calls
+`windows::paste::WindowsPaster::copy_only`, which writes an ordinary entry,
+calls its `ClipboardRestore::keep`, and sends no keystroke, so the dictation
+appears in Windows clipboard history (Win+V). History and Paste last dictation
+update as for a paste, and Paste last dictation still pastes (meeting pastes
+on macOS too). Off, output is exactly as before. Checks:
 `a_copy_only_dictation_is_left_on_the_clipboard_with_nothing_to_restore` in
 [paste.rs](../../src/paste.rs) (macOS only);
+`clipboard_labs_are_macos_or_windows_only` in [labs.rs](../../src/labs.rs);
 `contributed_options_are_labs_toggles_off_by_default` in
 [panes.rs](../../src/rune_ui/tests/panes.rs). Not yet observed: a real
-dictation on a Mac with the toggle on.
+dictation on a Mac or Windows PC with the toggle on.
 
 Spoken formatting (`spoken-formatting`, issue 630, every OS): while on,
 `Profiles::process_cancellable` in
@@ -441,6 +503,39 @@ suppressed, or checked for it, and Hex is unchanged. Checks:
 real Mac with an external keyboard, or the recorder row's rendering (macOS
 builds only; no golden).
 
+Terminal paste shortcut (`terminal-paste-shortcut`, Windows and Linux):
+another dictation shortcut whose paste is always Ctrl+Shift+V, for a terminal
+window that needs it, while the main dictation shortcut keeps following the
+global Terminal paste setting. While on, General shows a "Terminal paste
+shortcut" recorder under Shortcut, unbound by default and clearable
+(`terminal_paste_hotkey`, also `hex settings set terminal_paste_hotkey
+ctrl+shift+t`). It is refused when it shares a key with another Hex shortcut,
+and the others' checks count it while the toggle is on. The gate is
+`AppSettings::active_terminal_paste_hotkey`: only on Windows and Linux, with
+the toggle on, a binding saved, and no overlap is it handed to the listener,
+so X11 grabs or the shortcuts portal register it (id `terminal-paste`), and
+the Windows hook matches it. Linux has no `hex` command for it, unlike
+Dictate without processing's `hex dictation start|toggle --raw`, so without
+X11 grabs or the portal it stays unregistered. Off, nothing is registered,
+matched, or checked for it, and the saved binding stays. A capture it starts
+is a normal dictation in every other way: the same Hold/Toggle and double-tap
+lock, modes processing, History kind Dictation, last-dictation update, and
+Escape, cancel, and short-tap discards. The shortcut that starts a capture
+owns it:
+the main dictation and Dictate without processing shortcuts neither finish it
+nor pair a double tap with it, and its flavour survives the post-release tail
+to the paste. Paste last dictation keeps the global Terminal paste setting.
+On Windows, `javaw`/`java` still get plain Ctrl+V, as Terminal paste does.
+Checks: `the_terminal_paste_shortcut_needs_its_lab_and_its_own_keys` in
+[app_settings.rs](../../src/app_settings.rs),
+`terminal_paste_shortcut_owns_the_capture_it_starts` in
+[linux/input.rs](../../src/linux/input.rs), and the Windows
+`a_second_dictation_shortcut_owns_the_capture_it_starts` in
+[windows/input.rs](../../src/windows/input.rs) (cross-compiled only). Not yet
+observed: a real terminal on either OS; the Windows tests have not run on a
+Windows PC. The Labs page goldens (`windows-labs`, `linux-labs`) show the new
+card.
+
 Caps Lock dictation (`caps-lock-dictation`, macOS): while on, a physical Caps
 Lock press toggles a hands-free dictation. From idle it starts a capture that
 stays recording without a hold; the next Caps Lock press finishes it and hands
@@ -455,12 +550,19 @@ mid-capture cancels that capture.
 Caps Lock never changes typing: every press also resets the system Caps Lock
 state off through `IOHIDSetModifierLockState`, so the next keys stay
 lowercase. The key's light follows Hex's dictation state through the
-keyboard's HID LED output element (usage page 0x08, usage 0x02). It is on
-while any capture records, including a normal-shortcut or Annotate capture,
-blinking while an accepted job transcribes or processes, and off when nothing
-is left or the capture is discarded, cancelled, or failed. Turning the lab off
-or quitting Hex clears the light and stops forcing the lock off, so Caps Lock
-behaves normally again.
+keyboard's HID LED output element (usage page 0x08, usage 0x02). It comes on
+only after the capture's microphone delivers its first audio, so a press whose
+microphone is still opening (with Release microphone while idle, or a device
+switch) leaves the light as it was. Once live, it is on while any capture
+records, including a normal-shortcut or Annotate capture, blinking while an
+accepted job transcribes or processes, and off when nothing is left or the
+capture is discarded, cancelled, or failed. The listener builds each chunk's
+meter once and feeds both the HUD (when one exists) and the light, so the light
+never depends on a HUD; an Annotate capture feeds the light alone. The
+recording light is steady by default; its Recording light option, Slow blink,
+blinks at 700 ms on and off while recording, while transcribing keeps its
+350 ms blink. Turning the lab off or quitting Hex clears the light and stops
+forcing the lock off, so Caps Lock behaves normally again.
 
 ```ts
 Labs › Caps Lock dictation on                        // labs.caps_lock_dictation
@@ -470,7 +572,9 @@ Labs › Caps Lock dictation on                        // labs.caps_lock_dictati
 ├── Escape while it records -> cancels (the tap keeps Escape from the app)
 ├── Toggle mode's other cancel shortcut -> does not touch a Caps Lock capture
 ├── software Caps Lock -> off after every press; typing is unchanged
-├── light -> solid recording, blink transcribing/processing, off done/cancelled/failed
+├── light -> stays off, or keeps blinking a pending job, until the microphone delivers audio
+├── Recording light -> steady (default) solid recording, or slow blink at 700 ms on/off; transcribing always blinks at 350 ms
+├── light -> off done/cancelled/failed
 ├── Labs off mid-capture -> cancels it, light off, normal Caps Lock returns
 └── Hex quits -> light off, lock released
 ```
@@ -502,6 +606,11 @@ lock reset. Checks:
 `an_older_jobs_stage_event_never_interrupts_a_newer_capture`,
 `a_stage_event_for_an_unknown_job_changes_nothing`,
 `the_light_is_solid_recording_blinking_working_and_off_after`,
+`the_light_waits_for_the_captures_first_audio`,
+`a_meter_without_a_capture_turns_nothing_on`,
+`ending_a_waiting_capture_clears_the_wait`,
+`a_waiting_capture_keeps_earlier_jobs_blinking`,
+`the_slow_blink_setting_only_changes_the_recording_light`,
 `the_light_waits_for_every_accepted_job`,
 `cancelling_or_failing_a_capture_turns_the_light_off`,
 `a_hid_press_matches_an_edge_timestamp_from_before_the_callback`,
@@ -511,6 +620,9 @@ lock reset. Checks:
 `without_the_hid_tracker_an_on_edge_is_the_fallback_press`, and
 `the_light_pattern_codes_round_trip` in
 [caps_lock_dictation.rs](../../src/caps_lock_dictation.rs);
+`meter_reports_rms_and_peak` and `a_dc_offset_never_reads_as_loudness` in
+[indicator.rs](../../src/dictation/indicator.rs);
+`a_meter_reaches_the_light_without_a_hud`,
 `escape_cancels_a_caps_lock_capture_in_hold_mode`,
 `caps_lock_does_not_start_over_an_annotate_recording`,
 `the_dictation_shortcut_stands_down_while_caps_lock_records`,
@@ -519,9 +631,11 @@ lock reset. Checks:
 `a_caps_lock_capture_keeps_escape_from_the_app_in_any_mode` in
 [recognition.rs](../../src/recognition.rs) and
 [suppression/tests.rs](../../src/suppression/tests.rs);
-`caps_lock_dictation_is_its_own_bit_and_macos_only` in
+`caps_lock_dictation_is_its_own_bit_and_macos_only` and
+`caps_lock_light_carries_its_slow_blink_choice` in
 [labs.rs](../../src/labs.rs);
-`contributed_options_are_labs_toggles_off_by_default` in
+`contributed_options_are_labs_toggles_off_by_default` and
+`caps_lock_light_shows_its_choices_on_its_card_while_on` in
 [panes.rs](../../src/rune_ui/tests/panes.rs). Not yet observed: a real Mac
 with the lab on — no hardware run of the Caps Lock LED, the lock reset, the
 blink, Escape cancellation, or the off/quit cleanup. The `mac-labs` and
@@ -1461,7 +1575,7 @@ meeting-platform-icons` still answers with that and exits 0
 
 Normal features, not Labs: dictation, Annotate (every build; its own pane
 and switch), lowering audio while dictating (#210), Dot scope, chord shortcuts, QuickJS transformations, clipboard
-restore (Labs › Keep dictation on clipboard skips it on macOS), the
+restore (Labs › Keep dictation on clipboard skips it on macOS and Windows), the
 vocabulary list itself (rewriting and search), and Linux's Terminal paste.
 
 ## Features
@@ -1728,6 +1842,9 @@ vocabulary list itself (rewriting and search), and Linux's Terminal paste.
 - Terminal paste (Windows): paste with Ctrl+Shift+V instead of Ctrl+V for
   apps that ignore a synthetic Ctrl+V (issue 477 / PR 478). Its toggle is the
   shared `paste_with_shift`; Linux keeps it as a General › Advanced row.
+- Terminal paste shortcut (Windows, Linux): another dictation shortcut whose
+  paste is always Ctrl+Shift+V, whatever Terminal paste says. Its own switch
+  is `labs.terminal_paste_shortcut`, and General shows its recorder while on.
 
 Checks: `labs_is_one_flat_list_of_toggles_off_by_default`,
 `contributed_options_are_labs_toggles_off_by_default`,
