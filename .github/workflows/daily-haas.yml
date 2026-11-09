@@ -2,7 +2,9 @@
 #
 #   - Fetches anomalyco/hex `dev` and merges it into `haas`. A clean merge
 #     is pushed straight to `haas`; a conflict aborts the merge, leaves
-#     `haas` untouched, and is reported on a tracking issue instead.
+#     `haas` untouched, and fails the sync job so the blockage is visible:
+#     the conflict report goes to the run summary and, best-effort, to a
+#     tracking issue, so the notification survives either channel failing.
 #   - When upstream moved, the fork moved since the last daily, or a manual
 #     dispatch forces it, the three Windows variants are rebuilt through
 #     release-haas.yml and published to the rolling `haas-daily`
@@ -76,7 +78,6 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           set -uo pipefail
-          gh label create haas-sync-conflict --color B60205 --description 'Daily upstream sync needs a manual merge' --force
           {
             echo "上流 \`anomalyco/hex\` の dev（${{ steps.merge.outputs.upstream_short }}）を haas にマージしようとしてコンフリクトした。haas は変更していない。"
             echo
@@ -89,12 +90,24 @@ jobs:
             echo
             echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           } > issue-body.md
-          existing=$(gh issue list --label haas-sync-conflict --state open --json number --jq '.[0].number // empty')
-          if [ -n "$existing" ]; then
-            gh issue comment "$existing" --body-file issue-body.md
-          else
-            gh issue create --title '上流 dev の同期がコンフリクトで止まっている' --label haas-sync-conflict --body-file issue-body.md
-          fi
+          # The report always lands in the run summary. Filing it as an
+          # Issue is best-effort: a failed gh call (this repository once
+          # had Issues disabled, which failed this step and masked the
+          # conflict) must not mask the conflict itself; the sync job
+          # fails deliberately in the last step either way.
+          cat issue-body.md >> "$GITHUB_STEP_SUMMARY" || echo '::warning::Could not write the conflict report to the run summary.'
+          {
+            gh label create haas-sync-conflict --color B60205 --description 'Daily upstream sync needs a manual merge' --force
+            if existing=$(gh issue list --label haas-sync-conflict --state open --json number --jq '.[0].number // empty'); then
+              if [ -n "$existing" ]; then
+                gh issue comment "$existing" --body-file issue-body.md
+              else
+                gh issue create --title '上流 dev の同期がコンフリクトで止まっている' --label haas-sync-conflict --body-file issue-body.md
+              fi
+            else
+              echo '::warning::Could not list existing conflict issues; skipping the Issue report to avoid filing a duplicate. The report is in the run summary.'
+            fi
+          } || echo '::warning::Could not file the conflict report as an Issue (Issues may be disabled); the report is in the run summary.'
       - name: Decide whether to build
         id: decide
         run: |
@@ -115,6 +128,13 @@ jobs:
           fi
           echo "proceed=$proceed" >> "$GITHUB_OUTPUT"
           echo "Build: $proceed"
+      - name: Fail the sync job on a conflict
+        if: steps.merge.outputs.conflict == 'true'
+        run: |
+          echo 'Upstream sync is blocked by a merge conflict; haas was left unchanged.'
+          echo 'Conflicting files:'
+          cat conflict-files.txt
+          exit 1
 
   build:
     needs: sync
