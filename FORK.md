@@ -38,6 +38,13 @@ git config remote.pushDefault origin
 git config pull.ff only
 ```
 
+### 自動化の identity（ymkn-muse）
+
+Muse による自動作業（上流同期のコンフリクト解消、Issue の対応、検証ビルドの起動など）は、専用の機械アカウント **ymkn-muse** の名義で行います。このリポジトリのコラボレーター（書き込み可）として登録されています。
+
+- cube の作業 clone（`~/muse/hex-haas-push`）は author を ymkn-muse に設定し、origin は `https://ymkn-muse@github.com/ymkn/hex-haas.git` を使います。認証は ymkn-muse の classic PAT（`repo`＋`workflow`、名前 `muse-cube-hex-haas`）で、cube の `~/.git-credentials-muse` にのみ保管します（ymkn 本人の認証情報とは分離）。
+- fine-grained PAT は他人の個人リポジトリ（コラボレーター参加）には使えないため、classic PAT を使います。権限の実効範囲は ymkn-muse が参加しているリポジトリに限られます。
+
 ## 上流の変更を取り込む
 
 ローカルビルドの更新は手動です。公式更新の取得、ソースへのマージ、ビルド、実行ファイルの入れ替えは別々に行います。公式をfetchしただけでは、使用中のHexは変わりません。
