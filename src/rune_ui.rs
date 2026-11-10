@@ -37,7 +37,10 @@ pub(crate) mod live_text;
 pub(crate) mod meeting_capsules;
 mod meetings;
 pub(crate) use self::meetings::meeting_import_failed;
+#[cfg(hex_capture)]
+mod captures;
 mod meetings_host;
+pub(crate) use meetings_host::{meeting_corner_moved, meeting_failed, meeting_provider_chosen};
 mod model_details;
 mod model_import;
 mod models;
@@ -233,6 +236,11 @@ pub(crate) fn render_app(rune_args: Vec<String>) -> rune::App<Ui> {
         .iter()
         .any(|arg| arg == "--snap" || arg == "--video" || arg == "--list-scenes");
     onboarding_kit::set_live_window(playground && !headless);
+    // A render is in English unless `HEX_RENDER_LANGUAGE` names an
+    // interface language (`ru`, `pl`, …) to check its copy in.
+    if let Ok(code) = std::env::var("HEX_RENDER_LANGUAGE") {
+        crate::desktop::i18n::apply(Some(&code));
+    }
     // Fixtures only: a render never reads, migrates, or saves the user's
     // settings, History, or anything else in the data folder.
     let app = build(
@@ -261,7 +269,7 @@ pub(crate) fn render_app(rune_args: Vec<String>) -> rune::App<Ui> {
 #[derive(Default)]
 pub(crate) struct WindowCompositor {
     onboarding: Option<onboarding_kit::gpu_stage::OnboardingGpu>,
-    game: Option<onboarding_kit::game_fx::GameFx>,
+    game: Option<onboarding_kit::game::fx::GameFx>,
     sounds: sound_sets::Preview,
     /// The device whose backend `process.log` names.
     logged: Option<rune::compose::DeviceKey>,
@@ -281,31 +289,26 @@ impl rune::compose::Compositor<Ui> for WindowCompositor {
         if f.rt
             .marks
             .iter()
-            .any(|&m| onboarding_kit::game_fx::is_game_mark(m))
+            .any(|&m| onboarding_kit::game::fx::is_game_mark(m))
         {
+            // The game's HUD is onboarding's: its draw hook paints both.
+            let hud = onboarding_kit::gpu_stage::OnboardingGpu::for_frame(&mut self.onboarding, f);
             self.game
-                .get_or_insert_with(|| onboarding_kit::game_fx::GameFx::new(f.device))
-                .render(f);
+                .get_or_insert_with(|| onboarding_kit::game::fx::GameFx::new(f.device))
+                .render(f, hud);
         } else if self.onboarding.is_some()
             || f.rt
                 .marks
                 .iter()
                 .any(|&m| onboarding_kit::gpu_stage::is_onboard_mark(m))
         {
-            if self
-                .onboarding
-                .as_ref()
-                .is_none_or(|g| !g.matches(f.format))
-            {
-                self.onboarding = Some(onboarding_kit::gpu_stage::OnboardingGpu::new(
-                    f.device, f.format,
-                ));
-            }
-            self.onboarding.as_mut().expect("created above").render(f);
+            onboarding_kit::gpu_stage::warm_later_pipelines(f.device, f.format);
+            onboarding_kit::gpu_stage::OnboardingGpu::for_frame(&mut self.onboarding, f).render(f);
         } else {
             f.draw_ui();
         }
         self.sounds.render(f);
+        onboarding_kit::live::frame_drawn();
     }
 }
 
@@ -477,24 +480,6 @@ pub(crate) fn shortcut_rules() -> crate::control::settings::ShortcutRules {
     }
 }
 
-/// A capsule's "Never offer" or "Always record" choice, kept in the window's
-/// live settings so its next save doesn't drop it.
-pub(crate) fn meeting_provider_chosen(
-    ui: &mut Ui,
-    choice: crate::app_settings::MeetingProviderChoice,
-) {
-    crate::app_settings::set_meeting_provider(&mut ui.settings.meetings, choice);
-}
-
-/// The corner the recording capsule was dragged to, kept in the window's live
-/// settings so its next save doesn't move it back.
-pub(crate) fn meeting_corner_moved(
-    ui: &mut Ui,
-    corner: crate::app_settings::MeetingIndicatorCorner,
-) {
-    ui.settings.meetings.recording_indicator_corner = corner;
-}
-
 /// An error from outside the window, such as settings that could not be read
 /// at launch, shown where save errors show.
 #[cfg(target_os = "macos")]
@@ -506,13 +491,6 @@ pub(crate) fn show_error(ui: &mut Ui, error: String) {
 #[cfg(target_os = "macos")]
 pub(crate) fn update_check_asked(ui: &mut Ui) {
     ui.update_asked = true;
-}
-
-/// A meeting recording could not start or finish; the Meetings pane says why.
-pub(crate) fn meeting_failed(ui: &mut Ui, error: String) {
-    ui.meetings.start_pending = false;
-    ui.meetings.stop_pending = false;
-    ui.meetings.runtime_error = Some(error);
 }
 
 /// `hex app -- --snap out.png --scene …`: a headless render of a fixture
@@ -679,6 +657,8 @@ pub(crate) struct Ui {
     duck_volume_drag: Option<f32>,
     models: models::Models,
     history: history::HistoryPane,
+    #[cfg(hex_capture)]
+    captures: captures::CapturesPane,
     modes: modes::ModesPane,
     output: output::OutputPane,
     picker: picker::Picker,
@@ -795,6 +775,8 @@ impl Ui {
             duck_volume_drag: None,
             models: models::Models::default(),
             history: history::HistoryPane::default(),
+            #[cfg(hex_capture)]
+            captures: captures::CapturesPane::default(),
             modes,
             output: output::OutputPane::default(),
             picker: picker::Picker::default(),
@@ -1173,6 +1155,11 @@ fn on_key(ui: &mut Ui, event: &rune::KeyEvent, tx: &mut Tx) -> bool {
     if event.key != rune::Key::Escape {
         return false;
     }
+    if let Some(s) = ui.first_run.as_mut()
+        && s.skip_scene()
+    {
+        return true;
+    }
     if ui.explainer.open {
         explainer::close(ui);
         true
@@ -1227,6 +1214,8 @@ fn local_meetings(ui: &mut Ui) -> bool {
 fn setup(ui: &mut Ui, waker: Waker) {
     ui.modes.waker = Some(waker.clone());
     ui.modes.icon_cache = Some(rune::ImageCache::new(waker.clone()));
+    #[cfg(hex_capture)]
+    ui.captures.set_cache(rune::ImageCache::new(waker.clone()));
     if let Service::Pending(connect) = &mut ui.service {
         let connect = std::mem::take(connect);
         #[cfg(target_os = "macos")]
@@ -1261,6 +1250,8 @@ fn poll(ui: &mut Ui, clock: f64, tx: &mut Tx) -> bool {
             && ui.window.as_ref().is_some_and(rune::AppHandle::is_visible),
     );
     changed |= ui.history.poll(ui.pane == Pane::History);
+    #[cfg(hex_capture)]
+    let mut changed = ui.captures.poll(ui.pane == Pane::Captures && !ui.labs_open) | changed;
     if ui.pane == Pane::Output && !ui.labs_open {
         changed |= output::poll(ui, clock, tx);
     }
@@ -1366,11 +1357,15 @@ fn poll(ui: &mut Ui, clock: f64, tx: &mut Tx) -> bool {
 // View
 
 fn view(ui: &Ui, cx: &mut Cx<Ui>) -> El {
-    let p = Paint::new(cx.system_dark(), cx.env().scale);
-    // The native title bar takes the window's background, so it follows a
-    // system theme switch along with the rest of the window.
+    let dark = crate::labs::window_dark(&ui.settings.labs, cx.system_dark());
+    let p = Paint::new(dark, cx.env().scale);
+    // The native title bar takes the window's background and light/dark mode,
+    // so its text and buttons stay readable while Labs › Appearance forces a
+    // theme. winit repaints the frame from the OS theme on every settings
+    // broadcast, so `match_title_bar` records this frame's theme and a window
+    // subclass re-applies it after each one while a theme is forced.
     #[cfg(target_os = "windows")]
-    crate::windows::rune::match_title_bar(p.k.c.bg_deep);
+    crate::windows::rune::match_title_bar(p.k.c.bg_deep, dark, cx.system_dark());
     // Menus and popovers mount above the page (rune-kit overlays).
     let mut layer = Vec::new();
     let (actions, body) = match ui.pane {
@@ -1379,6 +1374,8 @@ fn view(ui: &Ui, cx: &mut Cx<Ui>) -> El {
         Pane::Output => (Vec::new(), output::pane(ui, p, cx.is_reduced_motion())),
         Pane::Modes => modes::pane(ui, p, &mut layer),
         Pane::History => history::pane(ui, p, &mut layer),
+        #[cfg(hex_capture)]
+        Pane::Captures => (Vec::new(), captures::pane(ui, p)),
         Pane::Meetings => meetings::pane(ui, p, &mut layer),
         #[cfg(hex_capture)]
         Pane::Annotate => (Vec::new(), scrawl::pane(ui, p, &mut layer)),

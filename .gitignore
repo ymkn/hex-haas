@@ -24,3 +24,5 @@ __pycache__/
 /target-cpu-arm64/
 /haas-data/
 /haas-config/
+/.render
+/captures

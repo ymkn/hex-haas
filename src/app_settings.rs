@@ -39,7 +39,9 @@ pub use labs::*;
 pub use meeting_folder::default_meeting_output_folder;
 pub use meetings::*;
 #[cfg_attr(not(target_os = "macos"), allow(unused_imports))]
-pub use screenshots::{ScreenshotSettings, screenshot_hotkey, screenshot_settings};
+pub use screenshots::{
+    ScreenshotSettings, screenshot_hotkey, screenshot_record_hotkey, screenshot_settings,
+};
 
 static RECORDING_DUCK_VOLUME: AtomicU32 = AtomicU32::new(0.2_f32.to_bits());
 // Until settings load, "While dictating" is its default, not Mute: the
@@ -566,12 +568,6 @@ impl AppSettings {
         Ok(())
     }
 
-    fn normalize_double_tap_settings(&mut self) {
-        if !self.double_tap_lock || self.dictation_hotkey.key.is_none() {
-            self.double_tap_only = false;
-        }
-    }
-
     pub fn load() -> Result<Self> {
         let path = path()?;
         #[cfg_attr(not(hex_capture), allow(unused_mut))]
@@ -760,7 +756,9 @@ impl AppSettings {
         PAUSE_BROWSER_MEDIA.store(self.pause_browser_media, Ordering::Relaxed);
         DOUBLE_TAP_LOCK.store(self.double_tap_lock, Ordering::Relaxed);
         DOUBLE_TAP_ONLY.store(
-            self.double_tap_lock && self.double_tap_only && self.dictation_hotkey.key.is_some(),
+            self.double_tap_lock
+                && self.double_tap_only
+                && (self.dictation_hotkey.key.is_some() || self.double_tap_modifiers_allowed()),
             Ordering::Relaxed,
         );
         SHORTCUT_TOGGLE.store(
@@ -1166,6 +1164,7 @@ impl AppSettings {
             tracing::warn!("cleared a left-click capture replay shortcut");
             self.capture.replay_hotkey = None;
         }
+        self.screenshots.clear_left_click_record();
     }
 }
 
@@ -1199,6 +1198,8 @@ pub enum HotkeySlot {
     Cancel,
     /// Labs › Screenshots (macOS).
     Screenshot,
+    /// Labs › Screenshots' record shortcut (macOS, with Annotate).
+    ScreenshotRecord,
 }
 
 impl AppSettings {
@@ -1263,6 +1264,12 @@ impl AppSettings {
         }
         if slot != HotkeySlot::Screenshot && cfg!(target_os = "macos") && self.labs.screenshots {
             others.push(self.screenshots.hotkey.clone());
+        }
+        if slot != HotkeySlot::ScreenshotRecord
+            && self.screenshot_recording_available()
+            && let Some(record) = &self.screenshots.record_hotkey
+        {
+            others.push(record.clone());
         }
         hotkey_conflicts(binding, others)
     }

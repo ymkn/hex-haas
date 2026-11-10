@@ -261,7 +261,14 @@ substitute for source inspection or a second roadmap.
   scriptable browsers (Safari and Chromium
   dictionaries) through AppleScript and any other app's focused AXWebArea
   `AXURL`, and the front window's title only while a script
-  transformation is set up (`reads_window_title`); `windows/context` reads any browser through UI Automation and
+  transformation is set up (`reads_window_title`). The cheap 500 ms poll never
+  runs AppleScript: a scriptable browser's page is cached per frontmost pid
+  (so switching away and back reads it again) and read once more when a
+  capture is real, not on every press: the shortcut held past its hold
+  threshold, a finish that lands earlier, or a control start asks for one
+  refresh, while a press a chord discards before that threshold reads nothing
+  (holding past the threshold first still reads the page once);
+  `windows/context` reads any browser through UI Automation and
   `linux/atspi` through AT-SPI.
 - `application_catalog`: cached installed-application discovery for the Modes
   picker, one module per OS: macOS bundles, Windows executables from Start menu
@@ -896,14 +903,16 @@ CoreAudio formats, AppleScript details, or event serialization.
   after the current capture, and opening the replacement must succeed before
   the old stream is dropped; a device that resolves to the one already open is
   kept. An explicit CLI `--device` remains authoritative for that listener
-  process and never falls back. A runtime stream failure cancels an incomplete
-  capture (a programmatic one keeps the audio delivered before the failure for
-  its owner's `/finish`, which answers `microphone-lost` when there is none),
-  discards stale chunks, and retries with bounded backoff; it must not
-  require a settings change or process restart. An initial open failure uses
-  the same bounded recovery without stopping the listener. Cancellation does
-  not stop warm-microphone retries; enabling release-while-idle stops them once
-  capture is idle.
+  process and never falls back. A stream that already failed or delivered
+  digital silence is stopped before its replacement opens, so the replacement
+  starts with no dictation stream on the device, as at launch. A runtime stream
+  failure cancels an incomplete capture (a programmatic one keeps the audio
+  delivered before the failure for its owner's `/finish`, which answers
+  `microphone-lost` when there is none), discards stale chunks, and retries
+  with bounded backoff; it must not require a settings change or process
+  restart. An initial open failure uses the same bounded recovery without
+  stopping the listener. Cancellation does not stop warm-microphone retries;
+  enabling release-while-idle stops them once capture is idle.
 - Feedback volume is persisted from zero through one; zero disables tones.
   Volume changes apply immediately and preview one recording-start tone.
 - Launch at Login uses `SMAppService` for the signed main app. Treat both
@@ -1588,17 +1597,20 @@ GitHub OIDC token, under app `hex`, artifact `desktop`;
 [`docs/plans/release-service.md`](docs/plans/release-service.md) pins the
 target and file names and the direct-install receipt, and
 [`docs/releasing.md`](docs/releasing.md) owns the workflow, channels, secrets,
-and old clients. The 2.3.1 feeds and appcast at `https://anoma.ly/hex/files`
-(and Kit's `downloads.hex.kitlangton.dev`/`.com`, which must keep redirecting
-there) stay frozen. GitHub app releases use `v<VERSION>` tags (`app-v…`
+and old clients. The 2.3.1 feeds at `https://anoma.ly/hex/files` (and Kit's
+`downloads.hex.kitlangton.dev`/`.com`, which must keep redirecting there)
+stay frozen; the appcast there is `packaging/macos/legacy-appcast.xml`, served
+by the site build. GitHub app releases use `v<VERSION>` tags (`app-v…`
 through 2.3.1); each stable one is created as GitHub's Latest release
 (`--latest=true`, stable only), and SDK releases (`release-typescript.yml`)
 are created with `--latest=false` so they never take the badge. Nothing
 downloads through GitHub's `releases/latest` redirect. Never overwrite a published artifact with different bytes.
 `https://anoma.ly/hex` (in-repo `site/`) is the only Hex website. One
-`site/cloudflare.config.ts` defines the production Worker `hex-production-site` (anoma.ly/hex,
-bucket `hex-production-files`) and the dev Worker `hex-dev-site` (dev.anoma.ly/hex,
-bucket `hex-dev-files`); `cf deploy --prebuilt --mode <mode>` picks one, and
+`site/cloudflare.config.ts` defines the production Worker `hex-production-site` (anoma.ly/hex)
+and the dev Worker `hex-dev-site` (dev.anoma.ly/hex), both reading the frozen
+2.3.1 history from `hex-production-files`; the installers and appcast ship with
+the site build and the dev notes come from the `dev-notes` branch.
+`cf deploy --prebuilt --mode <mode>` picks one, and
 only CI deploys: a push to `dev` touching `site/` deploys dev, a stable
 Release deploys production. No subdomains. The site's download links come
 from the service's stable manifest when it builds. After publishing a version,
@@ -1700,8 +1712,8 @@ whose digest its job reports and every consumer checks. Site deploy follows
 the same split: its build job has no secret, and its `release` job runs only
 `.github/release/deploy-site.sh`, which deploys the verified Build Output only
 when it names exactly that mode's site Worker, routes, and bindings, with the
-cf CLI locked in `.github/release/cf/`; Legacy appcast checks out only
-`.github/release/` and the appcast. Keep that boundary:
+cf CLI locked in `.github/release/cf/`; its build job runs the installer test
+and the appcast check on repository code, no secret. Keep that boundary:
 never add a step that builds, installs dependencies, or runs repository code
 to a job that holds a secret or an OIDC token, and pin every action by SHA.
 `.github/` changes need Dax (CODEOWNERS and the "release boundary" ruleset).
@@ -1757,7 +1769,7 @@ q8_0, and q5_0 (NB-Whisper Medium) tensors and no MUL_MAT_ID (`CMAKE_ARGS` in
 use another type, so widen `GGML_VULKAN_SHADER_TYPES` before the catalog
 gains a model that needs one. Release executables are stripped (`[profile.release]`). The
 installers live in the locked `.github/release/` (`install-linux.sh`,
-`install-windows.ps1`; the Installers workflow serves them at
+`install-windows.ps1`; the site build serves them at
 `https://anoma.ly/hex/files/`) and install from the service's manifest,
 checking each file's size and SHA-256 plus the Linux ed25519 signature or the
 Windows Authenticode signature; `scripts/test-install-linux-release.sh`

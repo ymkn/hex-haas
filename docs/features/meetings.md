@@ -120,12 +120,46 @@ System audio                                      // meetings.system-audio
 ├── Linux -> pw-record of the default output's monitor (stream.capture.sink);
 │   the session manager follows a changed default; no pw-record -> recording
 │   refuses with "Install PipeWire's pw-record"
-└── Windows -> WASAPI loopback of every active output (cpal), mixed into the
-    one system track, so a call playing on a headset that isn't the default
-    output is recorded (#1221; audio_on_any_output_reaches_the_system_track,
-    unverified on a real call); silence while nothing plays is padded on
-    resume; a change in the list of outputs reopens it; an output whose
-    loopback fails is dropped while the others keep recording
+└── Windows -> WASAPI loopback (cpal) of the outputs the call app plays on,
+    mixed into the one system track, so a call playing on a headset that
+    isn't the default output is recorded (#1221). A call recording prefers
+    the outputs where the app's own microphone holder also plays, then any
+    output one of its processes plays on, so a virtual mixer's (SteelSeries
+    Sonar, VB-Cable, Voicemeeter) playback of the user's processed
+    microphone and replay of the call is not mixed in; for a manual
+    recording, every active output is heard. While a detected call app has
+    no playback session yet, or its sessions can't be read, every output is
+    heard until the 2 s check finds the app's outputs. When none of the
+    app's outputs open, Hex hears every output and stops following the app
+    for that source. Silence while nothing plays is padded on resume. A
+    route check every 2 s reopens on a changed output list while hearing
+    every one, or when the app's outputs move (by endpoint id): a changed
+    microphone-holder set, or any change between app sets. Outputs chosen
+    from the microphone holder stay open for an app set that still covers
+    them: that is the same call seen without its holder, so reopening only
+    for a second process's extra outputs would reopen back on the next
+    check once the holder returns. Once the outputs came from an app set,
+    only that same set stays open, because a new endpoint would otherwise
+    never be heard. A temporarily absent session or a failed enumeration
+    keeps the current outputs too. A source that stopped following the app
+    because none of its outputs would open follows it again when a changed
+    output list reopens it. An output whose loopback fails is dropped while
+    the others keep recording.
+    // checks: the selection is pure and tested in
+    // meeting/loopback_route.rs: the_microphone_holder_s_output_beats_
+    // another_process_of_the_same_app,
+    // a_microphone_holder_that_plays_nothing_falls_back_to_the_app_s_outputs,
+    // the_mixer_s_microphone_endpoint_is_never_chosen,
+    // an_app_with_no_active_render_session_hears_every_output,
+    // a_manual_recording_hears_every_output, and its route changes by
+    // a_different_microphone_holder_output_reopens,
+    // an_app_output_set_that_covers_the_current_one_does_not_reopen,
+    // an_app_output_set_that_leaves_out_the_current_one_reopens,
+    // an_app_set_that_grows_beyond_an_app_set_reopens,
+    // an_app_set_equal_to_the_microphone_holder_s_does_not_reopen,
+    // every_output_keeps_what_is_open; the mix still by
+    // audio_on_any_output_reaches_the_system_track (meeting/windows.rs);
+    // unverified on real hardware
 Call detection                                    // meetings.detect
 ├── Linux -> one pw-dump --monitor: running Stream/Input/Audio nodes that are
 │   not monitor captures, by application.process.binary (node or client)
@@ -257,12 +291,16 @@ Signal / Telegram / WeChat / LINE / Webex / Element / Phone call, or a browser c
      ├── A call whose page names a meeting code (Google Meet's, from the
      │   address or a code-only tab title) is snoozed by that code: another
      │   code in the same browser is a new call and is offered or recorded;
-     │   a page without a code still counts as the snoozed call (#1113)
+     │   a `/meet/<code>` address (Arc opening a Calendar link) resolves to
+     │   its code, and a page without a code still counts as the snoozed
+     │   call (#1113)
      └── Stopped by hand -> the snooze ends once the call app has been off
          the microphone for 3 s (seen while transcribing too), so the next
          call in the same app is offered; a dismissed offer keeps the minute
          for a muted call dropping off mid-call. Checks:
          `a_different_meet_call_in_the_same_browser_is_not_snoozed_by_the_first`,
+         `meet_prefixed_addresses_are_snoozed_by_their_own_codes`,
+         `extracts_a_meet_code_from_a_meet_prefixed_address`,
          `a_stopped_call_s_app_is_snoozed_only_until_it_leaves_for_a_few_seconds`
   -> "Left the call" prompt after the call app is off the microphone for 3 s
   -> Times are wall-clock runs: observations more than 10 s apart (sleep, a
@@ -358,9 +396,13 @@ voice note elsewhere would otherwise get a known service's 2 s threshold or
 trigger Always record. (A call in a background tab is therefore judged by the
 active tab's page, which is the unknown-page 20 s for a new site.) That query is
 an AppleScript round trip, so the watcher starts it on its own
-thread (at most one at a time, about once a second) and reads the newest answer,
+thread (at most one at a time) and reads the newest answer,
 at most 5 s after it finished; a slow or timed-out query (the existing 2 s
-limit) never holds up the loop. Answers and the remembered page are dropped
+limit) never holds up the loop. A browser that just started holding the
+microphone is queried once a second for 30 s, enough to name the call before
+the 20 s unknown-page threshold; after that it is queried every 30 s, and the
+page remembered from the last answer names the call in between. Answers and
+the remembered page are dropped
 while Hex records, Meetings is off, the browser is snoozed for a call without
 a meeting code, or no browser holds
 the microphone; a query in flight at that moment is not repeated beside itself,
@@ -368,7 +410,8 @@ and its answer is discarded. When a browser's page is found for a run already
 under way (the first pass had no answer yet), the run keeps counting, now
 toward the known service's 2 s. When no answer names a page, the last page a browser showed while
 it held the microphone names the call for 60 s (`BrowserPageMemory`), so the
-site survives a failed query or Hex being in front. Safari, Chrome, Firefox and
+site survives a failed query, Hex being in front, or the 30 s between slow
+queries. Safari, Chrome, Firefox and
 Edge expose no URL, so their calls are unnamed unless the foreground context
 says otherwise. Banshee has no recognised room path, so any `banshee.app` page
 counts; it is not in Settings' always-listed providers, but appears under
@@ -383,7 +426,14 @@ call detected" offer; that is what the 20 s browser threshold prevents.
 A second Banshee call on 2026-10-26 got no offer in the 30 s before Kit started
 recording by hand: the "about 20 s" threshold was 40 loop observations, and each
 loop took about 0.9 s (500 ms sleep plus the browser inspection), so an unknown
-browser page needed about 37 s. The thresholds are now clock time.
+browser page needed about 37 s. The thresholds are now clock time, and the
+foreground context monitor no longer runs an AppleScript read every poll
+(README's website-context section): it reads a scriptable browser's page when
+the browser comes to the front and once a dictation capture is real (held past
+its hold threshold, or at a finish that lands earlier, or at the control
+command's start). The watcher's own queries (once a second for the first 30 s a
+browser holds the microphone, then every 30 s) keep naming the call, so after
+the first 30 s a tab change can take up to 30 s to be noticed.
 Checks: `a_slow_loop_still_offers_an_unknown_browser_call_after_about_20_seconds`,
 `a_slow_loop_still_ends_a_snooze_after_a_minute`,
 `a_stalled_loop_does_not_count_the_gap_as_time_on_the_microphone`,
@@ -398,6 +448,7 @@ Checks: `a_slow_loop_still_offers_an_unknown_browser_call_after_about_20_seconds
 `a_slow_tab_query_never_holds_up_the_loop`,
 `a_reset_drops_the_answer_in_flight_without_starting_a_second_query`,
 `an_answer_is_dated_by_when_its_query_finished`,
+`tab_queries_back_off_after_the_first_thirty_seconds_and_reset`,
 `a_cold_tab_query_then_its_answer_leads_to_a_banshee_offer` and
 `a_snoozed_or_non_browser_application_is_not_queried` (meeting/watcher.rs),
 `the_meeting_tab_query_reads_only_the_active_tab` (dictation/context.rs),
@@ -581,6 +632,9 @@ Record (offer, menu bar "Record Meeting", Meetings pane, or voice command)
      │   pill `.hit()`); the window is as wide as the open pill, and clicks
      │   in its transparent rest reach the app beneath (#1305; not observed
      │   on a real Mac)
+     ├── Windows: each capsule's window is only as wide as the drawn pill,
+     │   so the area around it stays clickable (not verified on a real
+     │   Windows machine)
      ├── In the saved recording_indicator_corner
      ├── Compact: pulsing red dot · title · mm:ss, plus "+N" when turns wait
      ├── Hover -> widens toward the screen with the actions below; pointer

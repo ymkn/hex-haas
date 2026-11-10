@@ -19,7 +19,7 @@ use crate::paste::{PasteMode, Paster};
 use crate::suppression::InputActivity;
 use crate::transcription::WarmTranscriber;
 use crate::transcription::engine::{PendingTranscript, TranscriptionEngine};
-use crate::transcription::gguf_session::OfflineGgufSession;
+use crate::transcription::gguf_session::{OfflineGgufSession, output_truncated};
 use crate::transcription::models::{
     TranscriptionModelId, TranscriptionSelection, model_path, validate,
 };
@@ -106,6 +106,9 @@ struct InferenceJob {
     prepare_ms: u128,
     target: TranscriptionTarget,
     context: ContextSnapshot,
+    /// Labs › Return to app: the app the capture started in, which the
+    /// paste returns to (macOS).
+    return_to: Option<i32>,
     /// The language the model was asked for at submission.
     language: String,
     /// The clip, kept for History while Labs › Keep recordings is on.
@@ -118,6 +121,7 @@ struct ProcessorJob {
     target: TranscriptionTarget,
     text: String,
     context: ContextSnapshot,
+    return_to: Option<i32>,
     language: String,
     timings: JobTimings,
     recording: Option<crate::history::Recording>,
@@ -138,6 +142,9 @@ struct CompletedTranscript {
     /// Corrected local transcript before mode processing.
     raw: String,
     application: Option<String>,
+    /// Labs › Return to app: the app the capture started in, which the
+    /// paste returns to (macOS).
+    return_to: Option<i32>,
     timings: JobTimings,
     processing: Option<ProcessingObservation>,
     recording: Option<crate::history::Recording>,
@@ -245,6 +252,9 @@ struct WorkerState {
     next_sequence: u64,
     jobs: BTreeMap<DictationJobId, Arc<JobControl>>,
     pending_pastes: usize,
+    /// Labs › Return to app: the app in front when the capture started,
+    /// which its output returns to (macOS).
+    return_to: Option<i32>,
 }
 
 impl WorkerState {
@@ -274,6 +284,7 @@ impl DictationWorker {
             next_sequence: 0,
             jobs: BTreeMap::new(),
             pending_pastes: 0,
+            return_to: None,
         }));
 
         let (_, selection) = crate::app_settings::transcription_selection();
@@ -355,6 +366,15 @@ impl DictationWorker {
         }
     }
 
+    /// Labs › Return to app (macOS): remembers the app in front as this
+    /// capture starts, so its paste can bring it back. Read only while the
+    /// lab is on, and never Hex itself.
+    pub fn remember_return_to_app(&self) {
+        let return_to = crate::paste::return_to_app::capture_start();
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state.return_to = return_to;
+    }
+
     /// Hands the clip to the engine at once, so its live stream finishes
     /// before any later capture begins one; the job then waits in order.
     pub fn transcribe(
@@ -392,6 +412,14 @@ impl DictationWorker {
     ) -> Result<DictationJobId, &'static str> {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         let job_id = DictationJobId(state.next_output_sequence()?);
+        // Labs › Return to app: only a paste returns to an app; a printing
+        // stop and the service never paste.
+        let return_to = matches!(
+            target,
+            TranscriptionTarget::Paste | TranscriptionTarget::RawPaste
+        )
+        .then(|| state.return_to.take())
+        .flatten();
         let (Some(engine), Some(jobs)) = (&self.engine, &self.inference_jobs) else {
             return Err("dictation worker is unavailable");
         };
@@ -439,6 +467,7 @@ impl DictationWorker {
             prepare_ms,
             target,
             context,
+            return_to,
             language,
             recording,
         })
@@ -630,6 +659,7 @@ fn run_processor_worker(
                     text: processed.text,
                     raw: job.text,
                     application: job.context.application,
+                    return_to: job.return_to,
                     timings: job.timings,
                     processing: processed.observation,
                     recording: job.recording,
@@ -833,6 +863,7 @@ fn run_inference_worker(
                         target,
                         text,
                         context: job.context,
+                        return_to: job.return_to,
                         language: job.language,
                         timings,
                         recording: job.recording,
@@ -849,6 +880,7 @@ fn run_inference_worker(
                     raw: text.clone(),
                     text,
                     application,
+                    return_to: job.return_to,
                     timings,
                     processing: None,
                     recording,
@@ -1011,6 +1043,26 @@ fn finish_output(
                             } else {
                                 PasteMode::Continue
                             };
+                            // Labs › Return to app: the app the capture
+                            // started in comes back first. When it can't,
+                            // nothing is pasted; the text stays for Paste
+                            // last dictation, and History keeps only pasted
+                            // output, as on any failed paste. A cancelled job
+                            // leaves the last result alone, as it does
+                            // everywhere else.
+                            if matches!(mode, PasteMode::Continue)
+                                && let Err(error) =
+                                    crate::paste::return_to_app::bring_to_front(completed.return_to)
+                            {
+                                if !control.is_cancelled() {
+                                    *last_transcript = Some(completed.text.clone());
+                                }
+                                tracing::warn!(
+                                    %error,
+                                    "a dictation found another app in front and couldn't return to its own"
+                                );
+                                return Err(error.to_string());
+                            }
                             paste(&completed.text, mode, &commit)
                         }
                         TranscriptionTarget::Service
@@ -1285,8 +1337,26 @@ impl Parakeet {
         let started = Instant::now();
         let mut silence = Vec::new();
         pad_for_parakeet(&mut silence);
-        self.transcribe(&silence)
-            .wrap_err("could not prewarm transcription model")?;
+        // No vocabulary: with it, a decoder such as Qwen3-ASR 1.7B reads a
+        // long term list back to its output cap on every warm-up (#1568).
+        let result = self
+            .session
+            .warm(&silence, &self.options)
+            .map(drop)
+            .wrap_err("could not prewarm transcription model");
+        match result {
+            // Backstop: a decode that still runs to its generation cap on
+            // silence (Qwen3-ASR 1.7B, #968) ran the whole graph on the
+            // device, so that is a warm model, not a failed selection; Linux
+            // and Windows accept it the same way.
+            Err(error) if output_truncated(&error) => {
+                tracing::info!(
+                    error = format!("{error:#}"),
+                    "the warm-up run on silence hit the output limit; the model is warm"
+                );
+            }
+            result => result?,
+        }
         tracing::info!(
             prewarm_ms = started.elapsed().as_millis(),
             "prewarmed transcription model"
@@ -1343,6 +1413,7 @@ mod tests {
             target,
             text: "raw instruction".into(),
             context: ContextSnapshot::default(),
+            return_to: None,
             language: "en".into(),
             timings: JobTimings {
                 total_started: Instant::now(),
@@ -1493,6 +1564,7 @@ mod tests {
                 next_sequence: 1,
                 jobs: BTreeMap::from([(DictationJobId(0), Arc::new(JobControl::default()))]),
                 pending_pastes: 0,
+                return_to: None,
             })),
             inference_worker: None,
             processor_workers: Vec::new(),
