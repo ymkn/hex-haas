@@ -466,13 +466,21 @@ impl LocalTranscriber {
     /// vocabulary prompt: with it, a decoder such as Qwen3-ASR reads a long
     /// term list back to its output cap on every warm-up (#1568). A decode
     /// that still runs to that cap ran the whole graph on the device, so
-    /// that is a warm model, not a failed device.
+    /// that is a warm model, not a failed device. The GGUF session warms
+    /// directly for this; the Haas speech.cpp worker takes no vocabulary
+    /// prompt, so it warms by transcribing the silence instead.
     fn warm_on_silence(&mut self) -> Result<()> {
-        let run = |this: &mut Self| {
-            this.session
-                .warm(&vec![0.0; PREWARM_SAMPLES], &this.options)
-                .map(drop)
-                .wrap_err("transcription failed")
+        let run = |this: &mut Self| -> Result<()> {
+            match &mut this.session {
+                LocalSession::Gguf(session) => session
+                    .warm(&vec![0.0; PREWARM_SAMPLES], &this.options)
+                    .map(drop)
+                    .wrap_err("transcription failed"),
+                #[cfg(target_os = "windows")]
+                LocalSession::SpeechCpp(worker) => worker
+                    .transcribe(&vec![0.0; PREWARM_SAMPLES])
+                    .map(drop),
+            }
         };
         let result = match run(self) {
             // A GPU that fails mid-run reloads on the CPU, as a transcript
