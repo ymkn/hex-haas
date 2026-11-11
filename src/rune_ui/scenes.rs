@@ -172,6 +172,19 @@ pub(super) const SCENES: &[Scene] = &[
         ui.open = Some(Menu::Transformations);
         ui.pane = Pane::Modes;
     }),
+    // Labs › Switch model with app: each mode's speech model and language.
+    ("modes-speech", |ui| {
+        *ui = mac_fixture();
+        modes::fixture(ui);
+        ui.settings.labs.app_model_switching = true;
+        ui.settings.dictation_processing.modes[0].speech =
+            Some(crate::app_settings::KeyboardModelChoice {
+                model: TranscriptionModelId::ParakeetV3,
+                language: "es".into(),
+            });
+        ui.picker.installed = Some(vec![TranscriptionModelId::ParakeetV3]);
+        ui.pane = Pane::Modes;
+    }),
     ("picker", |ui| {
         *ui = portal_fixture();
         picker::fixture(ui, None);
@@ -887,7 +900,9 @@ pub(super) fn portal_fixture() -> Ui {
 /// Deterministic settings and service state matching a typical Wayland
 /// desktop with the shortcuts portal.
 pub(super) fn fixture(shortcuts: DesktopShortcuts) -> Ui {
-    crate::desktop::i18n::apply(Some("en"));
+    // English, unless a render names another language to check its copy in.
+    let language = std::env::var("HEX_RENDER_LANGUAGE").unwrap_or_else(|_| "en".into());
+    crate::desktop::i18n::apply(Some(&language));
     let settings = AppSettings {
         dictation_hotkey: HotkeyBinding {
             modifiers: HotkeyModifiers::default(),

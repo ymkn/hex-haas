@@ -595,7 +595,7 @@ fn the_meeting_summary_model_is_picked_from_opencode_s_models() {
     );
     assert!(rt.find("thinking").is_none(), "summaries have no thinking");
     tap(&mut rt, "model-value");
-    assert!(rt.state.models.picker.open);
+    assert!(rt.state.models.picker.is_open());
     tap(&mut rt, "model-picker-option-0");
     assert_eq!(rt.state.settings.meetings.opencode_model, None);
     assert!(
@@ -2064,6 +2064,10 @@ fn labs_lists_every_toggle_off_by_default() {
         ("lab-vocabulary-biasing", settings.labs.vocabulary_biasing),
         ("lab-return-to-app", settings.labs.return_to_app),
         ("lab-speakers-only", settings.labs.speakers_only),
+        (
+            "lab-second-dictation-shortcut",
+            settings.labs.second_dictation_shortcut,
+        ),
     ] {
         assert!(rt.find(row).is_some(), "Labs lacks {row}");
         assert!(!on, "{row} is on");
@@ -2089,11 +2093,23 @@ fn labs_lists_every_toggle_off_by_default() {
     assert!(rt.find("terminal-paste").is_none());
     open_labs(&mut rt);
     assert!(rt.find("lab-return-to-app").is_none(), "macOS only");
+    assert!(
+        rt.find("lab-second-dictation-shortcut").is_some(),
+        "the second dictation shortcut runs on Windows too"
+    );
     tap(&mut rt, "lab-terminal-paste");
     assert!(rt.state.settings.paste_with_shift);
     assert!(
         rt.find("lab-meetings").is_some(),
         "Meetings runs on Windows too"
+    );
+
+    // Linux lists the second dictation shortcut as well.
+    let mut rt = runtime("linux-labs", true, (980.0, 2000.0));
+    unfold_labs(&mut rt);
+    assert!(
+        rt.find("lab-second-dictation-shortcut").is_some(),
+        "the second dictation shortcut runs on Linux too"
     );
 }
 
@@ -2389,6 +2405,28 @@ fn labs_groups_fold_and_remember_it() {
         "turning off a group's last lab leaves it open"
     );
     assert_eq!(rt.state.settings.labs.groups.get("models"), Some(&true));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_saved_record_shortcut_shows_and_clears_while_annotate_is_off() {
+    let mut rt = runtime("mac-labs", true, (980.0, 4000.0));
+    rt.update(|ui, _| {
+        ui.settings.labs.screenshots = true;
+        ui.settings.capture.enabled = false;
+        ui.settings.screenshots.record_hotkey =
+            Some(crate::app_settings::HotkeyBinding::screenshot_default());
+        ui.lab_store.group = Some(crate::labs::Feature::Screenshots.group());
+    });
+    settle(&mut rt);
+    assert!(rt.find("needs-annotate").is_some());
+    assert!(
+        rt.find("clear-screenshot-record-shortcut").is_some(),
+        "the key it holds stays visible and can be freed"
+    );
+    tap(&mut rt, "clear-screenshot-record-shortcut");
+    assert_eq!(rt.state.settings.screenshots.record_hotkey, None);
+    assert!(rt.find("clear-screenshot-record-shortcut").is_none());
 }
 
 /// Each OS shows only its labs, and a group with none of them hides.

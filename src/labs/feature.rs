@@ -15,6 +15,7 @@ pub enum Feature {
     VocabularyBiasing,
     TerminalPaste,
     KeyboardModelSwitching,
+    AppModelSwitching,
     MouseShortcuts,
     PauseBrowser,
     ShareShortcut,
@@ -65,17 +66,21 @@ pub enum Feature {
     AnnotateReplay,
     MeetingImport,
     MeetingDescriptiveFilenames,
+    MeetingNotesFile,
     QuitClosesWindow,
     ExpireMeetingAudio,
     CapsLockDictation,
     OpenCodeInWsl,
     TranscribeFiles,
     ApiProcessing,
+    ApiTimestamps,
     SpeakersOnly,
+    MoreDictationShortcuts,
+    PauseMenu,
 }
 
 impl Feature {
-    pub const ALL: [Self; 67] = [
+    pub const ALL: [Self; 72] = [
         Self::Meetings,
         Self::VoiceFilter,
         Self::Playground,
@@ -86,6 +91,7 @@ impl Feature {
         Self::VocabularyBiasing,
         Self::TerminalPaste,
         Self::KeyboardModelSwitching,
+        Self::AppModelSwitching,
         Self::MouseShortcuts,
         Self::PauseBrowser,
         Self::ShareShortcut,
@@ -136,12 +142,16 @@ impl Feature {
         Self::AnnotateReplay,
         Self::MeetingImport,
         Self::MeetingDescriptiveFilenames,
+        Self::MeetingNotesFile,
         Self::QuitClosesWindow,
         Self::ExpireMeetingAudio,
         Self::CapsLockDictation,
         Self::OpenCodeInWsl,
         Self::TranscribeFiles,
         Self::ApiProcessing,
+        Self::ApiTimestamps,
         Self::SpeakersOnly,
+        Self::MoreDictationShortcuts,
+        Self::PauseMenu,
     ];
 }

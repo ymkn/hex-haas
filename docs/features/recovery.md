@@ -12,6 +12,7 @@ platforms, and dependencies.
 - [Finish without losing other work](#finish-without-losing-other-work).
 - [Rearm without a phantom capture](#rearm-without-a-phantom-capture).
 - [Reopen with fresh audio](#reopen-with-fresh-audio).
+- [Keep an interrupted dictation](#keep-an-interrupted-dictation).
 - [Fence late capture notifications](#fence-late-capture-notifications).
 - [Degrade only the failing dependency](#degrade-only-the-failing-dependency).
 - [Keep Linux listeners managed](#keep-linux-listeners-managed).
@@ -253,7 +254,10 @@ listener restart, even after cancellation.
 
 ```ts
 initial open fails OR stream interrupts
-  -> cancel incomplete capture + discard stale audio  // interrupted audio cannot return
+  -> a dictation held past the hold threshold, or a `hex dictation start`
+     control capture, keeps what it heard    // recover.interrupted-dictation
+     -> transcribed and copied, never pasted
+  -> otherwise cancel the incomplete capture + discard stale audio  // interrupted audio cannot return
   -> bounded backoff -> reopen the resolved input     // warm microphone retries
   -> replacement delivers new audio
   -> fresh capture -> release -> expected output
@@ -267,6 +271,10 @@ no input device at all (macOS)
 no input opens, at startup or after an interruption (Linux) // #937
   -> one "could not open the microphone: …" failure per outage // take_failure
   -> last failure filled in while it keeps retrying; reset once one opens
+ALSA's default goes through PipeWire's ALSA plugin (Linux) // main, #1628
+  -> DISABLE_RTKIT is set first: PipeWire's realtime module fails to start,
+     which is ignored and the stream still opens, so the portal's realtime
+     budget never lowers RLIMIT_RTTIME // a zero budget killed Hex
 listener worker returns an error or panics (macOS)
   -> status: running false, "Stopped", capture unknown // never "Enabled"
 saved microphone missing or will not open
@@ -352,7 +360,7 @@ values; no iPhone observed with the lid closed),
 `a_dead_stream_is_stopped_before_its_replacement_opens`;
 [dictation/audio.rs](../../src/dictation/audio.rs):
 `recovered_owner_delivers_audio_and_accepts_a_new_capture`,
-`microphone_loss_keeps_only_a_programmatic_captures_delivered_audio`,
+`microphone_loss_keeps_a_recording_captures_delivered_audio`,
 `microphone_loss_with_only_pre_roll_keeps_nothing`,
 `finish_after_an_unread_microphone_loss_takes_the_kept_clip`,
 `a_dictation_of_digital_silence_reopens_the_microphone`;
@@ -411,8 +419,14 @@ ready stream fails while the press is held
   ├── before the 300 ms hold threshold -> back to pending, reopen for the same press
   │     ├── release before ready -> discard
   │     └── ready -> capture from the original press -> expected output
-  └── after the threshold -> fail with "Microphone capture was interrupted"
-CoreAudio processor overload (Xrun) -> warn and keep the stream // not a failure
+  └── after the threshold -> keep the audio delivered, transcribed and
+        copied (recover.interrupted-dictation), or fail with
+        "Microphone capture was interrupted" when none arrived or it is
+        near-silent
+Microphone overload (Xrun) or refused real-time promotion -> counted; one warning per burst // not a failure
+  └── Some hosts report it from the thread that runs the stream: that callback only
+      counts, the poll that drains the stream writes the count at most once per 10 s,
+      and a stream closed with a count left over writes it as it closes
 gap in the microphone timeline (warm or cold)
   ├── macOS: 50–250 ms -> filled with silence, capture continues // #619
   │     └── over 250 ms -> fail as a capture discontinuity
@@ -424,6 +438,7 @@ Checks in [dictation/audio.rs](../../src/dictation/audio.rs):
 `enabling_warm_microphone_preserves_pending_capture_and_recovers_after_cancellation`,
 `cold_stream_failure_before_hold_threshold_reopens_for_the_same_press`,
 `cold_stream_failure_after_hold_threshold_still_fails_the_capture`,
+`cold_stream_failure_keeps_the_audio_a_held_capture_already_delivered`,
 `a_short_microphone_gap_is_filled_with_silence_instead_of_failing_the_capture`;
 in [linux/dictation/gap.rs](../../src/linux/dictation/gap.rs):
 `a_short_microphone_gap_is_padded_with_silence`,
@@ -431,7 +446,9 @@ in [linux/dictation/gap.rs](../../src/linux/dictation/gap.rs):
 [linux/dictation.rs](../../src/linux/dictation.rs):
 `a_short_microphone_gap_is_padded_into_a_finished_clip`; in
 [audio.rs](../../src/audio.rs): `overload_glitches_do_not_interrupt_the_stream`,
-`cold_open_retries_the_selected_microphone_before_falling_back`.
+`cold_open_retries_the_selected_microphone_before_falling_back`; in
+[audio/overloads.rs](../../src/audio/overloads.rs):
+`a_burst_writes_one_line_and_holds_the_rest`.
 
 **Fixed after 2.1.25 ([#130](https://github.com/anomalyco/hex/issues/130)):** the
 first hold after minutes of idle failed with the error tone. The reporter's logs
@@ -440,7 +457,7 @@ after opening. cpal 0.18 reports that as `ErrorKind::Xrun` from CoreAudio's
 `kAudioDeviceProcessorOverload` listener; the stream keeps running, but Hex
 treated every error callback as fatal. In release-when-idle mode the owner then
 closed the device without retrying, and recognition suspended the held gesture.
-Overloads and refused real-time promotion are now logged and ignored; actual
+Overloads and refused real-time promotion are now ignored; actual
 sample gaps over 50 ms still fail the capture as a discontinuity. An interruption
 before the hold threshold re-pends the same press instead of failing it. The same
 logs show a cold open falling back from the selected microphone to automatic
@@ -450,6 +467,25 @@ Not verified: the reporter's hardware, whether 200 ms of retries is long enough
 for their device, or a physical cold open after idle.
 Proof limit: controlled asynchronous opener and capture ownership, not onset
 latency or the macOS microphone indicator.
+
+**Changed after dev (overload logging):** a host can report an overload, or a
+refused real-time promotion, on the thread that runs the stream. The old line
+formatted itself there and wrote to stderr and `process.log` behind a mutex,
+once per overload. Hex now only counts them there, and writes one
+`microphone stream glitched; continuing` line with `count` from the poll that
+drains the stream, at most once every 10 s. A count that window holds back is
+written by that poll later, and a stream that closes with a count left over
+writes it as it closes (`Drop for AudioInput` calling `overloads::flush`) rather
+than beside the next open's lines hours later. `since_last_stream_glitch` still
+answers capture diagnostics from the same counters. On macOS the first chunk of
+each open also logs the callback's frames and period, which is the hardware
+period cpal does not report for `BufferSize::Default` (skipped under
+`HEX_AUDIO_FIXTURE`, whose chunks are the file's); no CoreAudio FFI was added.
+Check: `a_burst_writes_one_line_and_holds_the_rest` covers the window;
+`overload_glitches_do_not_interrupt_the_stream` covers counting instead of
+failing. Not verified: a real overload burst after this change, whether the
+coalesced rate suits a loaded machine, or the close-time flush on a device that
+glitches.
 
 **Fixed after dev ([#619](https://github.com/anomalyco/hex/issues/619)):** a
 Bluetooth headset's stream skipped about 130–145 ms of audio soon after it
@@ -508,6 +544,56 @@ stopped delivering audio without reporting an error, so every dictation held
 only the stale pre-roll and was discarded as no speech until Hex restarted. An
 open stream that delivers nothing for 4 s now counts as failed and is reopened
 with the usual bounded recovery. Not verified on the reporter's microphone.
+
+### Keep An Interrupted Dictation
+
+`recover.interrupted-dictation`: a shortcut dictation held past the hold
+threshold, or a `hex dictation start` control capture, whose microphone fails
+keeps what it already heard instead of dropping the whole dictation.
+
+```ts
+shortcut held past the hold threshold, or a `hex dictation start` capture
+  -> stream fails or stalls                         // a gap over 250 ms still drops it
+  -> audio delivered up to the loss is kept        // pre-roll alone keeps nothing
+  -> transcribed and processed like a dictation
+     └── Dictate without processing -> copied as heard, raw history
+  -> final text copied, never pasted              // the disrupting app may hold focus
+     -> Paste Last Dictation and History keep it
+  -> no error tone or Failed HUD; the HUD transcribes, processes, completes
+  -> no audio after the start, or a near-silent clip
+     -> the previous failure, "Microphone capture was interrupted"
+  -> release or finishing press queued before the listener reads the loss
+     -> that finish takes the kept clip, once, with its own capture's target
+        and context, before a later press can start
+     └── the next press still records; the old loss arrives stale
+```
+
+The copied text is processed exactly like a normal dictation, including mode
+corrections, OpenCode rewriting, and transformations, unless it came from
+Dictate without processing, which is copied as heard and recorded as raw
+history. The copy is forced for this job whether or not Labs › Copy dictation
+only is on. The shortcut machine is suspended, so the eventual key release does
+nothing, and the microphone reopens with the usual bounded recovery. A
+microphone gap over 250 ms still fails the capture as a discontinuity, and a
+near-silent clip saves its diagnostics but keeps the previous failure.
+
+Checks in [dictation/audio.rs](../../src/dictation/audio.rs):
+`microphone_loss_keeps_a_recording_captures_delivered_audio` (a recording
+shortcut keeps its clip; a gap still keeps only a programmatic capture's),
+`cold_stream_failure_after_hold_threshold_still_fails_the_capture` (nothing to
+keep keeps nothing), and
+`cold_stream_failure_keeps_the_audio_a_held_capture_already_delivered` (a held
+cold capture keeps what it delivered), and
+`a_shortcut_finish_takes_its_kept_clip_once_and_the_loss_stays_queued`. In
+[recognition.rs](../../src/recognition.rs):
+`a_release_queued_behind_a_microphone_loss_copies_the_kept_audio_before_the_next_press`
+(with Release microphone while idle, the release and the next press queued
+behind the loss: one salvaged submission, and the next press records). In
+[parakeet.rs](../../src/parakeet.rs):
+`a_salvaged_dictation_is_copied_and_kept_for_paste_last_and_history` (normal
+and raw clips are both copied, with normal and raw history). Proof limit:
+channel-backed audio and the output worker, not a physical microphone taken by
+a call app or a target app's clipboard.
 
 ### Fence Late Capture Notifications
 

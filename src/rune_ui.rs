@@ -66,6 +66,7 @@ mod sidebar;
 mod sidebar_update;
 mod sound_sets;
 mod spark;
+mod speech_model;
 #[cfg(target_os = "macos")]
 pub(crate) mod story_link;
 mod vocabulary;
@@ -358,9 +359,14 @@ fn build(init: impl FnOnce() -> Ui + 'static, playground: PlaygroundMode) -> run
 
 /// Closing the window saves pending text edits and stops a shortcut
 /// recording, as leaving a pane does. Hex keeps running.
-fn on_close(ui: &mut Ui, _: &mut Tx) {
+fn on_close(ui: &mut Ui, tx: &mut Tx) {
     ui.flush_drafts();
     settings::cancel_capture(ui);
+    // A hidden window only polls when woken, so poll's visibility check
+    // cannot stop a playback that was running when it closed.
+    if let Some(playback) = &mut ui.history.playback {
+        playback.stop();
+    }
     ui.open = None;
     models::close(ui);
     ui.close_dialogs();
@@ -373,8 +379,13 @@ fn on_close(ui: &mut Ui, _: &mut Tx) {
     if let Service::Live(backend) = &mut ui.service {
         backend.closed();
     }
+    // Windows destroys the closed window, so the next open makes a new one.
+    #[cfg(target_os = "windows")]
+    crate::windows::rune::keep_window_frame(tx);
     #[cfg(target_os = "macos")]
     crate::macos_rune::window_closed();
+    #[cfg(not(target_os = "windows"))]
+    let _ = tx;
 }
 
 /// Where the menu bar, a meeting, or a `hex window show` sends the window.
@@ -581,6 +592,10 @@ enum Menu {
     InputSourceModel(usize),
     /// An input source's language in keyboard model switching.
     InputSourceLanguage(usize),
+    /// A mode's speech model in the Modes pane (Labs › Switch model with app).
+    ModeSpeechModel(modes::Selection),
+    /// A mode's speech language in the Modes pane.
+    ModeSpeechLanguage(modes::Selection),
     /// How long History keeps dictations.
     HistoryRetention,
     /// The installed models History's Transcribe again offers.
@@ -1249,7 +1264,12 @@ fn poll(ui: &mut Ui, clock: f64, tx: &mut Tx) -> bool {
             && (ui.pane == Pane::Modes || platform_settings::summary_model_shown(ui))
             && ui.window.as_ref().is_some_and(rune::AppHandle::is_visible),
     );
-    changed |= ui.history.poll(ui.pane == Pane::History);
+    changed |= ui.history.poll(
+        ui.pane == Pane::History
+            && !ui.labs_open
+            && ui.window.as_ref().is_none_or(rune::AppHandle::is_visible),
+        ui.settings.labs.keep_recordings,
+    );
     #[cfg(hex_capture)]
     let mut changed = ui.captures.poll(ui.pane == Pane::Captures && !ui.labs_open) | changed;
     if ui.pane == Pane::Output && !ui.labs_open {
@@ -1487,6 +1507,9 @@ mod snap_isolation;
 
 #[cfg(test)]
 mod keyboard_model_tests;
+
+#[cfg(test)]
+mod speech_model_tests;
 
 #[cfg(test)]
 mod dmg_keycap;
