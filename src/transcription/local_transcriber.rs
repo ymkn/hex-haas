@@ -22,6 +22,52 @@ enum LocalSession {
     SpeechCpp(speech_cpp::SpeechCpp),
 }
 
+impl LocalSession {
+    /// [`OfflineGgufSession::transcribe_chunked_timed`] for a GGUF session.
+    /// Haas (speech.cpp) gives text only, so its chunks mirror
+    /// [`LocalTranscriber::timed_here`]: one segment spans each chunk.
+    fn transcribe_chunked_timed(
+        &mut self,
+        samples: &[f32],
+        options: &RunOptions,
+        max_audio_samples: Option<usize>,
+    ) -> Result<crate::transcription::transcript::Transcript> {
+        match self {
+            LocalSession::Gguf(session) => {
+                session.transcribe_chunked_timed(samples, options, max_audio_samples)
+            }
+            #[cfg(target_os = "windows")]
+            LocalSession::SpeechCpp(worker) => {
+                use crate::transcription::transcript::TranscriptSegment;
+                const CHUNK: usize = 30 * 16_000;
+                let chunk = max_audio_samples
+                    .map_or(CHUNK, |max| max.min(CHUNK))
+                    .max(1);
+                let mut timed = crate::transcription::transcript::Transcript::default();
+                let mut texts = Vec::new();
+                for (index, part) in samples.chunks(chunk).enumerate() {
+                    let offset = (index * chunk / 16) as i64;
+                    let text = worker
+                        .transcribe(part)
+                        .wrap_err("transcription failed")?;
+                    let text = text.trim().to_owned();
+                    if text.is_empty() {
+                        continue;
+                    }
+                    timed.segments.push(TranscriptSegment {
+                        start_ms: offset,
+                        end_ms: offset + (part.len() / 16) as i64,
+                        text: text.clone(),
+                    });
+                    texts.push(text);
+                }
+                timed.text = texts.join(" ");
+                Ok(timed)
+            }
+        }
+    }
+}
+
 /// A word or segment's start and end (ms from the clip's start) and text.
 pub type TimedSpan = (i64, i64, String);
 
