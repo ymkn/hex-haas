@@ -1282,7 +1282,25 @@ fn history_selects_deletes_and_clears_in_two_steps() {
     let mut rt = runtime("history", true, PANE_SIZE);
     tap(&mut rt, "history-entry3");
     assert_eq!(rt.state.history.selected, Some(3));
+    // Delete… only asks. Cancel keeps the entry.
     tap(&mut rt, "history-delete");
+    assert_eq!(rt.state.history.delete_armed, Some(3));
+    assert!(rt.find("history-confirm-delete").is_some());
+    assert!(rt.find("history-delete").is_none());
+    tap(&mut rt, "history-cancel-delete");
+    assert!(rt.state.history.delete_armed.is_none());
+    assert!(rt.state.history.entries.iter().any(|entry| entry.id == 3));
+    // Escape answers the confirmation too.
+    tap(&mut rt, "history-delete");
+    key(&mut rt, Key::Escape, Mods::default());
+    settle(&mut rt);
+    assert!(rt.state.history.delete_armed.is_none());
+    assert!(rt.find("history-confirm-delete").is_none());
+    assert!(rt.state.history.entries.iter().any(|entry| entry.id == 3));
+    // Only the confirmation deletes.
+    tap(&mut rt, "history-delete");
+    tap(&mut rt, "history-confirm-delete");
+    assert!(rt.state.history.delete_armed.is_none());
     assert!(rt.state.history.entries.iter().all(|entry| entry.id != 3));
     // Clear all history… sits at the bottom of the retention menu and only
     // asks; Cancel keeps everything, and only the confirmation clears.
@@ -1299,6 +1317,79 @@ fn history_selects_deletes_and_clears_in_two_steps() {
     tap(&mut rt, &clear);
     tap(&mut rt, "history-confirm-clear");
     assert!(rt.state.history.entries.is_empty());
+}
+
+#[test]
+fn history_delete_confirmation_stops_when_the_pane_moves_on() {
+    use crate::history::{History, HistoryDraft, HistoryKind, HistoryRetention, HistoryStore};
+    let directory =
+        std::env::temp_dir().join(format!("hex-rune-history-disarm-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(&directory).unwrap();
+    let history = History::new(HistoryStore::open(
+        directory.join("history.json"),
+        HistoryRetention::Week,
+        crate::history::now_ms(),
+    ));
+    let record = |text: &str| {
+        history
+            .record(HistoryDraft {
+                kind: HistoryKind::Dictation,
+                raw_text: text.into(),
+                final_text: text.into(),
+                application: None,
+                processing: None,
+                audio_ms: 900,
+                inference_ms: 80,
+                total_ms: 200,
+                recording: None,
+                model: None,
+            })
+            .unwrap()
+            .unwrap()
+    };
+    let first = record("Ship it.");
+    let second = record("Ship it again.");
+    let mut rt = runtime("history-empty", true, PANE_SIZE);
+    rt.state.history = history::HistoryPane::shared(Some(history));
+    rt.state.history.selected = Some(first);
+    rt.state.history.reload();
+    rt.invalidate();
+    settle(&mut rt);
+    // Choosing another entry answers Delete… and leaves the first entry be.
+    tap(&mut rt, "history-delete");
+    tap(&mut rt, &format!("history-entry{second}"));
+    assert!(rt.state.history.delete_armed.is_none());
+    assert!(
+        rt.state
+            .history
+            .entries
+            .iter()
+            .any(|entry| entry.id == first)
+    );
+    // Clear all history… answers it, then asks for its own confirmation.
+    tap(&mut rt, &format!("history-entry{first}"));
+    tap(&mut rt, "history-delete");
+    tap(&mut rt, "history-retention-field-trigger");
+    let clear = menu_item(&rt, "history-retention", "Clear all history…");
+    tap(&mut rt, &clear);
+    assert!(rt.state.history.delete_armed.is_none());
+    assert!(rt.find("history-confirm-delete").is_none());
+    tap(&mut rt, "history-cancel-clear");
+    // Leaving History answers it too.
+    tap(&mut rt, "history-delete");
+    tap(&mut rt, "nav-output");
+    tap(&mut rt, "nav-history");
+    assert!(rt.state.history.delete_armed.is_none());
+    assert!(rt.find("history-confirm-delete").is_none());
+    // A search answers it.
+    tap(&mut rt, "history-delete");
+    tap(&mut rt, "history-search");
+    rt.paste("zebra");
+    settle(&mut rt);
+    assert!(rt.state.history.delete_armed.is_none());
+    assert!(rt.find("history-confirm-delete").is_none());
+    let _ = std::fs::remove_dir_all(&directory);
 }
 
 #[test]
@@ -1388,6 +1479,331 @@ fn history_stats_button_opens_and_closes_the_dialog() {
         "turning the lab off closes the dialog"
     );
     assert!(rt.find("history-stats-open").is_none());
+}
+
+/// History with Labs › Select multiple dictations on.
+fn history_multi() -> Runtime<Ui> {
+    let mut rt = runtime("history", true, PANE_SIZE);
+    rt.state.settings.labs.history_multi_select = true;
+    rt.invalidate();
+    settle(&mut rt);
+    rt
+}
+
+/// Holds `mods` for the press that follows.
+fn hold(rt: &mut Runtime<Ui>, mods: Mods) {
+    rt.physical_input(rune::PhysicalInput::Modifiers(mods));
+    rt.frame(1.0 / 60.0);
+}
+
+/// Shift, which extends a list selection from its anchor.
+fn shift() -> Mods {
+    Mods {
+        shift: true,
+        ..Mods::default()
+    }
+}
+
+/// Command on macOS, Control elsewhere, which toggles a row.
+fn command() -> Mods {
+    Mods {
+        cmd: true,
+        ..Mods::default()
+    }
+}
+
+#[test]
+fn history_selects_several_with_shift_command_and_drag() {
+    let mut rt = history_multi();
+    // The rows are newest first: 3, 2, 1.
+    tap(&mut rt, "history-entry2");
+    assert_eq!(rt.state.history.selection.len(), 1);
+    assert!(
+        rt.find("history-selection-copy").is_none(),
+        "one entry keeps its own card"
+    );
+
+    // Shift-click selects every row between the anchor and the one clicked.
+    hold(&mut rt, shift());
+    tap(&mut rt, "history-entry1");
+    hold(&mut rt, Mods::default());
+    assert_eq!(rt.state.history.selected, Some(1));
+    assert_eq!(rt.state.history.selection.len(), 2);
+    assert!(rt.state.history.selection.contains(2));
+    assert!(
+        texts(&rt)
+            .iter()
+            .any(|text| text == "2 dictations selected")
+    );
+    assert!(rt.find("history-selection-copy").is_some());
+
+    // Command-click toggles the row it lands on and becomes the anchor.
+    hold(&mut rt, command());
+    tap(&mut rt, "history-entry3");
+    hold(&mut rt, Mods::default());
+    assert_eq!(rt.state.history.selection.len(), 3);
+    assert!(
+        texts(&rt)
+            .iter()
+            .any(|text| text == "3 dictations selected")
+    );
+
+    hold(&mut rt, command());
+    tap(&mut rt, "history-entry2");
+    hold(&mut rt, Mods::default());
+    assert!(!rt.state.history.selection.contains(2));
+    assert_eq!(rt.state.history.selection.len(), 2);
+
+    // A press dragged over other rows selects from it through them.
+    let (x, y) = rt.find("history-entry2").unwrap();
+    let (to_x, to_y) = rt.find("history-entry1").unwrap();
+    rt.pointer_down(x, y);
+    rt.pointer_move(to_x, to_y);
+    rt.pointer_up(to_x, to_y);
+    settle(&mut rt);
+    assert_eq!(rt.state.history.selection.len(), 2);
+    assert!(rt.state.history.selection.contains(2));
+    assert!(rt.state.history.selection.contains(1));
+    assert!(!rt.state.history.selection.contains(3));
+}
+
+/// Presses row `key` and lets go 2 pt away: a shaky click, not a drag.
+fn tap_jitter(rt: &mut Runtime<Ui>, key: &str) {
+    let (x, y) = rt.find(key).unwrap_or_else(|| panic!("no element {key}"));
+    rt.pointer_down(x, y);
+    rt.pointer_move(x + 2.0, y - 1.0);
+    rt.pointer_up(x + 2.0, y - 1.0);
+    settle(rt);
+}
+
+#[test]
+fn history_a_jittered_press_keeps_a_command_toggle() {
+    let mut rt = history_multi();
+    tap(&mut rt, "history-entry3");
+    hold(&mut rt, command());
+    tap_jitter(&mut rt, "history-entry2");
+    hold(&mut rt, Mods::default());
+    assert_eq!(rt.state.history.selection.len(), 2);
+    assert!(rt.state.history.selection.contains(3));
+    assert!(rt.state.history.selection.contains(2));
+    assert_eq!(rt.state.history.selected, Some(2));
+}
+
+#[test]
+fn history_a_jittered_press_keeps_a_shift_range() {
+    let mut rt = history_multi();
+    tap(&mut rt, "history-entry3");
+    hold(&mut rt, shift());
+    tap_jitter(&mut rt, "history-entry1");
+    hold(&mut rt, Mods::default());
+    assert_eq!(rt.state.history.selection.len(), 3);
+    for id in [1, 2, 3] {
+        assert!(rt.state.history.selection.contains(id));
+    }
+    assert_eq!(rt.state.history.selected, Some(1));
+}
+
+#[test]
+fn history_a_press_dragged_inside_its_row_keeps_a_command_toggle() {
+    let mut rt = history_multi();
+    tap(&mut rt, "history-entry3");
+    let (x, y) = rt.find("history-entry2").unwrap();
+    hold(&mut rt, command());
+    // 8 pt along the same row: past the click slop, but still row 2, so the
+    // release must not choose row 2 a second time and undo the toggle.
+    rt.pointer_down(x, y);
+    rt.pointer_move(x + 8.0, y);
+    rt.pointer_up(x + 8.0, y);
+    settle(&mut rt);
+    hold(&mut rt, Mods::default());
+    assert_eq!(rt.state.history.selection.len(), 2);
+    assert!(rt.state.history.selection.contains(3));
+    assert!(rt.state.history.selection.contains(2));
+    assert_eq!(rt.state.history.selected, Some(2));
+}
+
+/// Presses row `from`, drags over row `to`, and lets go at `at` on the row it
+/// pressed, all in the frames the moves take: the release and the last move
+/// share one, so no drawn tree shows the drag back on its own row.
+fn drag_out_and_back(rt: &mut Runtime<Ui>, from: &str, to: &str, at: (f32, f32)) {
+    let (from_x, from_y) = rt.find(from).unwrap_or_else(|| panic!("no element {from}"));
+    let (to_x, to_y) = rt.find(to).unwrap_or_else(|| panic!("no element {to}"));
+    rt.pointer_down(from_x, from_y);
+    rt.pointer_move(to_x, to_y);
+    rt.pointer_move(at.0, at.1);
+    rt.pointer_up(at.0, at.1);
+    settle(rt);
+}
+
+#[test]
+fn history_a_drag_back_onto_its_row_selects_only_that_row() {
+    let mut rt = history_multi();
+    tap(&mut rt, "history-entry3");
+    let (x, y) = rt.find("history-entry2").unwrap();
+    hold(&mut rt, command());
+    // Out to row 1 and back onto row 2, 8 pt from where the press landed: the
+    // range shrinks back to row 2, and that row's release must not toggle it
+    // off again.
+    drag_out_and_back(&mut rt, "history-entry2", "history-entry1", (x + 8.0, y));
+    hold(&mut rt, Mods::default());
+    assert_eq!(rt.state.history.selection.len(), 1);
+    assert!(rt.state.history.selection.contains(2));
+    assert_eq!(rt.state.history.selected, Some(2));
+}
+
+#[test]
+fn history_a_drag_back_near_its_press_selects_only_that_row() {
+    let mut rt = history_multi();
+    tap(&mut rt, "history-entry3");
+    let (x, y) = rt.find("history-entry2").unwrap();
+    hold(&mut rt, command());
+    // The return lands 2 pt from the press, under the click slop: the press is
+    // a drag now, so it still ranges back to row 2 instead of leaving row 1.
+    drag_out_and_back(
+        &mut rt,
+        "history-entry2",
+        "history-entry1",
+        (x + 2.0, y - 1.0),
+    );
+    hold(&mut rt, Mods::default());
+    assert_eq!(rt.state.history.selection.len(), 1);
+    assert!(rt.state.history.selection.contains(2));
+    assert_eq!(rt.state.history.selected, Some(2));
+}
+
+#[test]
+fn history_keyboard_activation_selects_a_row_in_the_set() {
+    let mut rt = history_multi();
+    tap(&mut rt, "history-entry3");
+    hold(&mut rt, shift());
+    tap(&mut rt, "history-entry2");
+    hold(&mut rt, Mods::default());
+    assert_eq!(rt.state.history.selection.len(), 2);
+    assert_eq!(rt.state.history.selected, Some(2));
+    // Up moves focus from the pressed row to row 3, which the set holds but
+    // the card does not show, and presses it there.
+    key(&mut rt, Key::Up, Mods::default());
+    settle(&mut rt);
+    assert_eq!(rt.state.history.selection.len(), 1);
+    assert!(rt.state.history.selection.contains(3));
+    assert_eq!(rt.state.history.selected, Some(3));
+}
+
+#[test]
+fn history_selection_copies_oldest_first() {
+    let mut rt = history_multi();
+    tap(&mut rt, "history-entry3");
+    hold(&mut rt, shift());
+    tap(&mut rt, "history-entry1");
+    hold(&mut rt, Mods::default());
+    tap(&mut rt, "history-selection-copy");
+    assert_eq!(
+        rt.copy_request.as_deref(),
+        Some(
+            "Thanks for sending this over! I'll review it today and follow up with comments.\n\n\
+             The deploy failed because the cache key changed.\n\n\
+             Let's move the standup to ten thirty tomorrow."
+        )
+    );
+    assert!(texts(&rt).iter().any(|text| text == "Copied"));
+}
+
+#[test]
+fn history_selection_deletes_in_two_steps() {
+    let mut rt = history_multi();
+    tap(&mut rt, "history-entry3");
+    hold(&mut rt, shift());
+    tap(&mut rt, "history-entry2");
+    hold(&mut rt, Mods::default());
+    assert_eq!(rt.state.history.selection.len(), 2);
+
+    tap(&mut rt, "history-selection-delete");
+    assert!(rt.state.history.selection.delete_armed);
+    assert_eq!(rt.state.history.entries.len(), 3, "Delete asks first");
+    tap(&mut rt, "history-selection-cancel-delete");
+    assert!(!rt.state.history.selection.delete_armed);
+    assert_eq!(rt.state.history.entries.len(), 3);
+
+    tap(&mut rt, "history-selection-delete");
+    assert!(texts(&rt).iter().any(|text| text == "Delete 2 dictations"));
+    tap(&mut rt, "history-selection-confirm-delete");
+    assert_eq!(rt.state.history.entries.len(), 1);
+    assert_eq!(rt.state.history.entries[0].id, 1);
+    assert_eq!(rt.state.history.selection.len(), 0);
+    assert_eq!(rt.state.history.selected, None);
+    assert!(rt.find("history-selection-copy").is_none());
+}
+
+#[test]
+fn history_shift_click_selects_one_without_the_lab() {
+    let mut rt = runtime("history", true, PANE_SIZE);
+    assert!(!rt.state.settings.labs.history_multi_select);
+    tap(&mut rt, "history-entry2");
+    hold(&mut rt, shift());
+    tap(&mut rt, "history-entry1");
+    hold(&mut rt, Mods::default());
+    assert_eq!(rt.state.history.selected, Some(1));
+    assert_eq!(rt.state.history.selection.len(), 0);
+    assert!(rt.find("history-selection-copy").is_none());
+}
+
+#[test]
+fn history_command_click_keeps_the_row_selected_before_the_lab() {
+    let mut rt = runtime("history", true, PANE_SIZE);
+    assert!(!rt.state.settings.labs.history_multi_select);
+    tap(&mut rt, "history-entry2");
+    assert_eq!(rt.state.history.selected, Some(2));
+
+    // A row selected before the lab was turned on joins the set first, so
+    // Command-clicking another row keeps it instead of dropping it.
+    rt.state.settings.labs.history_multi_select = true;
+    rt.invalidate();
+    settle(&mut rt);
+    hold(&mut rt, command());
+    tap(&mut rt, "history-entry3");
+    hold(&mut rt, Mods::default());
+    assert_eq!(rt.state.history.selection.len(), 2);
+    assert!(rt.state.history.selection.contains(2));
+    assert!(rt.state.history.selection.contains(3));
+    assert_eq!(rt.state.history.selected, Some(3));
+    assert!(rt.find("history-selection-copy").is_some());
+}
+
+#[test]
+fn history_command_click_deselects_the_only_selected_row() {
+    let mut rt = runtime("history", true, PANE_SIZE);
+    tap(&mut rt, "history-entry2");
+    assert_eq!(rt.state.history.selected, Some(2));
+
+    // A row selected before the lab was turned on is the whole set: Command
+    // deselects it, leaving nothing selected.
+    rt.state.settings.labs.history_multi_select = true;
+    rt.invalidate();
+    settle(&mut rt);
+    hold(&mut rt, command());
+    tap(&mut rt, "history-entry2");
+    hold(&mut rt, Mods::default());
+    assert_eq!(rt.state.history.selection.len(), 0);
+    assert_eq!(rt.state.history.selected, None);
+    assert!(!rt.state.history.is_selected(2));
+}
+
+#[test]
+fn history_multi_select_turns_off_to_one_entry() {
+    let mut rt = history_multi();
+    tap(&mut rt, "history-entry3");
+    hold(&mut rt, shift());
+    tap(&mut rt, "history-entry2");
+    hold(&mut rt, Mods::default());
+    assert_eq!(rt.state.history.selection.len(), 2);
+
+    rt.state.settings.labs.history_multi_select = false;
+    rt.invalidate();
+    settle(&mut rt);
+    assert_eq!(rt.state.history.selection.len(), 0);
+    assert_eq!(rt.state.history.selected, Some(2));
+    assert!(rt.state.history.is_selected(2));
+    assert!(!rt.state.history.is_selected(3));
 }
 
 #[test]
@@ -1816,7 +2232,7 @@ fn modes_add_select_and_delete() {
         "Mode 3"
     );
     tap(&mut rt, "delete-mode");
-    assert!(rt.state.modes.delete_armed);
+    assert!(rt.state.modes.delete_armed.is_some());
     tap(&mut rt, "confirm-delete-mode");
     assert_eq!(rt.state.settings.dictation_processing.modes.len(), 2);
     assert_eq!(rt.state.modes.selected, modes::Selection::Default);
@@ -2646,10 +3062,10 @@ fn microphone_value(rt: &mut Runtime<Ui>) -> Option<String> {
 fn the_microphone_field_names_the_input_in_use() {
     let field = microphone_value;
     let mut rt = runtime("mac-settings", true, TALL_SIZE);
-    assert_eq!(field(&mut rt).as_deref(), Some("System default, Kit Pods"));
+    assert_eq!(field(&mut rt).as_deref(), Some("System default, Alex Pods"));
 
     let mut rt = runtime("mac-microphone-missing", true, TALL_SIZE);
-    assert_eq!(field(&mut rt).as_deref(), Some("System default, Kit Pods"));
+    assert_eq!(field(&mut rt).as_deref(), Some("System default, Alex Pods"));
     let texts = texts(&rt);
     assert!(texts.contains(&"not connected".to_owned()), "{texts:?}");
     assert!(texts.contains(&"Shure MV7 isn't connected; using your Mac's input".to_owned()));
@@ -2684,7 +3100,7 @@ fn a_closed_lid_names_the_input_standing_in_for_the_built_in_microphone() {
 
 #[test]
 fn a_passed_over_bluetooth_default_names_the_input_in_use() {
-    let note = "Kit Pods is Bluetooth, so Hex listens to MacBook Pro Microphone";
+    let note = "Alex Pods is Bluetooth, so Hex listens to MacBook Pro Microphone";
     let mut rt = runtime("mac-microphone-bluetooth", true, TALL_SIZE);
     assert_eq!(
         a11y_value(&rt, "microphone-control").as_deref(),
@@ -2696,7 +3112,7 @@ fn a_passed_over_bluetooth_default_names_the_input_in_use() {
     assert!(!rt.state.settings.avoid_bluetooth_microphone);
     // A saved Bluetooth microphone is used as named, without the note.
     rt.state.settings.avoid_bluetooth_microphone = true;
-    rt.state.settings.microphone = Some("Kit Pods".into());
+    rt.state.settings.microphone = Some("Alex Pods".into());
     rt.invalidate();
     settle(&mut rt);
     assert!(!texts(&rt).contains(&note.to_owned()));

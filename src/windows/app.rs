@@ -24,10 +24,11 @@ use crate::desktop::activity::{DesktopActivity, last_completed_at};
 use crate::desktop::events::EventReader;
 use crate::desktop::host::{
     DesktopAction, DesktopListenerSnapshot, DesktopShortcuts, DesktopTranscriptionSnapshot,
+    ListenerStatus,
 };
 use crate::desktop::i18n::tr_fill;
 use crate::history::History;
-use crate::transcription::models::{ModelPreparationStage, TranscriptionModelId};
+use crate::transcription::models::TranscriptionModelId;
 use crate::transcription::preparation::TranscriptionPreparation;
 use crate::windows::rune::{Published, Request};
 
@@ -67,7 +68,7 @@ pub(crate) struct WindowsDesktopHost {
     listen_when_ready: bool,
     /// Enable on launch waits for first-run setup.
     listen_after_setup: bool,
-    status: String,
+    status: ListenerStatus,
     error: Option<String>,
     settings: AppSettings,
     history: Option<History>,
@@ -238,7 +239,7 @@ impl WindowsDesktopHost {
             awaiting_session_start: false,
             listen_when_ready: false,
             listen_after_setup: false,
-            status: "Disabled".into(),
+            status: ListenerStatus::Disabled,
             error: settings_error,
             settings,
             history,
@@ -259,15 +260,22 @@ impl WindowsDesktopHost {
         };
         crate::transcription::models::delete_set_aside();
         host.refresh_personal_commands_host();
-        // The microphone stays cold until first-run setup finishes.
+        // The microphone stays cold until first-run setup is ready.
         if host.settings.enable_on_launch {
-            if crate::desktop::onboarding::completion_recorded() {
+            if host.setup_done() {
                 host.start();
             } else {
                 host.listen_after_setup = true;
             }
         }
         host
+    }
+
+    /// Setup is ready, so the tour's practice can dictate, or the tour
+    /// finished without a model.
+    fn setup_done(&self) -> bool {
+        crate::desktop::onboarding::status(&self.settings.transcription).ready()
+            || crate::desktop::onboarding::completion_recorded()
     }
 
     /// Handles one window or tray request; returns `true` when Hex should quit.
@@ -300,15 +308,20 @@ impl WindowsDesktopHost {
                 }
             }
             Request::Quit => return true,
-            Request::ReloadSettings => match AppSettings::load() {
-                Ok(settings) => self.apply_settings(&settings),
-                Err(error) => tracing::warn!(%error, "could not reload settings"),
-            },
+            Request::ReloadSettings => self.reload_settings(),
             Request::CaptureShortcutFor(_)
             | Request::CancelShortcut
             | Request::SetShortcut { .. } => {}
         }
         false
+    }
+
+    fn reload_settings(&mut self) {
+        match self.settings.refreshed() {
+            Ok(Some(settings)) => self.apply_settings(&settings),
+            Ok(None) => {}
+            Err(error) => tracing::warn!(%error, "could not reload settings"),
+        }
     }
 
     fn dispatch(&mut self, action: DesktopAction) -> bool {
@@ -449,8 +462,9 @@ impl WindowsDesktopHost {
     }
 
     fn model_ready(&self) -> bool {
-        let model = crate::transcription::models::definition(self.settings.transcription.model);
-        crate::transcription::models::is_installed(model, &self.settings.transcription.language)
+        let selection = self.runtime_selection();
+        let model = crate::transcription::models::definition(selection.model);
+        crate::transcription::models::is_installed(model, &selection.language)
             && crate::transcription::models::is_verified(model)
     }
 
@@ -460,7 +474,7 @@ impl WindowsDesktopHost {
             return;
         }
         if !self.model_ready() {
-            self.status = "Model required".into();
+            self.status = ListenerStatus::ModelRequired;
             return;
         }
         let stop = Arc::new(AtomicBool::new(false));
@@ -509,11 +523,11 @@ impl WindowsDesktopHost {
                 });
                 self.session_before_start = self.activity.session_started_at;
                 self.awaiting_session_start = true;
-                self.status = "Enabling…".into();
+                self.status = ListenerStatus::Enabling;
                 self.error = None;
             }
             Err(error) => {
-                self.status = "Couldn't enable".into();
+                self.status = ListenerStatus::CouldNotEnable;
                 self.error = Some(tr_fill("Could not start listener: {}", &error.to_string()));
             }
         }
@@ -527,25 +541,25 @@ impl WindowsDesktopHost {
         }
         let mut candidate = self.settings.clone();
         candidate.enable_on_launch = enabled;
-        match save_listening(&candidate) {
-            Ok(()) => self.apply_settings(&candidate),
+        match save_listening(&self.settings, &candidate) {
+            Ok(saved) => self.apply_settings(&saved),
             Err(error) => tracing::warn!(%error, "could not save Enable on launch"),
         }
     }
 
     pub(crate) fn stop(&mut self) {
         self.listen_when_ready = false;
-        self.signal_stop("Disabling…");
+        self.signal_stop(ListenerStatus::Disabling);
     }
 
     fn is_running(&self) -> bool {
         self.listener.is_some()
     }
 
-    fn signal_stop(&mut self, status: &str) {
+    fn signal_stop(&mut self, status: ListenerStatus) {
         if let Some(listener) = &self.listener {
             listener.stop.store(true, Ordering::Relaxed);
-            self.status = status.into();
+            self.status = status;
         }
     }
 
@@ -621,8 +635,8 @@ impl WindowsDesktopHost {
         }
         let mut candidate = self.settings.clone();
         candidate.remember_transcription(failed.kept);
-        match candidate.save() {
-            Ok(()) => self.apply_settings(&candidate),
+        match self.settings.update(&candidate) {
+            Ok(saved) => self.apply_settings(&saved),
             Err(error) => tracing::warn!(%error, "could not restore the running model setting"),
         }
         self.preparation.set_error(Some(failed.error));
@@ -670,8 +684,11 @@ impl WindowsDesktopHost {
                 crate::transcription::models::validate(&selection).map_err(|e| e.to_string())?;
                 let mut candidate = self.settings.clone();
                 candidate.remember_transcription(selection);
-                candidate.save().map_err(|e| format!("{e:#}"))?;
-                self.apply_settings(&candidate);
+                let saved = self
+                    .settings
+                    .update(&candidate)
+                    .map_err(|e| format!("{e:#}"))?;
+                self.apply_settings(&saved);
                 Ok(())
             });
             if let Err(error) = result {
@@ -686,13 +703,16 @@ impl WindowsDesktopHost {
         for failed in swap_failures {
             self.keep_running_model(failed);
         }
-        if self.listen_after_setup && crate::desktop::onboarding::completion_recorded() {
+        if self.listen_after_setup && self.setup_done() {
             self.listen_after_setup = false;
             self.start();
         }
         // Settings may set up the workspace at any time.
         if self.personal_commands_checked_at.elapsed() >= Duration::from_secs(2) {
             self.personal_commands_checked_at = Instant::now();
+            if !cfg!(test) {
+                self.reload_settings();
+            }
             self.refresh_personal_commands_host();
         }
         let mut start_listener = false;
@@ -711,11 +731,11 @@ impl WindowsDesktopHost {
                 }
                 match result {
                     Ok(()) => {
-                        self.status = "Disabled".into();
+                        self.status = ListenerStatus::Disabled;
                         start_listener = self.listen_when_ready;
                     }
                     Err(error) => {
-                        self.status = "Couldn't enable".into();
+                        self.status = ListenerStatus::CouldNotEnable;
                         self.error = Some(error);
                     }
                 }
@@ -737,7 +757,7 @@ impl WindowsDesktopHost {
             && !self.awaiting_session_start
             && let Some(status) = self.activity.state_label()
         {
-            self.status = status.into();
+            self.status = status;
         }
     }
 
@@ -760,7 +780,7 @@ impl WindowsDesktopHost {
             listener: DesktopListenerSnapshot {
                 running: self.is_running(),
                 warming: self.is_running() && self.awaiting_session_start,
-                status: self.status.clone(),
+                status: self.status,
                 warning: self.indicator.failure(),
                 last_failure: self
                     .activity
@@ -773,9 +793,7 @@ impl WindowsDesktopHost {
             transcription: DesktopTranscriptionSnapshot {
                 downloaded_bytes: preparation.downloaded_bytes,
                 error: preparation.error,
-                preparation_stage: preparation
-                    .model
-                    .map(|_| ModelPreparationStage::Downloading),
+                preparation_stage: preparation.stage,
                 selection: self.settings.transcription.clone(),
                 preparing: preparation.model,
             },
@@ -861,14 +879,14 @@ impl ForeignWindow {
 }
 
 #[cfg(not(test))]
-fn save_listening(settings: &AppSettings) -> Result<()> {
-    settings.save()
+fn save_listening(base: &AppSettings, settings: &AppSettings) -> Result<AppSettings> {
+    base.update(settings)
 }
 
 /// Tests never write the person's `settings.json`.
 #[cfg(test)]
-fn save_listening(_: &AppSettings) -> Result<()> {
-    Ok(())
+fn save_listening(_: &AppSettings, settings: &AppSettings) -> Result<AppSettings> {
+    Ok(settings.clone())
 }
 
 #[cfg(test)]

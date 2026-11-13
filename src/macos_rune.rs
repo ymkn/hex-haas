@@ -222,12 +222,23 @@ pub(crate) fn quit() {
     }
 }
 
+/// Shows or hides the Dock icon, and marks the HUD's panel for a repair only
+/// when the activation policy actually changed: that can tie Rune's panel to
+/// one Space while AppKit still reports every Space (#1725), but a call that
+/// leaves the policy as it was changes nothing for the window server and must
+/// not reorder a shown HUD.
+pub(crate) fn set_dock_icon_visible(visible: bool) {
+    if crate::app_settings::set_dock_icon_visible(visible) {
+        crate::rune_hud::activation_policy_changed();
+    }
+}
+
 /// The window closed (hidden): the Dock follows the saved preference again.
 pub(crate) fn window_closed() {
     let show_dock_icon = AppSettings::load()
         .map(|settings| settings.show_dock_icon)
         .unwrap_or(false);
-    crate::app_settings::set_dock_icon_visible(crate::app_settings::dock_icon_visible(
+    set_dock_icon_visible(crate::app_settings::dock_icon_visible(
         show_dock_icon,
         crate::macos_rune::status_item::installed(),
     ));
@@ -486,13 +497,13 @@ pub fn run(shutdown: &'static AtomicBool, listener: ListenerConfig, hidden: bool
             {
                 let window = window.clone();
                 move |choice| {
-                    crate::app_settings::save_meeting_provider(choice.clone());
-                    window.update(move |ui, _| crate::rune_ui::meeting_provider_chosen(ui, choice));
+                    crate::app_settings::save_meeting_provider(choice);
+                    window.update(move |ui, _| crate::rune_ui::meeting_settings_saved(ui));
                 }
             },
             move |corner| {
                 crate::app_settings::save_meeting_indicator_corner(corner);
-                window.update(move |ui, _| crate::rune_ui::meeting_corner_moved(ui, corner));
+                window.update(move |ui, _| crate::rune_ui::meeting_settings_saved(ui));
             },
         )
     };
@@ -705,7 +716,7 @@ fn start_main_thread() {
         }
     };
     // An open window always shows the Dock icon (see [`show`]).
-    crate::app_settings::set_dock_icon_visible(
+    set_dock_icon_visible(
         window_visible()
             || crate::app_settings::dock_icon_visible(
                 pump.show_dock_icon,
@@ -784,7 +795,7 @@ pub(crate) fn bring_window_forward() {
 fn bring_forward(window: &rune::AppHandle<Ui>) {
     // An open window always shows the Dock icon: hiding it
     // would deactivate Hex and drop the window behind other apps.
-    crate::app_settings::set_dock_icon_visible(true);
+    set_dock_icon_visible(true);
     if let Some(mtm) = MainThreadMarker::new() {
         let app = NSApplication::sharedApplication(mtm);
         app.activate();
@@ -816,6 +827,9 @@ impl Pump {
         while let Ok(event) = self.indicator_events.try_recv() {
             indicator.handle(event);
         }
+        // A Dock icon change repairs the panel once even where AppKit still
+        // reports the active Space, before the usual per-tick check.
+        indicator.reassert_after_activation_policy_change();
         indicator.follow_pointer();
         while let Ok(call) = self.developer_calls.try_recv() {
             let reply = self.developer(call.command, indicator);

@@ -28,7 +28,8 @@ Labs > Meetings switch (macOS)                       // meetings.opt-in; off by 
 │   │   └── Granted -> the Allow pill morphs into a green Allowed; moves to Advanced
 │   ├── After a meeting -> Summaries, Keep meetings, Keep audio
 │   │   (Labs › Expire meeting audio separately), Transcript folder
-│   │   (~/Documents/Hex Meetings; Reveal / choose; its error shows here)
+│   │   (~/Documents/Hex Meetings; Reveal opens the folder itself; choose
+│   │   another folder; its error shows here)
 │   │   └── Summaries pop-up (meetings.summaries; one-time migration
 │   │       "meeting-summaries-choice" from the two retired switches)
 │   │       ├── Off -> "No titles or summaries"
@@ -171,9 +172,10 @@ Browser calls -> offered as "Call in <browser>": no site is read yet, so a
     call on any website (Teams on the web, a Teams web app/PWA, Meet, ...) is
     a browser call after 20 s, never the Microsoft Teams (or other service's)
     choice; Always record can't be set for it from an offer
-    └── browsers: chrome, chromium, brave, firefox, msedge, vivaldi (vivaldi-bin,
-        vivaldi-stable, vivaldi-snapshot; a Vivaldi web app runs in Vivaldi's
-        process); others are not detected (#1105)
+    └── browsers: chrome, chromium, brave, helium (helium-browser), firefox,
+        msedge, vivaldi (vivaldi-bin, vivaldi-stable, vivaldi-snapshot; a
+        Vivaldi web app runs in Vivaldi's process); others are not detected
+        (#1105)
 Permissions -> none asked; the System Audio Recording row is macOS-only
 Calendar -> none (no Connect calendar row)
 Notes and live chapters -> After a meeting › Summaries is a switch (off by
@@ -205,12 +207,14 @@ Offer capsule can't open (Linux; GNOME on Wayland opens no interactive
     │   focus; if Rune still can't open them, the pane path above
     │   // checks: linux/meeting_capsules.rs gating tests; not run on GNOME
     └── not observed on a real GNOME session; no automated check
-Files -> Reveal files opens the recording folder (selected in Explorer,
-    opened by xdg-open); Reveal Markdown additionally appears while the
+Files -> Reveal files opens the recording folder itself (Explorer and
+    xdg-open open it); Reveal Markdown additionally appears while the
     exported .md exists and selects it (Explorer gets `/select,"<path>"`,
     with the switch outside the quotes so a folder such as `Hex Meetings`
     stays one path) or opens the folder holding it (xdg-open); Delete moves
     to the freedesktop Trash or the Recycle Bin
+    // checks: explorer_opens_a_folder_itself_without_the_select_switch;
+    // not observed on a real Windows machine
 ```
 
 The pane's Start recording, Stop & transcribe, Rename, Delete, Reveal, and
@@ -316,9 +320,11 @@ rewritten as `providers` on the next load.
 
 Call detection knows Brave, Chrome, Safari, Firefox, Edge, Arc
 (`company.thebrowser.Browser`, foreground name `Arc`; its tab is read like
-Brave's), and Vivaldi (`com.vivaldi.Vivaldi`; `vivaldi-bin` and friends on
-Linux, `vivaldi.exe` on Windows). Arc was missing until #801, so its Meet
-calls were never detected; Vivaldi was missing until #1105, so its calls
+Brave's), Helium (`net.imput.helium`, helpers included; `helium` and
+`helium-browser` on Linux, `helium.exe` on Windows), and Vivaldi
+(`com.vivaldi.Vivaldi`; `vivaldi-bin` and friends on Linux, `vivaldi.exe` on
+Windows). Arc was missing until #801, so its Meet calls were never detected;
+Vivaldi was missing until #1105, so its calls
 (Teams in a Vivaldi web app included) were never offered. Checks:
 `a_google_meet_call_in_arc_records_after_about_two_seconds`,
 `vivaldi_on_the_microphone_is_a_browser_call`. Not observed on a real
@@ -365,11 +371,12 @@ Checks: `more_call_apps_are_unknown_until_their_lab_is_on`,
 of these apps or websites on a real call, the Phone app's Continuity audio in
 particular.
 
-Chromium and Electron apps (Brave, Chrome, Edge, Arc, Slack, Teams) capture microphone
-audio in sandboxed `audio.mojom.AudioService` utility processes (`*.helper`) that
-do not register with `NSRunningApplication`; Zoom uses `us.zoom.CptHost`, Firefox
-uses `org.mozilla.plugincontainer`, Safari uses `com.apple.WebKit.GPU` (`Safari
-Graphics and Media`), and FaceTime uses `com.apple.avconferenced`.
+Chromium and Electron apps (Brave, Chrome, Helium, Edge, Arc, Slack, Teams)
+capture microphone audio in sandboxed `audio.mojom.AudioService` utility
+processes (`*.helper`) that do not register with `NSRunningApplication`; Zoom
+uses `us.zoom.CptHost`, Firefox uses `org.mozilla.plugincontainer`, Safari uses
+`com.apple.WebKit.GPU` (`Safari Graphics and Media`), and FaceTime uses
+`com.apple.avconferenced`.
 [microphone_activity.rs](../../src/microphone_activity.rs) attributes each input
 process to its canonical host app via parent PID lineage, CoreAudio's
 `kAudioProcessPropertyBundleID`, and `NSRunningApplication`. When Brave uses the
@@ -636,6 +643,10 @@ Record (offer, menu bar "Record Meeting", Meetings pane, or voice command)
      │   so the area around it stays clickable (not verified on a real
      │   Windows machine)
      ├── In the saved recording_indicator_corner
+     ├── Follows the setting mid-recording: turning it off hides the pill and
+     │   on shows it, keeping the recording's start time, within a second
+     │   (the_recording_capsule_follows_the_indicator_setting_mid_recording;
+     │   not observed on a real Mac)
      ├── Compact: pulsing red dot · title · mm:ss, plus "+N" when turns wait
      ├── Hover -> widens toward the screen with the actions below; pointer
      │   leaving -> eases back to compact (a held press keeps it open)
@@ -658,6 +669,11 @@ Record (offer, menu bar "Record Meeting", Meetings pane, or voice command)
 
 Detected app leaves the microphone for about 3 s     // meetings.call-ended
   -> "Zoom left the call" capsule: Keep recording / Stop & transcribe
+     ├── It stands in for the recording pill while it shows
+     └── Keep recording (or another capsule replacing it) -> the recording
+         pill returns with its start time and title
+         (keep_recording_brings_back_the_recording_capsule_as_it_was; not
+         observed on a real Mac)
   -> No timeout; nothing stops automatically
 
 Labs › Movable meeting capsules (macOS, off by default; #1093) // meetings.panel-drag
@@ -753,6 +769,8 @@ Capture sources (meeting/capture.rs)                // meetings.capture
 │   │   saved device returns, mid-meeting
 │   │   -> New input opens before the old drops; same track, no retry gap
 │   │      // macOS only (meetings are macOS); a failed open keeps the old input
+│   │      -> a release and a pending renegotiation from the old input are
+│   │         forgotten, not carried over
 │   ├── Saved device listed but would not open -> System default stands in
 │   │   -> tried again after 1, 2, 4, 8, 16, 30, 30, 30 s, then only on a change
 │   └── Stream delivers only exact zeros for 3 s (#1518)
@@ -761,24 +779,77 @@ Capture sources (meeting/capture.rs)                // meetings.capture
 │          reopens or warns, and neither does an app that reports no input
 │       -> a gated or noise-suppressed microphone the call app also uses
 │          still counts as held, so it can trigger the reopens and warning
-│       -> Reopened like a failed source, at most twice in one recording,
-│          the budget shared by every reopened stream
+│       -> Reopened like a failed source, at most twice in one recording
+│          (the call app holding the input and 3 s of exact zeros), the
+│          budget shared by every stream it reopens; audio coming back does
+│          not restore it, because each reopen changes the device's rate
+│       -> macOS: every silence reopen makes the device renegotiate its
+│          sample rate first, like dictation's silence recovery (#1575),
+│          briefly interrupting every other stream on that mic, the call
+│          app's and a warm dictation's
+│       -> a renegotiating open spends that attempt when it runs, so a
+│          failed open retries plainly instead of flipping the rate again;
+│          only a deferral for dictation leaves it for a later open
 │       ├── Still silent -> keep recording; the capsule says
 │       │   "Microphone is silent · 12:34" and the menu bar "Microphone is
 │       │   silent"; manifest.microphone.warning is written as soon as it is
 │       │   raised, so a crash keeps it
+│       ├── Still silent after the warning -> only a release runs a
+│       │   renegotiating retry: another process stopped recording from the
+│       │   opened input, read once a second from Core Audio process
+│       │   metadata (device lists only, never samples)
+│       │   -> at most 3 retries per silent episode; silence alone never
+│       │      retries; a release seen before the warning still counts,
+│       │      and one seen before a reopen and gone after it counts too
+│       │   -> a shrinking set of recorders, the call app included, is the
+│       │      change that can let one work
+│       │   -> the release is recorded where it is seen, so a stream that
+│       │      fails before its next chunk cannot lose it; the last set is
+│       │      shared across reopens; the comparison made by our own
+│       │      renegotiating open, and by any reopen within a second of it,
+│       │      ignores a disappearing pid: the driver is restarting, not an
+│       │      app
+│       │   -> needs macOS 14+ process audio metadata, as call-app input
+│       │      detection does; older macOS warns without retrying
+│       ├── A dictation captures or infers -> the quick reopens and the
+│       │   retries wait until it is idle, so a rate change never cuts a
+│       │   dictation; a release stays pending meanwhile, and an open
+│       │   already decided under dictation opens without renegotiating:
+│       │   the still-silent stream reopens once dictation is idle, without
+│       │   spending another reopen or retry
 │       ├── Nonzero audio returns -> the live warning clears, including in a
-│       │   stream reopened after a supervisor restart; the persisted warning
+│       │   stream reopened after a supervisor restart; the episode's
+│       │   retries start over, but the recording's two reopens stay spent,
+│       │   and a pending renegotiation is cleared; the persisted warning
 │       │   stays
-│       ├── The call app leaves the input -> no further reopens or warnings;
-│       │   a live warning stays until nonzero audio returns
-│       ├── Another episode after audio returns -> warns again, never reopens
+│       ├── The call app leaves the input before a warning -> no further
+│       │   quick reopens or warnings until it reports the input again
+│       ├── Another episode after audio returns -> warns at once (the two
+│       │   reopens are spent), then gets its own retries
 │       └── Finished meeting -> its panel says the microphone was silent for
 │           part of the call; the manifest means "silent at some point", not
 │           the last moment
 │          // checks: a_silence_budget_is_shared_across_reopened_streams,
 │          // audible_audio_clears_a_warning_a_reopened_stream_inherited,
 │          // a_microphone_the_call_app_does_not_hold_is_never_reopened_or_warned,
+│          // a_warned_microphone_never_retries_without_a_release,
+│          // a_release_seen_before_the_warning_retries_once_it_shows,
+│          // a_release_seen_before_a_reopen_still_retries_after_it,
+│          // a_release_noted_before_a_failed_source_still_retries_after_its_reopen,
+│          // a_release_triggers_a_warned_retry,
+│          // a_silent_episode_gets_three_release_triggered_retries,
+│          // a_rebuilt_policy_keeps_the_silent_episodes_retries,
+│          // a_warned_microphone_retries_after_the_call_app_lets_go,
+│          // audible_audio_resets_the_episodes_retries,
+│          // a_reopen_waits_while_dictation_is_active,
+│          // a_spent_recording_warns_even_while_dictation_is_active,
+│          // a_release_triggered_retry_waits_while_dictation_is_active,
+│          // a_pending_renegotiation_reopens_once_dictation_is_idle,
+│          // audible_audio_clears_a_pending_renegotiation,
+│          // a_renegotiation_is_taken_once_and_dictation_defers_it,
+│          // a_process_that_stops_recording_between_reopens_is_a_release,
+│          // a_release_just_after_our_own_rate_change_is_not_another_apps,
+│          // a_release_belongs_only_to_the_input_that_saw_it,
 │          // a_sticky_warning_survives_its_live_one_clearing,
 │          // a_dropped_warning_update_is_not_committed_and_is_retried,
 │          // only_an_input_the_call_app_reports_counts_as_held;

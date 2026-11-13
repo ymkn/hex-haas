@@ -419,6 +419,15 @@ impl Flow {
         let was_ready = self.setup_ready();
         self.microphone_row |= status.microphone != PermissionState::Ready;
         self.status = status;
+        // A grant answers what was asked, as the host's own record of asks
+        // does: a permission switched off again is asked for afresh.
+        if status.microphone == PermissionState::Ready {
+            self.asked[0] = false;
+            self.microphone_guide = false;
+        }
+        if status.accessibility == PermissionState::Ready {
+            self.asked[1] = false;
+        }
         if !grantable(self.status.accessibility) {
             self.accessibility_stale = false;
         }
@@ -808,7 +817,8 @@ fn relaunched_at_consumed(marker: &Path) -> Option<u64> {
 }
 
 /// Remembers the tour's step, so a tour quit part-way (macOS's own "Quit &
-/// Reopen" after a grant, or ⌘Q) resumes there.
+/// Reopen" after a grant, or ⌘Q) resumes there. The step is the one record
+/// of an unfinished tour: [`record_completion`] replaces it.
 pub fn record_step(step: Step) {
     let result =
         crate::app_paths::support_dir().and_then(|directory| record_step_at(&directory, step));
@@ -861,7 +871,10 @@ pub(crate) fn completion_recorded_at(directory: &Path) -> bool {
     if directory.join("onboarding-complete").is_file() {
         return true;
     }
-    if directory.join("onboarding-pending").is_file() || !directory.join("settings.json").is_file()
+    // A saved step is a tour quit part-way, never settings from before it.
+    if directory.join("onboarding-pending").is_file()
+        || directory.join("onboarding-step").is_file()
+        || !directory.join("settings.json").is_file()
     {
         return false;
     }
@@ -955,6 +968,10 @@ pub(crate) fn record_completion_at(directory: &Path) -> color_eyre::Result<()> {
     let temporary = directory.join(".onboarding-complete.tmp");
     write_owner_only_marker(&temporary, true)?;
     fs::rename(temporary, destination)?;
+    match fs::remove_file(directory.join("onboarding-step")) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error.into()),
+        _ => {}
+    }
     crate::durable::sync_directory(directory)?;
     Ok(())
 }
@@ -972,9 +989,16 @@ fn write_owner_only_marker(path: &Path, truncate: bool) -> color_eyre::Result<()
 }
 
 pub fn status(selection: &TranscriptionSelection) -> SetupStatus {
-    let transcription_model = crate::transcription::models::validate(selection)
-        .is_ok_and(|model| crate::transcription::models::is_installed(model, &selection.language));
-    status_with_transcription_model(transcription_model)
+    status_with_transcription_model(model_ready(selection))
+}
+
+/// Whether the model the listener runs for the saved `selection` is
+/// installed: the saved one, or the fallback in place of an import that
+/// can't run, so a lost import never holds dictation for setup.
+pub fn model_ready(selection: &TranscriptionSelection) -> bool {
+    let selection = crate::transcription::custom_models::runnable(selection);
+    crate::transcription::models::validate(&selection)
+        .is_ok_and(|model| crate::transcription::models::is_installed(model, &selection.language))
 }
 
 #[cfg(target_os = "macos")]
@@ -1187,6 +1211,43 @@ unsafe extern "C" {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_lost_import_waits_only_for_a_downloaded_fallback_and_stays_saved() {
+        use crate::transcription::custom_models::{self, CustomModelId, FallbackReason};
+        use crate::transcription::models::{self, ModelRuntime, TranscriptionModelId};
+        let directory =
+            std::env::temp_dir().join(format!("hex-lost-import-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        models::set_test_models_dir(Some(directory.clone()));
+        let id = CustomModelId::parse(&format!("custom-{}", "0f".repeat(8))).unwrap();
+        let saved = TranscriptionSelection {
+            model: TranscriptionModelId::Custom(id),
+            language: "de".into(),
+        };
+        let original = saved.clone();
+        assert_eq!(
+            custom_models::fallback_reason(&saved),
+            Some(FallbackReason::Missing)
+        );
+        // Nothing downloaded: setup waits to offer the recommendation.
+        assert!(!model_ready(&saved));
+        let fallback = custom_models::fallback();
+        let ModelRuntime::Gguf(artifact) = models::definition(fallback.model).runtime else {
+            panic!("the fallback is a download");
+        };
+        fs::File::create(directory.join(artifact.filename))
+            .unwrap()
+            .set_len(artifact.bytes)
+            .unwrap();
+        assert!(model_ready(&saved));
+        assert!(status(&saved).transcription_model);
+        assert_eq!(custom_models::runnable(&saved), fallback);
+        assert_eq!(saved, original);
+        models::set_test_models_dir(None);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn relaunch_forwards_only_the_hex_environment() {
@@ -1338,6 +1399,31 @@ mod tests {
         assert_eq!(
             fs::read(directory.join("models/model.gguf")).unwrap(),
             b"weights"
+        );
+
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn a_tour_quit_part_way_stays_unfinished_until_it_finishes() {
+        let directory =
+            std::env::temp_dir().join(format!("hex-onboarding-unfinished-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        // Settings the tour saved, with no pending marker (Linux and Windows).
+        fs::write(directory.join("settings.json"), b"{}").unwrap();
+        record_step_at(&directory, Step::TryIt).unwrap();
+
+        assert!(!completion_recorded_at(&directory));
+        assert!(!directory.join("onboarding-complete").exists());
+        assert_eq!(saved_step_at(&directory), Some(Step::TryIt));
+
+        record_completion_at(&directory).unwrap();
+        assert!(completion_recorded_at(&directory));
+        assert_eq!(
+            saved_step_at(&directory),
+            None,
+            "completion replaces the step"
         );
 
         fs::remove_dir_all(directory).unwrap();
@@ -1586,6 +1672,39 @@ mod tests {
             flow.on(Input::Grant(SetupItem::Model)),
             Effect::None,
             "a running download is not restarted"
+        );
+    }
+
+    #[test]
+    fn a_permission_switched_off_after_its_grant_is_asked_for_afresh() {
+        let mut flow = Flow::new(Step::Setup, fresh_status(), true, true);
+        let denied = SetupStatus {
+            microphone: PermissionState::NeedsSettings,
+            ..fresh_status()
+        };
+        flow.on(Input::Status(denied, ModelProgress::default()));
+        flow.on(Input::Grant(SetupItem::Microphone));
+        flow.on(Input::Grant(SetupItem::Accessibility));
+        assert_eq!(
+            statuses(&flow),
+            [
+                (SetupItem::Microphone, ItemStatus::Waiting, false),
+                (SetupItem::Accessibility, ItemStatus::Waiting, false),
+            ]
+        );
+        let granted = SetupStatus {
+            transcription_model: false,
+            ..ready_status()
+        };
+        flow.on(Input::Status(granted, ModelProgress::default()));
+        flow.on(Input::Status(denied, ModelProgress::default()));
+        assert_eq!(
+            statuses(&flow),
+            [
+                (SetupItem::Microphone, ItemStatus::Denied, true),
+                (SetupItem::Accessibility, ItemStatus::Todo, false),
+            ],
+            "not still waiting on the earlier ask"
         );
     }
 

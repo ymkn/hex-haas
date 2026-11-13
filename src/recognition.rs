@@ -86,8 +86,9 @@ pub enum RecognitionControl {
     },
     /// `hex dictation`: drives the shortcut machine as a press would, so the
     /// shortcut still finishes it.
-    /// A dictation `stop` with `print` answers `reply` once recording stops
-    /// and sends the transcript to `print` instead of pasting it.
+    /// A `stop` with `print` answers `reply` once recording stops and sends
+    /// the transcript to `print` instead of pasting it; a `start` with
+    /// `print` keeps `print` for however that recording ends.
     Capture {
         action: CaptureAction,
         print: Option<PrintReply>,
@@ -293,6 +294,7 @@ pub fn listen(
             handle_hotkey_action(
                 HotkeyAction::Cancel,
                 false,
+                None,
                 input.captured_through(),
                 &input,
                 &dictation_worker,
@@ -694,6 +696,7 @@ pub fn listen(
             handle_hotkey_action(
                 HotkeyAction::Cancel,
                 false,
+                None,
                 input.captured_through(),
                 &input,
                 &dictation_worker,
@@ -718,6 +721,7 @@ pub fn listen(
             handle_hotkey_action(
                 HotkeyAction::Cancel,
                 false,
+                None,
                 input.captured_through(),
                 &input,
                 &dictation_worker,
@@ -752,6 +756,7 @@ pub fn listen(
             let accepted = handle_hotkey_action(
                 action,
                 hotkeys.raw_capture,
+                None,
                 at,
                 &input,
                 &dictation_worker,
@@ -833,9 +838,11 @@ pub fn listen(
                 if action == HotkeyAction::Start {
                     hotkeys.raw_capture = shortcut == Shortcut::Raw;
                 }
+                let print = hotkeys.print_for(shortcut, action);
                 let accepted = handle_hotkey_action(
                     action,
                     hotkeys.raw_capture,
+                    print,
                     capture_at,
                     &input,
                     &dictation_worker,
@@ -918,24 +925,6 @@ pub fn listen(
                     }
                     continue;
                 }
-                WorkerEvent::Cancelled { job_id } => {
-                    if let Some(finishing) = programmatic_results.remove(&job_id) {
-                        finish_with_result(
-                            finishing.id,
-                            finishing.owner_token,
-                            finishing.replies,
-                            Err("cancelled".into()),
-                            &mut programmatic_completions,
-                        );
-                        continue;
-                    }
-                    handle_dictation_event(
-                        WorkerEvent::Cancelled { job_id },
-                        &mut events,
-                        indicator,
-                    )?;
-                    continue;
-                }
                 event => handle_dictation_event(event, &mut events, indicator)?,
             }
         }
@@ -949,13 +938,14 @@ pub fn listen(
         input_monitor.set_takes_escape(claims_escape(programmatic.is_some(), capture_escape));
         // Toggle's cancel key is Hex's only while one of its shortcuts'
         // recordings runs; the listener ignores keys during a programmatic one.
-        input_monitor.set_takes_cancel(programmatic.is_none() && hotkeys.any_recording());
-        // A Caps Lock capture is hands-free in Hold mode too, so Escape
-        // keeps its Toggle-mode cancel meaning while it records.
-        input_monitor
-            .set_caps_lock_cancel(programmatic.is_none() && hotkeys.caps_lock.is_recording());
-        // An extra shortcut takes its own cancel key in its own mode too.
-        input_monitor.set_extra_cancel(programmatic.is_none() && hotkeys.extra_recording());
+        // A Caps Lock capture keeps Escape in Hold mode too, and an extra
+        // shortcut its own cancel key in its own mode.
+        input_monitor.set_cancel(
+            programmatic
+                .is_none()
+                .then(|| hotkeys.recording_cancel())
+                .flatten(),
+        );
         if received_worker_event {
             emit_engine_state(
                 &mut events,
@@ -1032,6 +1022,11 @@ pub fn listen(
                         // and submitted it; that capture is over.
                         continue;
                     }
+                    // A kept clip still answers a print-only recording;
+                    // `suspend_all` answers a reply whose recording is over.
+                    let print = was_recording
+                        .then(|| hotkeys.print_capture.take())
+                        .flatten();
                     hotkeys.suspend_all();
                     if was_recording {
                         // A recording shortcut keeps what it heard, copied
@@ -1052,6 +1047,7 @@ pub fn listen(
                         };
                         interrupted_dictation(
                             salvaged,
+                            print,
                             hotkeys.raw_capture,
                             &dictation_worker,
                             &input.device_name(),
@@ -1205,6 +1201,7 @@ fn cancel_programmatic_capture(
 fn handle_hotkey_action(
     action: HotkeyAction,
     raw: bool,
+    print: Option<PrintReply>,
     action_at: CaptureInstant,
     dictation: &DictationAudio,
     worker: &DictationWorker,
@@ -1252,7 +1249,7 @@ fn handle_hotkey_action(
                 events,
                 indicator,
                 release_while_idle,
-                None,
+                print,
                 raw,
             )
             .map(drop)
@@ -1314,9 +1311,15 @@ fn finish_hotkey_dictation(
     if dictation.become_intentional(action_at)? && release_while_idle {
         feedback::play(Tone::DictationStart);
     }
-    // A dictation over a screenshot lands its words there, never pasted.
+    // A dictation over a screenshot lands its words there, never pasted; a
+    // printing capture stops that shot's editor waiting instead.
     #[cfg(hex_capture)]
-    let print = print.or_else(crate::screenshots::narration::claim);
+    let print = print
+        .inspect(|_| crate::screenshots::narration::ended())
+        .or_else(crate::screenshots::narration::claim);
+    // A discarded or silent clip never reaches transcription, so its waiter
+    // still hears from it.
+    let unanswered = print.clone();
     let finished = match print {
         None => finish_dictation(
             dictation,
@@ -1346,6 +1349,13 @@ fn finish_hotkey_dictation(
     };
     if matches!(finished, FinishResult::Discarded) {
         feedback::retract_start();
+    }
+    // A discarded or silent clip submitted no job: say so instead of leaving
+    // the printing command to its cap.
+    if matches!(finished, FinishResult::Discarded | FinishResult::Silent)
+        && let Some(print) = unanswered
+    {
+        print.send(crate::control::PrintedTranscript::NoSpeech);
     }
     emit_engine_state(events, false, worker, device)?;
     Ok(finished)
@@ -1383,7 +1393,8 @@ fn finish_reply(finished: Option<FinishResult>, submitted: &str) -> ControlReply
 }
 
 /// `hex dictation`: a start locks the shortcut machine as a double tap
-/// does, so the next press or `stop` finishes it.
+/// does, so the next press or `stop` finishes it. A printing start keeps the
+/// command's reply here until that recording ends, however it ends.
 #[allow(clippy::too_many_arguments)]
 fn control_dictation(
     action: CaptureAction,
@@ -1406,10 +1417,12 @@ fn control_dictation(
         CaptureAction::Stop => false,
         CaptureAction::Toggle => !recording,
         CaptureAction::Cancel if recording => {
+            hotkeys.cancel_print();
             hotkeys.suspend_recording();
             handle_hotkey_action(
                 HotkeyAction::CancelShortcut,
                 false,
+                None,
                 input.captured_through(),
                 input,
                 worker,
@@ -1424,8 +1437,15 @@ fn control_dictation(
         CaptureAction::Cancel => return Ok(ControlReply::unchanged("Dictation isn't recording")),
     };
     Ok(match start {
+        true if recording && print.is_some() => ControlReply::error(
+            "busy",
+            "a dictation is already recording; finish it before starting a print-only one",
+        ),
         true if recording => ControlReply::unchanged("Dictation is already recording"),
         true => {
+            // A reply still held belongs to a recording that already ended;
+            // it must never answer this one.
+            hotkeys.fail_print("its recording already ended");
             if let Some(refusal) = capture_refusal(other_recording, suspended) {
                 return Ok(refusal);
             }
@@ -1439,6 +1459,7 @@ fn control_dictation(
             let accepted = handle_hotkey_action(
                 HotkeyAction::Start,
                 raw,
+                None,
                 capture_boundary(input, release_while_idle),
                 input,
                 worker,
@@ -1454,7 +1475,13 @@ fn control_dictation(
                 // real now and reads its page at once.
                 context.intend();
                 make_control_capture_intentional(input, release_while_idle)?;
-                ControlReply::done("Recording; `hex dictation stop` or the shortcut finishes")
+                if let Some(print) = print {
+                    // However this recording ends, its text comes back here.
+                    hotkeys.keep_print(print);
+                    ControlReply::done("Recording; the transcript comes back here when it ends")
+                } else {
+                    ControlReply::done("Recording; `hex dictation stop` or the shortcut finishes")
+                }
             } else {
                 hotkeys.dictation.suspend();
                 ControlReply::error("busy", "the microphone is busy; try again")
@@ -1466,8 +1493,19 @@ fn control_dictation(
         ),
         false if !recording => ControlReply::unchanged("Dictation isn't recording"),
         false => {
-            hotkeys.suspend_recording();
+            // Whether this command prints, read before a print-only
+            // recording's start reply joins it: a plain stop answers as a
+            // plain stop does.
             let printing = print.is_some();
+            let start_printed = hotkeys.print_capture.is_some();
+            // A print-only recording answers its start command too: both it
+            // and a printing stop hear the one transcript.
+            let print = match (hotkeys.print_capture.take(), print) {
+                (Some(start), Some(stop)) => Some(start.join(stop)),
+                (Some(start), None) => Some(start),
+                (None, print) => print,
+            };
+            hotkeys.suspend_recording();
             // A control capture asked for its page when it started; this
             // waits for that read if it is still in flight.
             let context = context.finish(events)?;
@@ -1490,6 +1528,10 @@ fn control_dictation(
                 finished if printing => finish_reply(
                     Some(finished),
                     "Finished recording; printing the transcript",
+                ),
+                finished if start_printed => finish_reply(
+                    Some(finished),
+                    "Finished recording; the transcript goes to the command that started it",
                 ),
                 finished => finish_reply(
                     Some(finished),
@@ -1659,13 +1701,6 @@ fn handle_dictation_event(
                 },
             });
         }
-        WorkerEvent::Cancelled { job_id } => {
-            // A submitted job left the HUD's job set only when it completed
-            // or failed; tell both the HUD and the light that it is gone.
-            indicator.send(DictationIndicatorEvent::JobCancelled {
-                job_id: job_id.value(),
-            });
-        }
         WorkerEvent::ModelFailed(error) => {
             tracing::error!(%error, "dictation failed");
             feedback::play(Tone::Error);
@@ -1728,6 +1763,7 @@ mod tests {
             extra: std::array::from_fn(|_| None),
             caps_lock: DictationHotkey::new(base, false, RuntimeHotkey::default()),
             raw_capture: false,
+            print_capture: None,
             suspended: false,
         };
         let mut press = |flags: u64, ms: u64| hotkeys.process(InputEvent::Flags(flags), at(ms));
@@ -1777,6 +1813,7 @@ mod tests {
             extra: std::array::from_fn(|_| None),
             caps_lock: DictationHotkey::new(base, false, RuntimeHotkey::default()),
             raw_capture: false,
+            print_capture: None,
             suspended: false,
         };
         hotkeys.rebind_extra(bindings, base);
@@ -2026,6 +2063,7 @@ mod tests {
             extra: std::array::from_fn(|_| None),
             caps_lock,
             raw_capture: false,
+            print_capture: None,
             suspended: false,
         }
     }

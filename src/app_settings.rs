@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::dictation::vocabulary::{VocabularyEntry, serialize_saved};
 use crate::transcription::models::{TranscriptionModelId, TranscriptionSelection};
 
+mod browser_origins;
 #[cfg(hex_capture)]
 mod capture;
 mod dictation_processing;
@@ -30,6 +31,7 @@ pub(crate) use persistence::LaunchLoad;
 pub(crate) use persistence::LaunchNote;
 mod shortcut_repair;
 
+pub use browser_origins::{normalize_browser_origins, parse_browser_origins};
 #[cfg(hex_capture)]
 pub use capture::*;
 pub use dictation_processing::{
@@ -45,20 +47,24 @@ pub use screenshots::{
     ScreenshotSettings, screenshot_hotkey, screenshot_record_hotkey, screenshot_settings,
 };
 
-static RECORDING_DUCK_VOLUME: AtomicU32 = AtomicU32::new(0.2_f32.to_bits());
+const DEFAULT_RECORDING_DUCK_VOLUME: f32 = 0.2;
+const DEFAULT_DOUBLE_TAP_LOCK: bool = true;
+
+static RECORDING_DUCK_VOLUME: AtomicU32 = AtomicU32::new(DEFAULT_RECORDING_DUCK_VOLUME.to_bits());
 // Until settings load, "While dictating" is its default, not Mute: the
 // hotkey pre-roll depends on it.
 static RECORDING_AUDIO_BEHAVIOR: AtomicU8 =
     AtomicU8::new(RecordingAudioBehavior::DoNothing.encoded());
-static DOUBLE_TAP_LOCK: AtomicBool = AtomicBool::new(true);
+static DOUBLE_TAP_LOCK: AtomicBool = AtomicBool::new(DEFAULT_DOUBLE_TAP_LOCK);
 static DOUBLE_TAP_ONLY: AtomicBool = AtomicBool::new(false);
 static SHORTCUT_TOGGLE: AtomicBool = AtomicBool::new(false);
 static MEETINGS_ENABLED: AtomicBool = AtomicBool::new(false);
 static PAUSE_BROWSER_MEDIA: AtomicBool = AtomicBool::new(false);
 static HEX_MICROPHONE_ENABLED: AtomicBool = AtomicBool::new(false);
 static MEETING_SUMMARIES: AtomicU8 = AtomicU8::new(MeetingSummaries::platform_default() as u8);
-static MEETING_INDICATOR_ENABLED: AtomicBool = AtomicBool::new(true);
-static MEETING_INDICATOR_CORNER: AtomicU8 = AtomicU8::new(0);
+static MEETING_INDICATOR_ENABLED: AtomicBool =
+    AtomicBool::new(meetings::DEFAULT_SHOW_RECORDING_INDICATOR);
+static MEETING_INDICATOR_CORNER: AtomicU8 = AtomicU8::new(MeetingIndicatorCorner::TopRight as u8);
 /// [`MeetingRetention::encode`]d; [`RETENTION_UNSET`] until settings apply.
 static MEETING_RETENTION: AtomicU8 = AtomicU8::new(RETENTION_UNSET);
 /// [`MeetingRetention::encode`]d; [`RETENTION_UNSET`] until settings apply.
@@ -238,6 +244,8 @@ impl RecordingAudioBehavior {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(default)]
 pub struct AppSettings {
+    #[serde(skip)]
+    pub(crate) source: persistence::Source,
     /// Retired spoken-commands opt-in, kept untouched in `settings.json`.
     #[serde(
         default,
@@ -416,6 +424,7 @@ where
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
+            source: Default::default(),
             retired_commands_enabled: None,
             release_microphone_while_idle: false,
             sound_effects: true,
@@ -424,9 +433,9 @@ impl Default for AppSettings {
             microphone: None,
             avoid_bluetooth_microphone: true,
             recording_audio_behavior: RecordingAudioBehavior::DoNothing,
-            recording_duck_volume: 0.2,
+            recording_duck_volume: DEFAULT_RECORDING_DUCK_VOLUME,
             pause_browser_media: false,
-            double_tap_lock: true,
+            double_tap_lock: DEFAULT_DOUBLE_TAP_LOCK,
             double_tap_only: false,
             shortcut_mode: crate::dictation::ShortcutMode::Hold,
             dictation_hotkey: HotkeyBinding::default(),
@@ -550,9 +559,14 @@ impl AppSettings {
     }
 
     pub fn save_transcription(&mut self, selection: TranscriptionSelection) -> Result<()> {
-        self.save_transcription_with(selection, Self::save)
+        crate::transcription::models::validate(&selection)?;
+        let mut candidate = self.clone();
+        candidate.remember_transcription(selection);
+        *self = self.update(&candidate)?;
+        Ok(())
     }
 
+    #[cfg(test)]
     fn save_transcription_with(
         &mut self,
         selection: TranscriptionSelection,
@@ -567,6 +581,7 @@ impl AppSettings {
     /// Persist the entire candidate before replacing the current editor value.
     /// The candidate may include unrelated debounced edits, which must survive
     /// both failed immediate changes and successful commits.
+    #[cfg(test)]
     pub(crate) fn commit_with(
         &mut self,
         candidate: Self,
@@ -583,6 +598,7 @@ impl AppSettings {
         let mut settings = Self::load_from(&path)?;
         #[cfg(hex_capture)]
         {
+            let base = settings.clone();
             let read = |path: PathBuf| fs::read(path).ok();
             let engine = read(scrawl_capture::handoff::default_config_path());
             let mut imported = false;
@@ -606,7 +622,7 @@ impl AppSettings {
             if imported
                 && path.exists()
                 && persistence::healthy_file(&path)
-                && let Err(error) = settings.write_to(&path)
+                && let Err(error) = base.update(&settings).map(|saved| settings = saved)
             {
                 tracing::warn!(%error, "could not record the Scrawl settings import");
             }
@@ -717,13 +733,6 @@ impl AppSettings {
         Ok(Self::read_from(&path()?)?.0)
     }
 
-    pub fn save(&self) -> Result<()> {
-        let path = path()?;
-        self.write_to(&path)?;
-        self.apply_runtime();
-        Ok(())
-    }
-
     fn validate_recording_duck_volume(&self) -> Result<()> {
         if !self.recording_duck_volume.is_finite()
             || !(0.0..=1.0).contains(&self.recording_duck_volume)
@@ -734,13 +743,25 @@ impl AppSettings {
     }
 
     fn apply_runtime(&self) {
+        // A read may finish publishing after a newer transaction has saved.
+        // Keep all runtime projections in the same revision order as disk.
+        static APPLIED: std::sync::Mutex<u64> = std::sync::Mutex::new(0);
+        let mut applied = APPLIED.lock().unwrap_or_else(|error| error.into_inner());
+        if self.source.revision != 0 && self.source.revision < *applied {
+            return;
+        }
+        *applied = (*applied).max(self.source.revision);
+        self.apply_runtime_values();
+    }
+
+    fn apply_runtime_values(&self) {
         // Whatever an editor holds, a managed lock keeps its switches off.
         let policy = crate::policy::Policy::current();
         if policy.any() {
             let mut managed = self.clone();
             policy.enforce(&mut managed);
             if managed != *self {
-                return managed.apply_runtime();
+                return managed.apply_runtime_values();
             }
         }
         MICROPHONE_POLICY.store(
@@ -842,7 +863,10 @@ impl AppSettings {
         ));
         set_microphone_selection(self.microphone.as_deref());
         #[cfg(target_os = "macos")]
-        crate::dictation::config::update_dictation_profiles(&self.dictation_processing);
+        crate::dictation::config::update_dictation_profiles(
+            &self.dictation_processing,
+            self.labs.voice_prompt,
+        );
         crate::dictation::vocabulary::apply(&self.vocabulary, self.vocabulary_boost);
     }
 
@@ -952,8 +976,9 @@ impl AppSettings {
     #[cfg(target_os = "macos")]
     pub(crate) fn record_anomaly_identity(&mut self, path: &std::path::Path) -> Result<()> {
         if self.predates_anomaly_identity() {
-            self.migrations.push(ANOMALY_IDENTITY_MIGRATION.into());
-            self.write_to(path)?;
+            let mut candidate = self.clone();
+            candidate.migrations.push(ANOMALY_IDENTITY_MIGRATION.into());
+            *self = self.update_at(&candidate, path, crate::policy::Policy::current())?;
         }
         Ok(())
     }
@@ -1401,11 +1426,14 @@ pub fn dock_icon_visible(show_dock_icon: bool, status_item_available: bool) -> b
     show_dock_icon || !status_item_available
 }
 
+/// Shows or hides the Dock icon, and returns whether the activation policy
+/// actually changed. A call that leaves the policy as it was, or cannot
+/// change it, returns false: the window server has nothing new to apply.
 #[cfg(target_os = "macos")]
-pub fn set_dock_icon_visible(visible: bool) {
+pub fn set_dock_icon_visible(visible: bool) -> bool {
     let Some(mtm) = MainThreadMarker::new() else {
         tracing::warn!("Dock icon visibility must be changed on the main thread");
-        return;
+        return false;
     };
     let application = NSApplication::sharedApplication(mtm);
     let policy = if visible {
@@ -1413,9 +1441,14 @@ pub fn set_dock_icon_visible(visible: bool) {
     } else {
         NSApplicationActivationPolicy::Accessory
     };
-    if application.activationPolicy() != policy && !application.setActivationPolicy(policy) {
-        tracing::warn!(visible, "could not change Dock icon visibility");
+    if application.activationPolicy() == policy {
+        return false;
     }
+    if !application.setActivationPolicy(policy) {
+        tracing::warn!(visible, "could not change Dock icon visibility");
+        return false;
+    }
+    true
 }
 
 #[cfg(target_os = "macos")]
@@ -2166,14 +2199,14 @@ mod tests {
         assert!(fresh.meetings.providers.is_empty());
 
         let legacy: AppSettings = serde_json::from_str(
-            r#"{"meetings":{"never_offer":[{"key":"problems.kitlangton.com","label":"problems.kitlangton.com"}]}}"#,
+            r#"{"meetings":{"never_offer":[{"key":"example.com","label":"example.com"}]}}"#,
         )
         .unwrap();
         assert_eq!(
             legacy.meetings.providers,
             vec![MeetingProviderChoice {
-                key: "problems.kitlangton.com".into(),
-                label: "problems.kitlangton.com".into(),
+                key: "example.com".into(),
+                label: "example.com".into(),
                 policy: MeetingPolicy::NeverOffer,
             }]
         );

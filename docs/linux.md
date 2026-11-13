@@ -36,7 +36,12 @@ does not offer the protocol, another input method (fcitx, ibus) holds the
 seat, the focused field has no active text input, the final text is
 multi-line, or the compositor does not answer in time. A CPU engine or a
 model that cannot stream shows no provisional words while speaking, but the
-final text still goes in through the input method. It has **not** been
+final text still goes in through the input method. Hex checks the
+compositor's registry when the window loads: on a Wayland desktop without the
+protocol (GNOME) Settings › Labs keeps its card, disabled while off, with a
+note that this desktop offers no input method Live typing needs, and `hex labs`
+prints the same note in its list and after `hex labs on live-typing`. The
+toggle is not refused, and dictations paste normally. It has **not** been
 verified on a real compositor yet; only its unit tests and the build ran.
 
 With **Labs › Transform typed text** on (`labs.typed_text`, off by default),
@@ -75,12 +80,18 @@ StatusNotifierItem host, such as Waybar, KDE, or Omarchy's bar), Hex shows a
 tray icon: click it to open the window, or use its menu: **Show Hex**,
 **Paste last dictation**, the downloaded speech models, the update once one
 is ready (**Restart to update**), **Enable / Disable Hex**, and **Quit Hex**;
-while Hex records or transcribes, the menu and tooltip say so. The mark is white,
-and black when the desktop's color scheme prefers light; Hex reads that setting
-when it creates the tray, so a later switch applies at the next launch. KDE's
-portal takes the scheme from the window palette, so a mixed theme with light
-windows and a dark panel (such as Breeze Twilight) gets a black mark on a dark
-panel. Without a tray, quit with **Quit Hex** at the bottom of the window's
+while Hex records or transcribes, the menu and tooltip say so. Hosts that draw
+theme icons, such as Plasma 6, GNOME's AppIndicator extension, and Waybar, draw
+a symbolic mark in the panel's own text color, so it stays visible on a light
+or dark panel. Plasma 6 recolors it only with icon themes that follow the color
+scheme (Breeze and Papirus do); other themes show the mark's default color.
+Plasma 5 also prefers the icon name but has no panel palette, so its color
+there is untested. Hosts that don't use theme names get Hex's pixmap: white,
+and black when the desktop's color scheme prefers light (Waybar also falls
+back to it when it can't find the name). Hex reads that setting when it
+creates the tray, so a later switch applies at the next launch, and asks a
+running Plasma session to reload icons after writing the mark.
+Without a tray, quit with **Quit Hex** at the bottom of the window's
 sidebar, the launcher's **Quit Hex** action, or `hex quit`.
 
 The window opens at 980×760 logical pixels and floats on tiling window
@@ -256,6 +267,8 @@ for Hex's app id `anomaly.hex`, which its windows also report. Earlier installs
 named both entries `hex.desktop`; Hex and the installer rename Hex's own.
 Its icon is `anomaly.hex`: packages install it in the hicolor theme, and a
 direct install gets it in `~/.local/share/icons/hicolor` when Hex first starts.
+The tray's symbolic mark, `anomaly.hex-symbolic.svg`, is always written there
+too, in `hicolor/scalable/apps`, because packages don't ship it.
 
 Remove the application while preserving logs and settings with:
 
@@ -623,6 +636,15 @@ fails after `wl-copy` has taken the transcript, it stays on the clipboard for
 Ctrl+V. Nothing confirms the target read the paste, so a target stalled past
 the delay can paste the restored clipboard instead (see
 [#24](https://github.com/anomalyco/hex/issues/24)).
+
+Labs › Keep dictation on clipboard (`hex labs on keep-on-clipboard`, off by
+default) leaves each ordinary dictation on the clipboard instead: the paste
+snapshots nothing and schedules no restore, and a restore an earlier paste was
+still waiting to make is dropped, so a later paste with the lab off cannot
+bring an older clipboard back. A typed-text replacement, which saved the
+clipboard before it copied the selection, and a capture's PNG still restore,
+and while the lab is off nothing changes.
+
 On Wayland, restoring needs the compositor's `ext-data-control` protocol
 (KDE Plasma 6, recent wlroots compositors) or `wlr-data-control` (wlroots
 compositors, niri, Hyprland); without either the transcript stays, and

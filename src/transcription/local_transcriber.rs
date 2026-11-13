@@ -758,6 +758,7 @@ impl LocalTranscriber {
         &mut self,
         samples: &[f32],
     ) -> Result<crate::transcription::transcript::Transcript> {
+        use crate::transcription::gguf_session::{chunk_ranges, sample_offset_ms};
         use crate::transcription::transcript::TranscriptSegment;
         const CHUNK: usize = 30 * 16_000;
         let chunk = self.max_audio_samples.map_or(CHUNK, |max| max.min(CHUNK));
@@ -775,8 +776,9 @@ impl LocalTranscriber {
         };
         let mut timed = crate::transcription::transcript::Transcript::default();
         let mut texts = Vec::new();
-        for (index, part) in samples.chunks(chunk.max(1)).enumerate() {
-            let offset = (index * chunk / 16) as i64;
+        for range in chunk_ranges(samples, chunk) {
+            let offset = sample_offset_ms(range.start);
+            let part = &samples[range];
             let (text, segments, words) = match &mut self.session {
                 LocalSession::Gguf(session) => {
                     let transcript = session

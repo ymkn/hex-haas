@@ -55,7 +55,7 @@ pub(crate) trait Host {
     }
     /// Saves `settings` as the window would and lets the runtime, the
     /// listener, and an open window adopt them.
-    fn save(&self, settings: AppSettings) -> Result<(), ControlError>;
+    fn save(&self, base: &AppSettings, settings: AppSettings) -> Result<(), ControlError>;
     fn history(&self) -> Option<crate::history::History>;
     fn show_window(&self, pane: Option<Pane>) -> Result<(), ControlError>;
     /// Closes the window; false when it wasn't open.
@@ -136,6 +136,15 @@ fn command(host: &dyn Host, command: ControlCommand) -> ControlReply {
                     }),
             )
         }
+        ControlCommand::Dictation {
+            action: CaptureAction::Start,
+            print: true,
+            ..
+        } => ControlReply::error(
+            "unsupported",
+            "`hex dictation start --print` is macOS only; `hex dictation stop --print` \
+             still prints here",
+        ),
         ControlCommand::Dictation {
             action,
             print: true,
@@ -238,9 +247,10 @@ fn command(host: &dyn Host, command: ControlCommand) -> ControlReply {
         })),
         ControlCommand::VocabularyAdd { .. } | ControlCommand::VocabularyRemove { .. } => {
             reply(load().and_then(|mut settings| {
+                let base = settings.clone();
                 let reply = super::edit_vocabulary(&mut settings.vocabulary, &command)?;
                 if matches!(reply, ControlReply::Done { changed: true, .. }) {
-                    host.save(settings)?;
+                    host.save(&base, settings)?;
                 }
                 Ok(reply)
             }))
@@ -389,16 +399,9 @@ fn commit(
     if !change.changed(before) {
         return Ok(ControlReply::unchanged(unchanged()));
     }
-    host.save(change.settings)?;
+    host.save(before, change.settings)?;
     for effect in change.effects {
         match effect {
-            settings::Effect::HistoryRetention(retention) => {
-                if let Some(history) = host.history()
-                    && let Err(error) = history.set_retention(retention)
-                {
-                    tracing::warn!(%error, "could not apply history retention");
-                }
-            }
             settings::Effect::DockIcon => {}
             settings::Effect::CheckForUpdates => {
                 let _ = host.check_for_updates();
@@ -544,9 +547,7 @@ pub(crate) fn capture_from_state(
 fn status(host: &dyn Host) -> Result<ControlReply, ControlError> {
     let state = host.state()?;
     let settings = &state.settings;
-    let selection = &settings.transcription;
-    let definition = crate::transcription::models::definition(selection.model);
-    let installed = crate::transcription::models::is_installed(definition, &selection.language);
+    let ready = crate::desktop::onboarding::model_ready(&settings.transcription);
     let capture = if state.listener.running {
         CaptureReport::from(state.capture)
     } else {
@@ -568,7 +569,7 @@ fn status(host: &dyn Host) -> Result<ControlReply, ControlError> {
                 .or(state.listener.warning.as_ref())
             {
                 Some(warning) => format!("{} ({warning})", state.listener.status),
-                None => state.listener.status.clone(),
+                None => state.listener.status.to_string(),
             },
             shortcuts: match &state.listener.shortcuts {
                 crate::desktop::host::DesktopShortcuts::Portal(granted) => granted
@@ -584,16 +585,13 @@ fn status(host: &dyn Host) -> Result<ControlReply, ControlError> {
         capture,
         meeting: meeting_report(),
         model: ModelReport {
-            id: selection.model.as_str().into(),
-            name: definition.name.into(),
-            language: selection.language.clone(),
-            installed,
             preparing: state
                 .transcription
                 .preparing
                 .map(|model| model.as_str().into()),
             downloaded_bytes: state.transcription.downloaded_bytes,
             error: state.transcription.error.clone(),
+            ..ModelReport::saved(&settings.transcription)
         },
         features: FeatureReport {
             meetings: crate::app_settings::meetings_enabled(),
@@ -605,10 +603,10 @@ fn status(host: &dyn Host) -> Result<ControlReply, ControlError> {
         },
         // Linux and Windows gate dictation on no privacy permission.
         permissions: PermissionReport {
-            ready: installed,
+            ready,
             microphone: "ready".into(),
             accessibility: "ready".into(),
-            transcription_model: installed,
+            transcription_model: ready,
         },
         window: WindowReport {
             open: state.window_open,
@@ -640,7 +638,7 @@ mod tests {
                 listener: DesktopListenerSnapshot {
                     running: true,
                     warming: false,
-                    status: "Enabled".into(),
+                    status: crate::desktop::host::ListenerStatus::Enabled,
                     warning: None,
                     notice: None,
                     last_failure: None,
@@ -677,7 +675,7 @@ mod tests {
         fn paste_last(&self) -> Result<(), ControlError> {
             Ok(())
         }
-        fn save(&self, _: AppSettings) -> Result<(), ControlError> {
+        fn save(&self, _: &AppSettings, _: AppSettings) -> Result<(), ControlError> {
             Ok(())
         }
         fn history(&self) -> Option<crate::history::History> {
@@ -763,7 +761,7 @@ mod tests {
             print: true,
             raw: false,
         };
-        assert_eq!(code(&ask(&host, start_print)), "invalid-value");
+        assert_eq!(code(&ask(&host, start_print)), "unsupported");
         assert_eq!(
             *host.dictations.lock().unwrap(),
             [CaptureAction::Stop, CaptureAction::Stop]

@@ -908,9 +908,11 @@ impl BrowserPageMemory {
 fn is_browser_application(application_lower: &str) -> bool {
     // Arc's name is too short to match as a substring.
     application_lower == "arc"
-        || ["brave", "chrome", "safari", "firefox", "edge", "vivaldi"]
-            .iter()
-            .any(|browser| application_lower.contains(browser))
+        || [
+            "brave", "chrome", "safari", "firefox", "edge", "vivaldi", "helium",
+        ]
+        .iter()
+        .any(|browser| application_lower.contains(browser))
 }
 
 fn context_matches_browser(
@@ -933,6 +935,7 @@ fn context_matches_browser(
         "com.microsoft.edgemac" => lower.contains("edge"),
         "company.thebrowser.Browser" => lower == "arc",
         "com.vivaldi.Vivaldi" => lower.contains("vivaldi"),
+        "net.imput.helium" => lower.contains("helium"),
         _ => false,
     }
 }
@@ -998,6 +1001,7 @@ const BROWSER_TITLE_SUFFIXES: &[&str] = &[
     " - Safari",
     " - Arc",
     " - Vivaldi",
+    " - Helium",
 ];
 
 const GOOGLE_MEET_TITLE_PREFIXES: [&str; 3] = ["Meet - ", "Meet – ", "Meet — "];
@@ -1105,6 +1109,7 @@ mod tests {
             browser_url: url.map(|url| Url::parse(url).unwrap()),
             window_title: Some(title.into()),
             input_revision: None,
+            screen_terms: Vec::new(),
         }
     }
 
@@ -1870,6 +1875,15 @@ mod tests {
         .unwrap();
         assert_eq!(named_prefix.title, "Weekly Architecture");
         assert!(named_prefix.named);
+
+        let helium = candidate_from_context(&context(
+            "Helium",
+            Some("https://meet.google.com/abc-defg-hij"),
+            "Meet – Weekly Architecture - Helium",
+        ))
+        .unwrap();
+        assert_eq!(helium.title, "Weekly Architecture");
+        assert!(helium.named);
     }
 
     #[test]
@@ -2054,6 +2068,37 @@ mod tests {
         assert_eq!(call.required_stability(), BROWSER_STABLE_FOR);
     }
 
+    #[test]
+    fn helium_on_the_microphone_is_a_named_browser_call() {
+        // Helium's sandboxed audio service holds the microphone and reports
+        // its helper bundle; the main app is `net.imput.helium`.
+        let helium_helper = ActiveMicrophoneApplication {
+            pid: 6120,
+            bundle_id: "net.imput.helium.helper".into(),
+            name: "Helium Helper".into(),
+        };
+        assert!(helium_helper.is_browser());
+        let meet = candidate_from_microphone(
+            &helium_helper,
+            &context(
+                "Helium",
+                Some("https://meet.google.com/abc-defg-hij"),
+                "Meet - Design sync",
+            ),
+        )
+        .unwrap();
+        assert_eq!(meet.source, MeetingSource::GoogleMeet);
+        assert_eq!(meet.application.as_deref(), Some("net.imput.helium"));
+        assert_eq!(meet.application_name.as_deref(), Some("Helium"));
+        assert_eq!(meet.site.as_deref(), Some("meet.google.com"));
+
+        // A page on no known call site is still a browser call, named by the
+        // browser.
+        let other = candidate_from_microphone(&helium_helper, &ContextSnapshot::default()).unwrap();
+        assert_eq!(other.source, MeetingSource::BrowserCall);
+        assert_eq!(other.offer_title(), "Call in Helium");
+    }
+
     fn brave() -> ActiveMicrophoneApplication {
         ActiveMicrophoneApplication {
             pid: 49686,
@@ -2066,16 +2111,13 @@ mod tests {
     fn offer_titles_name_the_service_site_or_browser_without_repeating_call() {
         let problems = context(
             "Brave Browser",
-            Some("https://www.problems.kitlangton.com/board"),
+            Some("https://www.example.com/board"),
             "Problems",
         );
         let site = candidate_from_microphone(&brave(), &problems).unwrap();
         assert_eq!(site.source, MeetingSource::BrowserCall);
-        assert_eq!(site.offer_title(), "Call on problems.kitlangton.com");
-        assert_eq!(
-            site.recording_start().app.as_deref(),
-            Some("problems.kitlangton.com")
-        );
+        assert_eq!(site.offer_title(), "Call on example.com");
+        assert_eq!(site.recording_start().app.as_deref(), Some("example.com"));
 
         let unknown = candidate_from_microphone(&brave(), &ContextSnapshot::default()).unwrap();
         assert_eq!(unknown.offer_title(), "Call in Brave Browser");
@@ -2113,14 +2155,10 @@ mod tests {
 
     #[test]
     fn choices_apply_to_the_site_when_known_and_the_app_otherwise() {
-        let problems = context(
-            "Brave Browser",
-            Some("https://problems.kitlangton.com/"),
-            "Problems",
-        );
+        let problems = context("Brave Browser", Some("https://example.com/"), "Problems");
         let site = candidate_from_microphone(&brave(), &problems).unwrap();
         let provider = site.provider(false).unwrap();
-        assert_eq!(provider.key, "problems.kitlangton.com");
+        assert_eq!(provider.key, "example.com");
         assert_eq!(
             site.policy(&[provider.choose(MeetingPolicy::NeverOffer)]),
             MeetingPolicy::NeverOffer
@@ -2134,7 +2172,7 @@ mod tests {
             ("com.brave.Browser", "Brave Browser")
         );
         assert!(!unknown.can_always_record(false));
-        let never_site = [choice("problems.kitlangton.com", MeetingPolicy::NeverOffer)];
+        let never_site = [choice("example.com", MeetingPolicy::NeverOffer)];
         assert_eq!(unknown.policy(&never_site), MeetingPolicy::Ask);
         // A browser's choice covers its sites unless the site has its own.
         let never_brave = choice("com.brave.Browser", MeetingPolicy::NeverOffer);
@@ -2145,16 +2183,13 @@ mod tests {
         assert_eq!(
             site.policy(&[
                 never_brave.clone(),
-                choice("problems.kitlangton.com", MeetingPolicy::AlwaysRecord)
+                choice("example.com", MeetingPolicy::AlwaysRecord)
             ]),
             MeetingPolicy::AlwaysRecord
         );
         // A site set back to Ask asks, whatever its browser's choice.
         assert_eq!(
-            site.policy(&[
-                never_brave,
-                choice("problems.kitlangton.com", MeetingPolicy::Ask)
-            ]),
+            site.policy(&[never_brave, choice("example.com", MeetingPolicy::Ask)]),
             MeetingPolicy::Ask
         );
 
@@ -2217,17 +2252,10 @@ mod tests {
         // Browser pages still need about 20 s on the microphone.
         let problems = candidate_from_microphone(
             &brave(),
-            &context(
-                "Brave Browser",
-                Some("https://problems.kitlangton.com/"),
-                "Problems",
-            ),
+            &context("Brave Browser", Some("https://example.com/"), "Problems"),
         )
         .unwrap();
-        let always = [choice(
-            "problems.kitlangton.com",
-            MeetingPolicy::AlwaysRecord,
-        )];
+        let always = [choice("example.com", MeetingPolicy::AlwaysRecord)];
         let mut watch = Watch::new();
         assert!(watch.run(Some(&problems), &always, 6_000).is_empty());
         assert!(watch.run(None, &always, 5_000).is_empty());
@@ -2280,11 +2308,7 @@ mod tests {
 
     #[test]
     fn a_browser_voice_note_is_not_offered_but_a_sustained_browser_call_is() {
-        let problems = context(
-            "Brave Browser",
-            Some("https://problems.kitlangton.com/"),
-            "Problems",
-        );
+        let problems = context("Brave Browser", Some("https://example.com/"), "Problems");
         let candidate = candidate_from_microphone(&brave(), &problems).unwrap();
         let mut watch = Watch::new();
         // A six-second voice note, then the mic closes for a few seconds.
@@ -2429,16 +2453,12 @@ mod tests {
         // shorten the threshold nor trigger Always record.
         let problems = candidate_from_microphone(
             &brave(),
-            &context(
-                "Brave Browser",
-                Some("https://problems.kitlangton.com/"),
-                "Problems",
-            ),
+            &context("Brave Browser", Some("https://example.com/"), "Problems"),
         )
         .unwrap();
         let choices = [
             choice("banshee.app", MeetingPolicy::AlwaysRecord),
-            choice("problems.kitlangton.com", MeetingPolicy::NeverOffer),
+            choice("example.com", MeetingPolicy::NeverOffer),
         ];
         let mut watch = Watch::new();
         assert!(watch.run(Some(&problems), &choices, 25_000).is_empty());

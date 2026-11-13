@@ -7,8 +7,8 @@
 ruleset; `.github/` changes also need Dax). Branch from `dev`, open a PR to
 `dev`, and merge it yourself once it compiles (don't wait on CI); merge any open PR without
 asking. After merging, update the installed copy. See
-`~/code/control/AGENTS.md`. `production` holds what was released and moves
-only by a fast-forward from `dev` when Kit releases; never commit to it.
+`~/code/control/AGENTS.md`. Publish releases from `dev`. Fast-forward
+`production` only to deploy the site; never commit to it.
 There is no `main`.
 
 Any change to what the window draws regenerates the goldens in the same PR:
@@ -41,7 +41,8 @@ A feature with its own pane joins the sidebar as a normal item while
 on and is hidden while off; a behaviour-only feature is just its toggle. Today:
 Meetings (beta), Voice Filter (Dev; locked on while its macOS driver is
 installed, and a stable build with the driver keeps its pane for Uninstall
-alone), Playground (Dev), Live text, Live chapters, Vocabulary biasing, Switch
+alone), Playground (Dev), Live text, Live chapters, Vocabulary biasing,
+Screen vocabulary (macOS), Switch
 model with keyboard language (#216), Mouse shortcuts (#209, macOS), Also
 pause the browser (#301, macOS), Share dictation shortcut (#176, Windows),
 Unload model when idle (#442), Terminal paste (Windows), and Terminal paste
@@ -78,7 +79,10 @@ substitute for source inspection or a second roadmap.
 - `audio`: `cpal` device enumeration, input resolution (`--device`, the saved
   microphone, else the system default, never Hex Microphone), the CoreAudio
   default-input and device-list listeners, timestamped mono float PCM
-  delivery, live selection, and bounded stream recovery. `audio/fixture`:
+  delivery, live selection, and bounded stream recovery (`audio/recovery`:
+  open failures back off from 250 ms to five seconds, but any stream that
+  fails before proving 8 s of steady delivery waits a backoff that doubles to
+  a minute, and failed opens under it grow there too). `audio/fixture`:
   with `HEX_AUDIO_FIXTURE=<wav>` every microphone open plays that file
   instead (10 ms chunks at real-time pace, from its start at each open,
   looping) and no device is enumerated or opened, so benchmarks drive the
@@ -235,7 +239,8 @@ substitute for source inspection or a second roadmap.
 - `paste`: clipboard insertion, continuation joins, and generation-safe
   clipboard restoration.
 - `accessibility`: bounded focused-window and selected-text capture through
-  Accessibility without touching the clipboard.
+  Accessibility without touching the clipboard, including the bounded visible
+  window text Labs › Screen vocabulary reads (macOS).
 - `recognition`: the macOS listener coordinator for hotkey and programmatic
   dictation controls, workers, and observations. It does not own the
   authoritative microphone timeline.
@@ -295,6 +300,12 @@ substitute for source inspection or a second roadmap.
 - `app_paths`: the Application Support owner (`hex` on every OS) for runtime
   logs and shared state. The logs folder and its files are owner-only on
   Unix (0700/0600, tightened when an older Hex left them open).
+  `desktop/log_trim` keeps `live.ndjson` and `process.log` under 10 MB each:
+  at launch and hourly, under a lock file, it drops a log's oldest lines in
+  place to its newest 5 MB (never a rename, since every Hex process appends to
+  the same files), and once clears both logs from before they kept personal
+  text out. `EventReader` starts over when a log's first bytes change, so a
+  trim under an open reader never leaves it reading moved records.
 - `desktop/onboarding`, `desktop/permission_guide`: required permission health, the native
   floating System Settings guide, selected dictation-model installation, the
   release startup gate, and opt-in command-model setup.
@@ -386,6 +397,10 @@ substitute for source inspection or a second roadmap.
 - `linux/tray`: the optional tray icon, a `rune::Tray` (StatusNotifierItem
   with a dbusmenu built by `desktop/tray_menu`). It registers whenever a tray host
   (`org.kde.StatusNotifierWatcher`) appears; without one Hex runs unchanged.
+  Beside the IconPixmap it serves Hex's symbolic theme icon when hicolor has it,
+  so Plasma 6, GNOME's AppIndicator extension, and Waybar draw the mark in the
+  panel's text color, and asks a running Plasma session to reload icons after
+  writing it.
 - `desktop/tray_menu`: the tray menu Linux and Windows share (recording state, Show
   Hex, Paste last dictation, the downloaded-model picker, the update item,
   Enable / Disable Hex, Quit Hex) and the model entries the macOS menu bar
@@ -747,7 +762,7 @@ CoreAudio formats, AppleScript details, or event serialization.
   always finish. Hex takes the key only while a toggled recording runs, and
   then keeps it (repeats and release included) from the app in front; idle,
   and always in Hold mode, it stays with every app. macOS suppresses it in
-  the session tap only while the listener arms it (`set_takes_cancel`),
+  the session tap only while the listener arms it (`set_cancel`),
   Windows' hook only while its capture records, and X11 grabs it only for
   the recording. A shortcuts portal holds a key for as long as Hex runs, so
   on Wayland Hex binds nothing for it and Settings says to bind
@@ -924,7 +939,12 @@ CoreAudio formats, AppleScript details, or event serialization.
   its audio for its owner's `/finish`, which answers `microphone-lost` when
   there is none. Audio from after the loss and stale chunks are dropped, and
   the stream retries with bounded backoff; it must not require a settings
-  change or process restart. An initial open failure uses the same bounded
+  change or process restart. Any stream that fails before it has delivered for
+  8 s (STREAM_PROVEN_UPTIME) never proved steady delivery, so its reopen backs
+  off from 250 ms to a minute, and failed opens under that backoff grow there
+  too; one that delivered steadily still reopens at once. A route change or a
+  dictation press retries at once without resetting that backoff. An
+  initial open failure uses the same bounded
   recovery without stopping the listener. Cancellation does not stop
   warm-microphone retries; enabling release-while-idle stops them once capture
   is idle.
@@ -1377,7 +1397,11 @@ CoreAudio formats, AppleScript details, or event serialization.
   PNGs into `~/.local/share/icons/hicolor` at startup and names that icon in
   the managed entries it or the installer wrote (#652). The PNGs carry an
   `X-Hex-Managed=true` text chunk: Hex replaces and the installer removes only
-  marked regular files, never a user's own icon or a symlink. Launch at login is
+  marked regular files, never a user's own icon or a symlink. The tray's
+  `anomaly.hex-symbolic.svg` is a runtime asset, so Hex always writes it to
+  `hicolor/scalable/apps` with the same mark, packaged installs included, and
+  carries KDE's `current-color-scheme` stylesheet so hosts that recolor theme
+  icons draw it in the panel's text color. Launch at login is
   `~/.config/autostart/anomaly.hex.desktop`; where the Background portal exists
   (`linux/background`, #812) Hex asks it at startup to run in the background
   and Launch at login goes through it (the portal writes or removes that file,
@@ -1501,8 +1525,8 @@ The workflow uses npm trusted publishing without requesting a Sigstore
 provenance bundle.
 Use the configured Changesets release command (`cd sdk && bun run release`), not
 direct `npm publish`, after the bootstrap release. Pending changesets on `dev`
-keep a version pull request open into `dev`; the workflow publishes only when
-`production` is fast-forwarded to an unpublished SDK version.
+keep a version pull request open into `dev`; dispatch the SDK workflow on
+`dev` to publish an unpublished SDK version.
 
 ```sh
 ./scripts/setup.sh
@@ -1633,8 +1657,8 @@ and the dev Worker `hex-dev-site` (dev.anoma.ly/hex), both reading the frozen
 2.3.1 history from `hex-production-files`; the installers and appcast ship with
 the site build and the dev notes come from the `dev-notes` branch.
 `cf deploy --prebuilt --mode <mode>` picks one, and
-only CI deploys: a push to `dev` touching `site/` deploys dev, a stable
-Release deploys production. No subdomains. The site's download links come
+only CI deploys: Deploy (`deploy.yml`) runs on site changes or a dispatch
+from `dev` or `production`, and deploys the site for that branch. No subdomains. The site's download links come
 from the service's stable manifest when it builds. After publishing a version,
 bump the explicit GitHub mirror/version link in `README.md`; the Release
 workflow updates the Homebrew cask. `bun run --cwd site check:downloads` fails until every download link
@@ -1715,9 +1739,9 @@ run only in Release's check and stable channels and by hand
 
 Every platform is built, signed, and published by one run of
 `.github/workflows/release.yml` ("Release"; see `docs/releasing.md`).
-Run it with `workflow_dispatch` (`ref`, `channel`: `check` builds and
+Dispatch it from `dev` with the `channel` input: `check` builds and
 verifies without publishing, `dev` publishes the dev channel, `stable` the
-public release; dispatched from `production` only). Tags never start a
+public release. Tags never start a
 release: like OpenCode, the stable run tags `v<VERSION>` (the crate version)
 on the released commit only after every platform published, then creates the
 GitHub release with the built-in `GITHUB_TOKEN`, so a failed run leaves no
@@ -1732,7 +1756,7 @@ notarization, and stapling; Azure Authenticode; the release service through
 OIDC; the AUR and Homebrew pushes). Every artifact carries a `SHA256SUMS`
 whose digest its job reports and every consumer checks. Deploy
 (`.github/workflows/deploy.yml`) follows the same split: its build job has no
-secret, and its deploy job (in `infra-dev` or `infra-production`) runs only
+secret, and its deploy job (in `dev` or `production`) runs only
 `.github/release/cloudflare-token.sh` (which mints a 15-minute Cloudflare
 token after assuming the environment's role) and `.github/release/deploy-site.sh`,
 which deploys the verified Build Output only
@@ -1751,10 +1775,9 @@ teammates (`docs/test-builds.md`). `HEX_TEST_BUILD=1` builds never update
 themselves, and neither do local builds (`HEX_LOCAL_BUILD=1`, the owner's own
 build from a checkout: footer "Local build · updates off", version label with its
 commit, no channel row). Every push to `dev` (except docs/site-only changes) publishes a dev-channel
-build (the service lets a run from `dev` publish only the `dev` channel, and
-only signed platforms are published). Stable runs only from `production`.
+build for signed platforms. Stable requires a manual dispatch on `dev`.
 Like OpenCode, every run uses the one `release` environment, with no
-required reviewer; its deployment policy admits `dev` and `production`. Rerunning
+required reviewer; its deployment policy admits only the `dev` branch. Rerunning
 after an interruption is safe: the service stores files by hash and accepts
 the same version again.
 

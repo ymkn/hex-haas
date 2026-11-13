@@ -46,7 +46,7 @@ pub(super) const SCENES: &[Scene] = &[
         *ui = portal_fixture();
         if let Some(view) = &mut ui.view {
             view.listener.running = false;
-            view.listener.status = "Disabled".into();
+            view.listener.status = crate::desktop::host::ListenerStatus::Disabled;
         }
     }),
     ("capturing", |ui| {
@@ -97,6 +97,14 @@ pub(super) const SCENES: &[Scene] = &[
         ui.history.stats_open = true;
         ui.settings.labs.history_stats = true;
         crate::labs::apply(&ui.settings.labs);
+        ui.pane = Pane::History;
+    }),
+    // Labs › Select multiple dictations: two entries selected, with the card
+    // that copies or deletes them.
+    ("history-selection", |ui| {
+        *ui = portal_fixture();
+        ui.history = history::HistoryPane::fixture_selection();
+        ui.settings.labs.history_multi_select = true;
         ui.pane = Pane::History;
     }),
     // Labs › Screenshots' Captures: a shot, a recording with its words, and
@@ -422,7 +430,7 @@ pub(super) const SCENES: &[Scene] = &[
         *ui = mac_fixture();
         if let Ok(devices) = &mut ui.microphones {
             devices.system_default = Some("MacBook Pro Microphone".into());
-            devices.bluetooth_default_passed_over = Some("Kit Pods".into());
+            devices.bluetooth_default_passed_over = Some("Alex Pods".into());
         }
         ui.advanced = vec![Pane::General];
     }),
@@ -801,6 +809,13 @@ pub(super) const SCENES: &[Scene] = &[
     ("mac-onboarding-ready", |ui| {
         mac_first_run(ui, onboarding::MacStep::Done, Page::Ready)
     }),
+    // After the practice's "Use tap to start".
+    ("mac-onboarding-ready-tap", |ui| {
+        *ui = mac_fixture();
+        ui.settings.shortcut_mode = crate::dictation::ShortcutMode::Toggle;
+        onboarding::mac_fixture(ui, onboarding::MacStep::Done);
+        onboarding_kit::live::fixture(ui, Page::Ready);
+    }),
 ];
 
 /// The Annotate pane with captures `enabled`, a 3-day video retention, and
@@ -831,19 +846,19 @@ pub(super) fn mac_fixture() -> Ui {
             policy: crate::app_settings::MeetingPolicy::AlwaysRecord,
         },
         crate::app_settings::MeetingProviderChoice {
-            key: "problems.kitlangton.com".into(),
-            label: "problems.kitlangton.com".into(),
+            key: "example.com".into(),
+            label: "example.com".into(),
             policy: crate::app_settings::MeetingPolicy::NeverOffer,
         },
     ];
     ui.settings.experimental.hex_microphone = true;
     ui.microphones = Ok(crate::audio::InputDevices {
         names: vec![
-            "Kit Pods".into(),
+            "Alex Pods".into(),
             "MacBook Pro Microphone".into(),
             "Studio Display Microphone".into(),
         ],
-        system_default: Some("Kit Pods".into()),
+        system_default: Some("Alex Pods".into()),
         default_is_hex_microphone: false,
         ..Default::default()
     });
@@ -923,7 +938,7 @@ pub(super) fn fixture(shortcuts: DesktopShortcuts) -> Ui {
         listener: DesktopListenerSnapshot {
             running: true,
             warming: false,
-            status: "Enabled".into(),
+            status: crate::desktop::host::ListenerStatus::Enabled,
             warning: None,
             notice: None,
             last_failure: None,

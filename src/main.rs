@@ -24,6 +24,8 @@ mod calendar;
 mod caps_lock_dictation;
 #[cfg(hex_capture)]
 mod capture_host;
+#[cfg(hex_capture)]
+mod capture_zip;
 #[cfg_attr(any(target_os = "linux", target_os = "windows"), allow(dead_code))]
 mod control;
 mod desktop;
@@ -658,7 +660,7 @@ mod tests {
             .command
         };
         assert!(matches!(
-            parse(&["/Users/kit/.local/bin/hex-meetings-mcp"]),
+            parse(&["/Users/alex/.local/bin/hex-meetings-mcp"]),
             Some(Command::Control(ControlCli::Mcp { meetings_dir: None }))
         ));
         assert!(matches!(

@@ -22,6 +22,9 @@ impl Feature {
             Self::VocabularyBiasing => {
                 "Bias Parakeet transcription toward your vocabulary; rewriting and search use it either way"
             }
+            Self::ScreenVocabulary => {
+                "Window names and terms become temporary vocabulary. Read locally, never saved. Parakeet needs Vocabulary biasing, and a dictation with terms runs after release instead of from the live stream."
+            }
             Self::TerminalPaste => "Paste with Ctrl+Shift+V, for apps that ignore Ctrl+V",
             Self::KeyboardModelSwitching => {
                 "Changing the keyboard language switches the speech model and language"
@@ -34,6 +37,9 @@ impl Feature {
             Self::ShareShortcut => "Let apps such as Discord see the dictation shortcut too",
             Self::UnloadIdle => {
                 "Free the speech model's memory after a while unused (labs.unload_idle_minutes); the next dictation reloads it"
+            }
+            Self::KeepMicrophoneOpen => {
+                "With Turn off the mic when not dictating on, keep the microphone open for a while after each dictation (labs.keep_microphone_open_seconds), so the next one starts at once"
             }
             Self::RestoreShortcutDefault => {
                 "Offer Restore default next to Paste last dictation's shortcut"
@@ -94,6 +100,9 @@ impl Feature {
             Self::HistoryStats => {
                 "Add a Stats button to History that shows a summary of your retained dictations, with hex history stats"
             }
+            Self::HistoryMultiSelect => {
+                "Shift-click, Cmd-click (Ctrl on Windows and Linux) or drag to select several dictations, then copy or delete them together"
+            }
             Self::RecentDictations => {
                 "Copy one of your last five dictations from the menu bar, under Paste Last Dictation"
             }
@@ -114,7 +123,7 @@ impl Feature {
                 "Show only downloaded speech models in the picker, with the space they take"
             }
             Self::SectionKeyAlone => {
-                "Use the § key, left of 1 on ISO keyboards, alone as a shortcut; Hex takes § from every app while it's bound"
+                "Use the key left of 1 on ISO keyboards, § or a dead key such as ^, alone as a shortcut; Hex takes it from every app while it's bound"
             }
             Self::KeepRecordings => {
                 "Keep the audio of dictations saved to History, so you can transcribe them again with another model"
@@ -153,6 +162,9 @@ impl Feature {
             }
             Self::Screenshots => {
                 "Take a screenshot of an area or a window with a shortcut (Command-Shift-4 by default): copied, saved, and shown in the corner"
+            }
+            Self::CopyCaptureZip => {
+                "A finished capture copies as one zip file, without video or audio."
             }
             Self::FollowLiveTranscript => {
                 "While a meeting records, the transcript scrolls to the newest line. Scroll up to read earlier text; scroll back to the bottom to follow again."
@@ -193,11 +205,20 @@ impl Feature {
             Self::ApiTimestamps => {
                 "Let apps using Hex's local API ask for each segment's or word's start and end times in the transcript, as the speech model heard them"
             }
+            Self::ApiBrowserAccess => {
+                "Let web pages from the origins you list call Hex's local API from the browser; every request still needs the API token"
+            }
             Self::SpeakersOnly => {
                 "Apply \"While dictating\" only when sound plays through speakers; headphones are left alone"
             }
             Self::PauseMenu => {
                 "Add Pause Hex to the menu bar. While paused, Hex ignores its shortcuts so other apps get the keys"
+            }
+            Self::PrintStart => {
+                "Let hex dictation start --print hand the transcript to the command that started it, however the recording ends"
+            }
+            Self::VoicePrompt => {
+                "Say \"rewrite this\" in a dictation, then an instruction; Hex applies it with the mode's OpenCode model"
             }
         }
     }

@@ -48,7 +48,9 @@ Picker header -> "Add model file…" -> native dialog (GGUF, All files)   // set
 └── Saved import missing or changed (size, mtime, or file ID) -> the choice
     stays saved; the listener runs a downloaded fallback (the system language's
     recommendation if downloaded, else the first downloaded catalog model;
-    custom_models::runnable); General's model row names the fallback and says
+    custom_models::runnable); launch and setup wait only for that fallback
+    (onboarding::model_ready), and `hex status` names it under
+    model.fallback with its reason; General's model row names the fallback and says
     to check it again in the picker (not "can't listen until downloaded",
     while the fallback is downloaded); the card warns
 ```
@@ -182,3 +184,28 @@ downloaded, the full check refusing a mismatched file),
 `rune-onboarding-model-found-downloading-light`,
 `rune-onboarding-model-found-recommended-light`, and
 `rune-onboarding-model-found-back-light`.
+
+## A Download Another Process Runs
+
+```ts
+models/.download.lock held by `hex model install` (a terminal) or another Hex,
+writing models/<file>.gguf.partial  // transcription::models::lock_downloads
+├── Onboarding, Settings, or `hex model install` starts the same model -> it
+│   waits for that lock instead of failing or downloading a second copy
+├── While it waits, downloaded_bytes comes from the partial file's size, so
+│   `hex status --json`, the picker, and onboarding show that process's
+│   progress rather than 0%
+├── The lock covers the whole models folder, so the progress shown is this
+│   model's partial file; while the other process fetches a different model
+│   it stays flat
+├── Cancel stops only the wait; the other process's download continues
+└── The lock is released -> the finished file is verified against its
+    receipt and adopted, with no second download
+```
+
+Checks: `transcription::models::tests::waiting_for_another_processs_download_reports_its_partial_bytes`
+holds the lock and writes three bytes of the partial, then asserts a waiting
+download reports those bytes and stops canceled without fetching anything.
+That a foreign lock makes `hex model install`/onboarding show it in the real
+service has **not** been run; the Linux app's snapshot was checked by reading
+`linux::app::snapshot`.

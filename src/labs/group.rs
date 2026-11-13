@@ -56,7 +56,9 @@ impl Feature {
             | Self::LiveTyping
             | Self::NotchIndicator
             | Self::VocabularyBiasing
+            | Self::ScreenVocabulary
             | Self::PauseBrowser
+            | Self::KeepMicrophoneOpen
             | Self::SkipPauses
             | Self::VoiceFilter
             | Self::HideMenuBarIcon
@@ -79,8 +81,14 @@ impl Feature {
             | Self::OutputFixes
             | Self::OpenCodeInWsl
             | Self::ApiProcessing
-            | Self::ApiTimestamps => Group::Output,
-            Self::KeepRecordings | Self::HistoryStats | Self::RecentDictations => Group::History,
+            | Self::ApiTimestamps
+            | Self::ApiBrowserAccess
+            | Self::PrintStart
+            | Self::VoicePrompt => Group::Output,
+            Self::KeepRecordings
+            | Self::HistoryStats
+            | Self::HistoryMultiSelect
+            | Self::RecentDictations => Group::History,
             Self::Meetings
             | Self::LiveChapters
             | Self::SubtitleExport
@@ -95,7 +103,10 @@ impl Feature {
             | Self::MeetingDescriptiveFilenames
             | Self::MeetingNotesFile
             | Self::ExpireMeetingAudio => Group::Meetings,
-            Self::Screenshots | Self::AnnotateReplay | Self::GnomeAnnotate => Group::Annotate,
+            Self::Screenshots
+            | Self::AnnotateReplay
+            | Self::GnomeAnnotate
+            | Self::CopyCaptureZip => Group::Annotate,
             Self::MouseShortcuts
             | Self::SecondDictationShortcut
             | Self::MoreDictationShortcuts

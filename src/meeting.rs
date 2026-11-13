@@ -12,7 +12,7 @@ use hound::{SampleFormat, WavSpec, WavWriter};
 use serde::{Deserialize, Serialize};
 
 use crate::desktop::events::now_ms;
-use crate::durable::{sync_directory, sync_file};
+use crate::durable::{lock_contended, sync_directory, sync_file};
 
 const SAMPLE_RATE: u32 = 16_000;
 const TRANSCRIPT_TURN_GAP_MS: u64 = 3_000;
@@ -40,13 +40,13 @@ mod os;
 /// Linux's Trash, for capture retention too: distros ship no `trash` command.
 #[cfg(target_os = "linux")]
 pub(crate) use os::move_to_trash;
-pub(crate) use os::reveal;
 #[cfg(target_os = "macos")]
 pub(crate) use os::{
     SystemAudioAuthorization, create_tap_aggregate, request_screen_recording,
     request_system_audio_access, reset_system_audio_request, screen_recording_permitted,
     system_audio_authorization, system_audio_ready,
 };
+pub(crate) use os::{open_folder, reveal};
 mod delta;
 mod echo;
 mod export_name;
@@ -1085,13 +1085,6 @@ fn meeting_is_active(directory: &Path) -> Option<bool> {
     }
 }
 
-/// Whether a failed try-lock means another handle holds the lock: `flock`'s
-/// `EWOULDBLOCK` on Unix, `ERROR_LOCK_VIOLATION` on Windows.
-fn lock_contended(error: &std::io::Error) -> bool {
-    error.kind() == std::io::ErrorKind::WouldBlock
-        || error.raw_os_error() == fs2::lock_contended_error().raw_os_error()
-}
-
 fn recovered_status(
     status: MeetingStatus,
     process_is_active: bool,
@@ -1208,6 +1201,19 @@ fn explorer_select(path: &Path) -> std::ffi::OsString {
     select.push(path.as_os_str());
     select.push("\"");
     select
+}
+
+/// Explorer's argument that opens `path` itself: the quoted path alone, with
+/// no select switch, so a folder opens rather than its parent selecting it.
+///
+/// The path is quoted on its own because Explorer splits its command line on
+/// commas, and `Command` quotes only the paths that contain a space.
+#[cfg(any(windows, test))]
+fn explorer_open(path: &Path) -> std::ffi::OsString {
+    let mut open = std::ffi::OsString::from("\"");
+    open.push(path.as_os_str());
+    open.push("\"");
+    open
 }
 
 /// Moves a finished meeting to the Trash: its exported Markdown first, then

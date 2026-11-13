@@ -45,7 +45,10 @@ sidebar footer; its Appearance toggle (off by default) forces the main window
 light or dark instead of following the OS, while the HUD and other overlays
 keep following it; its Transcribe files toggle (off by default) adds
 `hex transcribe <file>`, which prints a saved WAV recording's transcript from
-the selected model ([control-cli.md](control-cli.md)).
+the selected model ([control-cli.md](control-cli.md)); its Screen vocabulary
+toggle (off by default, macOS) uses names and terms visible in the focused
+window as temporary vocabulary for each dictation, read locally through
+Accessibility and never saved ([vocabulary.md](vocabulary.md)).
 General › Advanced › Interface language offers Português (Brasil), and Hex
 uses it for any Portuguese system language (#867); it also offers Français,
 used for any French system language (#892), and Русский, used for any
@@ -209,7 +212,7 @@ Launch Hex, setup incomplete              // setup.tour; every build and OS, ful
 │   ├── Nothing found -> this page as always, the recommended model downloading
 │   ├── Progress moves to the top pill once the story moves on; failure ->
 │   │   why, in one line (a proxy or certificate, #894), + Use a model
-│   │   file… + Try again
+│   │   file… + Try again (the model picked from the list, if one was)
 │   ├── Failed, or stalled 30 s without bytes, with every permission ready
 │   │   -> Continue without a model (quiet), saying dictation won't work
 │   │   until a model is added with Add model file…      // setup.without-model
@@ -226,6 +229,15 @@ Launch Hex, setup incomplete              // setup.tour; every build and OS, ful
 │   └── Jay's face rides the newest message: it fades out on the older line as
 │       it fades in on the new one, never popping off in one frame
 ├── Quit part-way -> next launch resumes at the saved step  // setup.resume
+│   ├── The saved step is the one record of an unfinished tour; only Start
+│   │   using Hex (with setup ready) or Continue without a model records it
+│   │   finished, and that replaces the step. Setup becoming ready does not:
+│   │   a run quit on the practice resumes at the practice, one quit on Hex
+│   │   is ready resumes there. Check:
+│   │   `a_tour_quit_part_way_stays_unfinished_until_it_finishes`
+│   ├── Resumed at setup -> the first permission still missing; with none
+│   │   (Linux and Windows) straight on to the practice or Almost ready.
+│   │   Check: `a_run_resumed_at_setup_asks_only_for_what_is_missing`
 │   └── Permissions are read again at launch: a setup they now finish (macOS's
 │       Quit & Reopen after a grant) is passed; past setup, it waits until they do
 ├── Permissions, one page each           // setup.checklist; skipped when granted
@@ -259,8 +271,9 @@ Launch Hex, setup incomplete              // setup.tour; every build and OS, ful
 │   │   first session starts (desktop/host.rs `warming`)
 │   │   // setup.warming; Check: `the_practice_page_waits_for_the_listener`
 │   ├── macOS, mic kept open (General's "Turn off the mic when not dictating"
-│   │   off when the run opened) -> a note at the window's foot, here and on
-│   │   Hex is ready, says why macOS shows the mic in use  // setup.mic-note
+│   │   off, read on every poll, so `hex settings set` updates it) -> a note at
+│   │   the window's foot, here and on Hex is ready, says why macOS shows the
+│   │   mic in use  // setup.mic-note
 │   └── Done at any time -> Hex is ready  // practice is never required
 ├── Listener cannot start after setup     // setup.relaunch; event tap refused
 │   ├── First time -> Hex records a marker, reopens itself, resumes at the practice
@@ -833,18 +846,24 @@ Completed output                         // output
 ├── Paste -> Current focus, in submission order
 │   ├── Previous clipboard restored 500 ms later, unless something newer replaced it
 │   ├── Windows -> the transcript is marked out of clipboard history (Win+V) and cloud sync (#851)
-│   ├── Labs > Keep dictation on clipboard (macOS, Windows, off) -> the dictation stays on the clipboard (labs.md)
+│   ├── Labs > Keep dictation on clipboard (every OS, off) -> the dictation stays on the clipboard (labs.md)
 │   │   └── Windows -> kept as an ordinary entry, in history too
 │   └── Labs > Copy dictation only (macOS, Windows, off) -> clipboard only: no paste, typing, or restore (labs.md)
 ├── Paste Last Dictation                  // menu or Option-Shift-V / saved binding
 │   ├── Last completed dictation
+│   ├── A failed paste still keeps its text (every OS, unless cancelled; dictation.md)
 │   └── macOS menu item shows the saved binding (⌥⇧V by default); unbound,
 │       modifier-only, or a mouse button -> no shortcut shown
 └── History
-    ├── Inspect / search / copy (row hover or the card) / delete
+    ├── Inspect / search / copy (row hover or the card) / Delete… (asks once)
     ├── Retention ("Kept 7 days ▾" menu) -> Seven days by default, always hard-capped
     ├── Off ("History off") -> Stop new entries; preserve existing entries
     ├── Same menu > Clear all history… -> asks in the header; only the red confirm clears
+    ├── Labs > Select multiple dictations (off, every OS) -> one row as before   // labs.history_multi_select
+    │   ├── Plain click, Shift-click on the visible (searched) rows, Cmd-click (Ctrl), or a drag -> one, a range, or a toggled set
+    │   ├── Two or more selected -> "{count} dictations selected": Copy (final texts, oldest first, a blank line between each) / Delete… (asks once)
+    │   ├── One selected -> the ordinary card, Copy, Delete… (asks once, then Cancel), Transcribe again with Keep recordings
+    │   └── A search, new entries, or a delete prune it; turning the lab off keeps one entry (labs.md)
     └── Labs > Keep recordings (off) -> new entries keep their 16 kHz audio   // labs.keep-recordings
         -> also "Keep audio too" in the retention menu while the lab is offered
         -> the card's "Transcribe again" menu runs it through any installed model
@@ -860,7 +879,8 @@ Send is not an atomic target-app transaction. Chromium 155 and 156 get the text
 typed instead of pasted for a [Chrome paste bug](dictation.md#ongoing-jobs-and-output).
 
 **Easy to misread:** History Off does not stop diagnostic logging. Diagnostic
-logs are separate and currently unbounded on disk, but they never hold what was
+logs are separate. Each is capped at 10 MB and trimmed in place to its newest
+5 MB at launch and hourly (`desktop::log_trim`), and they never hold what was
 said: `live.ndjson` records each dictation's phase and timing with its text
 left out (`events::VoiceEvent::without_words`,
 `the_log_never_keeps_what_was_said`), so History is the only place dictated
@@ -996,6 +1016,7 @@ General                                  // settings
 │       ├── On -> Screen & System Audio Recording row: Allow / waiting / Allowed
 │       └── Dictation -> browser_media sequence below
 ├── Sound volume -> immediate feedback; zero suppresses tones
+│   └── A saved zero displays Off; enabling sounds through the CLI restores the default level
 │   └── Default output changes or disappears (macOS) -> next tone reopens on the current default
 ├── Sounds -> Sheet: hear each set on Hex's real HUD, pick one
 └── Linux / Windows -> listener card and desktop commands below the basics
@@ -1153,7 +1174,10 @@ open the macOS dialog mid-dictation). macOS 15.4 and later no longer tell other 
 what is playing, so Hex hears the browsers through a private process tap
 (aggregate `anomaly.hex.browser-tap.<pid>`, apart from the meeting tap) and sends
 play only after it saw the browser go silent right after its own pause. The
-sequence checks in [audio/browser_media.rs](../../src/audio/browser_media.rs) run on fakes:
+browsers are the ones [microphone_activity.rs](../../src/microphone_activity.rs)
+knows: Chrome, Brave, Safari, Firefox, Edge, Arc, Vivaldi, and Helium, whose
+helpers count as their browser. The sequence checks in
+[audio/browser_media.rs](../../src/audio/browser_media.rs) run on fakes:
 `a_confirmed_pause_is_resumed`, `two_sounding_tabs_never_get_play`,
 `a_browser_already_playing_gets_no_play`, `a_call_is_never_paused`,
 `no_level_sends_nothing`, `a_play_the_browser_never_takes_is_paused_again`,
@@ -1251,8 +1275,11 @@ Output (main sidebar, replaces the Modes editor) // rune_ui/output.rs; scenes ou
 │   selection, and replaces it (labs.md, dictation.md)
 └── In some apps -> Each mode's apps and its steps (Only: …), opens to list them
     // the old Modes editor stays in the code for its scenes, unreachable
+    // Its drafts and delete confirmation follow the unique saved mode name
+    // across reloads; removing, renaming or duplicating it drops the draft.
+    // A dirty field stays; untouched fields adopt the new values individually.
 
-Foreground context -> Select processing
+Context retained when dictation stops -> Select processing
 ├── Matching website                     // macOS: scriptable browsers, then AXWebArea; Windows: UIA; Linux: AT-SPI
 ├── Otherwise matching application
 ├── Hex itself in front                  // application only: Hex never reads its own AX tree (#1402)
@@ -1260,7 +1287,10 @@ Foreground context -> Select processing
 
 Selected mode                            // replaces Global's rewrite and transformations
   -> Its vocabulary, then the shared one   // features/vocabulary.md (vocabulary.modes)
+  -> Speech Labs preparation              // formatting, symbols, English filler removal
   -> Global's corrections, then the mode's  // every OS
+  -> Labs > Voice prompt's phrase          // Labs off, or no phrase, processes as before
+     -> one spoken instruction replaces the rewrite, with the mode's model and deadline (labs.md)
   -> OpenCode transformation             // optional provider-backed rewrite
   -> Transformations                     // ordered text chain
   -> Paste or Send
@@ -1331,6 +1361,24 @@ Selection and stage checks start in
 [dictation/text_replacements.rs](../../src/dictation/text_replacements.rs), and
 [personal_commands.rs](../../src/personal_commands.rs). They do not prove live
 provider availability or real application/browser context changes.
+
+Every OS compiles settings through `Profiles::from_settings` and uses the same
+selection and correction pipeline. Website rules accept bare hosts, URLs,
+ports, and internationalized domains; the first matching website wins over
+the first matching application. Application matching retains each adapter's
+policy: exact names ignoring `.app` on macOS, case-insensitive substrings on
+Windows and Linux. Global corrections run once, after speech preparation.
+The corpus comparison `shared_pipeline_preserves_the_macos_corpus_output`,
+`speech_preparation_precedes_global_and_mode_corrections`, and
+`website_selectors_accept_saved_urls_ports_and_idn` cover these rules without
+inference or a provider call.
+
+Linux and Windows pin the foreground window when stop is handled, carry its
+pending accessibility read through the release tail and output queue, and
+resolve it before processing. macOS retains its capture-end monitor snapshot.
+Switching apps while inference or an older rewrite runs no longer selects a
+different mode for queued speech. Paste still targets the current focus.
+This handoff has unit coverage; native focus switching has not been observed.
 
 Website context per OS: no OS reads a page until something uses it: a mode
 chosen by website, an OpenCode rewrite (its prompt names the site), or a
@@ -1930,14 +1978,23 @@ Linux beta                               // not macOS feature parity
 │       │   -> process.log warns once; `hex status` reports `hud_limitation`
 │       │   and the listener's notice or warning (a missing wl-copy outranks it)
 │       └── No window loop (no GPU or display, `hex dictate`) -> no HUD
-├── Tray host (StatusNotifierWatcher) -> Tray icon: click opens the window; menu as Windows' (tray_menu, linux/tray, desktop/tray_icon, rune::Tray)
-│   ├── Mark -> white; black when the desktop's color scheme prefers light (portal Settings color-scheme)
-│   │   ├── Read when the tray is created; a later switch applies at the next launch
+├── Tray host (StatusNotifierWatcher) -> Tray icon: click opens the window; menu as Windows' (tray_menu, linux/tray, linux/icons, desktop/tray_icon, rune::Tray)
+│   ├── Symbolic theme icon -> `anomaly.hex-symbolic.svg` written to hicolor/scalable/apps at startup, its name served beside the pixmap
+│   │   ├── Plasma 6, GNOME's AppIndicator extension, Waybar -> draw the mark in the panel's text color
+│   │   │   // check: the_tray_icon_is_a_recolorable_symbolic_svg,
+│   │   │   // the_tray_icon_lands_in_the_users_scalable_hicolor_theme,
+│   │   │   // a_dangling_tray_icon_link_is_not_in_place
+│   │   │   // not checked against a real KDE or GNOME panel
+│   │   ├── Plasma 6 -> recolors only with icon themes that follow the color scheme (Breeze, Papirus); else the SVG's default color
+│   │   ├── Plasma 5 -> also prefers IconName but has no panel palette, so the SVG's color there is untested
+│   │   ├── A running Plasma session -> told to reload icons after Hex writes the file, since KIconLoader lists hicolor folders at startup
+│   │   ├── A user's own file at that name -> kept and named; a dangling link or failed write -> the name is unset
+│   │   └── Default color -> the same light/dark guess as the pixmap
+│   ├── Mark (pixmap) -> white; black when the desktop's color scheme prefers light (portal Settings color-scheme)
+│   │   ├── Read once when the tray is created; a later switch applies at the next launch
 │   │   ├── // check: only_an_explicit_light_color_scheme_gets_the_dark_mark
-│   │   │   // decodes the portal value; not checked against a real KDE or GNOME panel
-│   │   └── KDE's portal derives the scheme from the window palette, so a mixed theme
-│   │       with light windows and a dark panel (Breeze Twilight) gets the black mark on
-│   │       a dark panel
+│   │   │   // decodes the portal value
+│   │   └── Shown by hosts that don't use theme names, or can't find the name (Waybar falls back)
 │   └── No tray host -> No icon; status and sounds remain available
 ├── Microphone -> System default or a saved device; `--device` overrides
 │   └── System default -> ALSA's default, resolved at each stream open // no live follow
@@ -1955,6 +2012,8 @@ Linux beta                               // not macOS feature parity
 │   └── Released while idle, on-demand open fails -> Failed entry; stays released
 │   └── Overload (Xrun) glitch -> Counted; the polling thread logs one line per burst; not a failure
 ├── Paste -> Restore the previous clipboard 500 ms after the shortcut  // linux.clipboard-restore
+│   ├── Labs > Keep dictation on clipboard (off) -> no snapshot, no restore; an
+│   │   earlier paste's pending restore stands down and the dictation stays (labs.md)
 │   ├── Before the transcript -> snapshot every format (32 MiB, 1 s); empty -> cleared again
 │   ├── Later paste, copy, or another client replaced the transcript -> left alone
 │   ├── Over the cap or unreadable -> transcript stays; the log says why
@@ -2408,6 +2467,9 @@ TypeScript SDK + local service             // macOS, Linux, Windows
 │   ├── ?process=global -> Global mode's output processing (Labs › Process API transcripts)
 │   └── ?timestamps=segment|word -> The model's own segment or word times
 │       └── 422 unsupported-timestamps when it has no such level (Labs › Timestamps in API transcripts)
+├── A web page's fetch -> Labs › Browser access to the local API
+│   ├── A listed origin -> OPTIONS 204 + Access-Control-Allow-Origin, then a token-bearing request
+│   └── Any other origin, or the lab off -> OPTIONS 401, no CORS headers
 ├── Running desktop capture API -> Separate microphone ownership protocol
 │   ├── No silence gate                  // model output, unlike hotkey dictation;
 │   │                                     // only recognition-hint echoes are dropped
@@ -2473,6 +2535,25 @@ response unchanged; off, a timed request is `403 timestamps-disabled`, and a
 model without that native level is `422 unsupported-timestamps`. Nothing
 estimates the times, and `/streams` and `/dictations` are unchanged
 ([labs.md](labs.md), [service contract](../specs/local-transcription-service.md)).
+
+Browser access (Labs › Browser access to the local API, off by default) lets a
+web page served from an origin listed in `labs.api_browser_origins` call this
+API with `fetch`. A browser sends its `OPTIONS` preflight without the bearer
+token, so Hex answers `204` for an allowed `Origin` before authentication, with
+`Access-Control-Allow-Origin` naming that origin, `GET, POST`, the four request
+headers, a 10-minute cache, and private-network permission only when the
+browser asked for it. Every other response, `401`, `404`, and SSE streams
+included, carries the same origin and `Vary: Origin`; the token is still
+required for every request. An origin that isn't listed, a missing `Origin`,
+and the lab off answer exactly as before (`OPTIONS` is `401`, with no CORS
+headers), and nothing allows credentials or `*`. Saved entries are normalized
+to `http://` or `https://` `scheme://host[:port]`; `*`, `null`, paths, queries,
+fragments, and userinfo are ignored. An IPv6 origin takes the browser's
+compressed form (`http://[::1]:5173`) and a non-ASCII host its punycode, since
+a request's `Origin` is matched exactly. Errors answered before a request is
+read (`400`, `408`, `431`, and the queue-full `503`) carry no CORS headers.
+Route tests inject the gate (`cors::Cors::gated`); nothing was observed from a
+real browser page.
 
 The [SDK guide](../../sdk/typescript/README.md),
 [service contract](../specs/local-transcription-service.md), and
@@ -2582,8 +2663,8 @@ best-effort deletion is not guaranteed deletion.
 `dev.rune-ui` lives in [rune_ui.rs](../../src/rune_ui.rs) and its pane modules;
 its tests drive the Rune runtime headlessly (navigation; General rows per
 shortcut source, fitting the default window with Advanced collapsed, Shortcut mode's modal, saves through the host, Quit Hex, microphone-release
-confirmation, shortcut recording and Escape, conflicts; History select, delete, two-step
-clear, copy; Modes add/delete, corrections, transformations (drag reorder saves once
+confirmation, shortcut recording and Escape, conflicts; History select, two-step
+delete and clear, copy; Modes add/delete, corrections, transformations (drag reorder saves once
 on release), application conflicts, a chosen file joining the mode, arrow
 keys in the model and application searches; the picker's ChooseModel/CancelModel; setup's download; draft
 saves; and, from macOS/Windows preview data, each OS's panes and rows, Launch

@@ -76,13 +76,23 @@ bypass the compositor. See the [XDG shortcut specification](https://specificatio
 
 **Fixed November 1, 2026 (issue 846):** the portal path refused navigation and
 editing keys ("unsupported shortcut key: home"), though GNOME's custom
-shortcuts took them. Both now share one named-key table
-(`gnome_shortcuts::named_keysym`): Home, End, Page Up/Down, the arrows,
-Insert, Delete, and Print reach the portal as `Home`, `End`, `Page_Up`, … ,
-alone or with modifiers. Escape stays refused by the portal, which never binds
-it (#786). Check: `navigation_keys_have_portal_triggers` in
-`linux/input.rs` (constructed bindings; no desktop portal run). X11 grabs
-don't resolve these keys yet.
+shortcuts took them. Home, End, Page Up/Down, the arrows, Insert, Delete, and
+Print reach the portal as `Home`, `End`, `Page_Up`, … , alone or with
+modifiers. Escape stays refused by the portal, which never binds it (#786).
+Check: `navigation_keys_have_portal_triggers` in `linux/input.rs`
+(constructed bindings; no desktop portal run).
+
+**Fixed November 12, 2026:** X11 grabs had their own key table without those
+keys, so `hex settings set dictation_hotkey ctrl+right` saved and then
+stopped the listener. X11 grabs, portal triggers, and GNOME's accelerators
+now read one table (`linux/input/keys.rs`, keysym name and value), and
+`hex settings set` refuses a key it lacks (and, on Wayland, one the portal
+refuses) as the window's recorder does. A shortcut change the desktop still
+refuses (a key the X11 keymap lacks, a chord another client holds) puts the
+previous shortcuts back and shows the error, instead of stopping dictation.
+Checks: `every_recorded_key_has_a_name_and_a_keysym` (`linux/input/keys.rs`),
+`a_refused_shortcut_keeps_the_previous_ones` (`linux/dictation/shortcuts.rs`);
+no X11 server run.
 
 Linux with Labs › Special keys alone on (`labs.standalone_special_keys`, off
 by default; issue 767): Menu, Pause, and Scroll Lock may be any shortcut's
@@ -95,15 +105,19 @@ recorder refuses them, and a saved shortcut on one goes back to its default
 when settings load or the toggle turns off. On, the window's recorder takes
 them too (#1187). Details and checks in [labs.md](labs.md).
 
-Linux with Labs › Section key alone on (`labs.section_key_alone`, off by
-default; issue 1050): the ISO § key, left of 1, may be a shortcut with no
-modifier. The window's recorder takes § pressed alone and shows §, and
-`hex settings set dictation_hotkey §` (or `section`) saves it. It reaches X11
-grabs as keysym 0xa7 and the portal as `section`. Off, the recorder answers
-"Add a modifier" as before, `hex settings` refuses it, and a saved § shortcut
-without a modifier goes back to its default when settings load or the toggle
-turns off. While bound, § is Hex's in every app. Details and checks in
-[labs.md](labs.md).
+Linux and macOS with Labs › Section key alone on (`labs.section_key_alone`,
+off by default; issue 1050): the ISO section key, left of 1, may be a
+shortcut with no modifier. On Linux the window's recorder takes § pressed
+alone and shows §, and `hex settings set dictation_hotkey §` (or `section`)
+saves it; it reaches X11 grabs as keysym 0xa7 and the portal as `section`. On
+macOS the recorder takes key code 10 alone: AppKit gives no characters for a
+dead key, so the key is named from the active layout with the no-dead-keys
+translation and saved as its base character, `^` on a German layout
+(`{code: 10, label: "^"}`), or § where the layout types it. Off, saving the
+recording is refused and Settings shows "Add a modifier", as before;
+`hex settings` refuses it, and a saved section-key shortcut without a modifier
+goes back to its default when settings load or the toggle turns off. While
+bound, the key is Hex's in every app. Details and checks in [labs.md](labs.md).
 
 Checks: `mouse_buttons_record_with_or_without_modifiers`,
 `mouse_bindings_persist_and_conflict_only_with_the_same_trigger`,
@@ -155,6 +169,18 @@ For a shortcut that holds Fn, key code 179 is now neither a chord key nor HID
 chord evidence; any other key still is. Check:
 `globe_key_events_are_not_a_chord_with_the_function_shortcut` in
 `suppression/tests.rs` (constructed events; no physical-keyboard run).
+
+**Fixed November 11, 2026 (dead keys):** the macOS recorder named a key only
+from AppKit's `charactersIgnoringModifiers`, and a dead-key layout gives no
+character for the ISO section key (German `^`) or for `´` and `` ` `` on many
+layouts, so Option+^ answered "Unsupported key" where older builds accepted
+it. The recorder now falls back to the key's base character on the active
+layout (`keyboard::key_label`, `UCKeyTranslate` with
+`kUCKeyTranslateNoDeadKeysBit`), so it records as `^` and matches by its key
+code, and `hex settings` finds a typed `^` back to key code 10 the same way.
+The layout snapshot used for typing and Command shortcuts keeps processing
+dead keys as before. Check: `a_dead_key_records_its_layout_label` in
+`rune_ui/macos_host.rs` (macOS only; no physical German keyboard run).
 
 **Implemented November 7, 2026 (issue 37), unverified:** remapping Caps Lock to
 Control makes macOS's HID keyboard filter rewrite its usage (0x39) to Right
@@ -521,6 +547,33 @@ options), `the_second_dictation_shortcut_needs_its_lab_and_its_own_keys`
 (settings), and the Windows `the_second_dictation_flavour_owns_its_capture`
 (cross-compiled only). Proof limits: no physical shortcut press on any OS, no
 real Wayland grant or X11 grab run, and no Windows hook run.
+
+### Paste Last After A Failed Paste (every OS)
+
+A paste that fails (another app changed the clipboard while Hex saved it, or a
+format couldn't be read) still makes that dictation Paste Last's, unless its
+job was cancelled: the words aren't lost, and the failure still reports as
+before. History keeps only pasted output, so it gets no entry. Cancelled,
+printed, empty, and failed-transcription dictations never become Paste Last's,
+and neither does Voice Action output. A failed processing stage is not a failed
+dictation: mode processing is best-effort, keeps its input, and the job still
+pastes.
+
+```ts
+Dictation finishes                                // dictate.paste-last
+├── Paste or copy succeeds -> It is Paste Last's
+├── Paste or copy fails, job not cancelled -> The processed text is still
+│   Paste Last's, and the failure reports as before
+├── Cancelled, printed, empty, or failed transcription -> Paste Last unchanged
+└── Voice Action -> Never becomes Paste Last
+```
+
+Checks: `a_failed_paste_keeps_the_dictation_for_paste_last` in
+[parakeet.rs](../../src/parakeet.rs) (macOS, with a fake paster) and
+[linux/dictation.rs](../../src/linux/dictation.rs) (Linux, with a refusing
+paste). Windows cross-compiles only; its paste is
+[windows/dictation.rs](../../src/windows/dictation.rs)'s own `WindowsPaster`.
+Issue [#1437](https://github.com/anomalyco/hex/issues/1437).
 
 ### Copy Recent Dictation (Labs, macOS)
 
@@ -1113,6 +1166,9 @@ Release when idle -> Press shortcut                   // dictate.cold-microphone
      │   never paste                       // recover.interrupted-dictation
      └── Ready while held or locked -> Capture
   -> Capture idle -> Microphone can close             // accepted jobs do not keep it open
+     └── Labs › Keep mic open after dictating -> Keep it open for the
+         chosen window (30 s, 1/3/5/30 min), then close; a press inside it
+         takes the warm path above with its pre-roll (labs.md)
 ```
 
 Source: `DictationCapture` in [dictation.rs](../../src/dictation.rs); checks:
@@ -1237,7 +1293,11 @@ Model advertises streaming, GPU device             // dictate.streaming
   ├── Release, short tap, or a lost microphone -> The recording ends -> Hidden
   ├── Provisional: never pasted, copied, or kept (the final text replaces it)
   ├── A failed or interrupted stream clears the text while the capture goes on
-  └── process.log: `partials` on "finished live stream"; per change at debug (no words)
+  ├── process.log: `partials` on "finished live stream"; per change at debug (no words)
+  └── No stream (the model doesn't stream, or it runs on a device that can't,
+      such as a CPU) -> process.log names the reason once per capture, and the
+      Labs card names the catalog's streaming models (Linux: or says Speech
+      engine is set to CPU)
   Labs + labs.live_typing (Linux Wayland) -> The same text is the focused field's preedit  // labs.live-typing
   ├── Begin at the intentional start, before the stream opens; destroyed at Finish or Cancel, so another input method keeps the seat
   ├── Non-streaming model -> No words while speaking, but the final text still commits through the input method
@@ -1496,12 +1556,28 @@ device; the stream's own loss is not fixed upstream.
 
 ```ts
 Completed long recording                  // dictate.model-windows
-├── Cohere -> Runs of at most 35 seconds, including the final remainder
-└── Other GGUF models -> Existing backend-advertised input limit
-    -> Transcribe each chunk -> Join text in original order
+├── Window of at most 35 seconds (Cohere) or the backend-advertised limit
+│   -> Last 5 s of the window: cut through the quietest 100 ms
+│   (a tie picks the latest span) -> the next window starts there
+└── Runs of at most one window, final remainder included
+    -> Transcribe each -> Join text in original order
 
 Chunking bounds inference, not capture duration. No silence is removed.
 ```
+
+Each window is cut through the middle of the quietest 100 ms in its last five
+seconds (or its last half, when that is shorter), adapted from Cohere's
+reference processor. The search is energy-based and bounded: continuous speech
+with no quieter stretch there is still cut where it is quietest, which can
+land inside a word, and a pause earlier in the window is not considered.
+`chunk_ranges` in [gguf_session.rs](../../src/transcription/gguf_session.rs)
+owns the cut;
+`a_long_clip_is_cut_inside_a_silence_near_the_window_end`,
+`a_clip_without_silence_still_cuts_in_the_search_region`,
+`long_clip_ranges_cover_every_sample_once_within_the_limit`, and
+`a_clip_that_fits_one_window_is_not_cut` check it on synthetic samples. The
+Linux and Windows meeting and word-time path
+(`LocalTranscriber::timed_here`) uses the same cut for its 30-second cap.
 
 The shared `max_audio_chunk_samples` policy in
 [transcription/models.rs](../../src/transcription/models.rs) is used by
@@ -1524,8 +1600,10 @@ to zero after chunking; the 73-second paused fixture went from 71 errors to one.
 Short references transcribed correctly before and after. The retained native
 regression also passed a roughly 235-second repeated fixture, retaining all three
 sections in each repetition. This is Metal inference evidence on an M2 Max, not
-physical capture/paste or Linux runtime proof. Chunk boundaries can still affect
-individual words; this is not a claim of perfect recognition or silence handling.
+physical capture/paste or Linux runtime proof. It predates the quiet-point cut,
+and the native long-form check has not been re-run with it. Chunk boundaries can
+still affect individual words when a cut lands in speech; this is not a claim of
+perfect recognition or silence handling.
 
 `pad_gguf_samples` in [transcription.rs](../../src/transcription.rs) owns backend
 input padding on every OS for ordinary transcription: the minimum duration,
@@ -2029,25 +2107,40 @@ that looped the sequence went with GPUI.) This does not prove that actual
 capture caused that state.
 
 The macOS HUD is a click-through, nonactivating `NSPanel` with
-`CanJoinAllSpaces`, `CanJoinAllApplications`, and `FullScreenAuxiliary` collection
-behaviors. The cross-application flag explicitly allows the overlay to join
+`CanJoinAllSpaces`, `Stationary`, `IgnoresCycle`, `FullScreenAuxiliary`, and
+`CanJoinAllApplications` collection behaviors, the mask Rune sets when it makes
+the panel. The cross-application flag explicitly allows the overlay to join
 another application's fullscreen Space (#75); panel style flags on an ordinary
 `NSWindow` were not sufficient.
 
 Each time the HUD shows, Rune clears and resets those collection behaviors
 before ordering the panel in, and orders it out first if it is still shown on
 another Space (#1084). Changing the activation policy (the Dock icon follows
-Settings) could leave the panel tied to one Space while AppKit still reported
-the old mask, and re-setting an unchanged mask does nothing. Rune repairs that
-only as its panel shows, so while the HUD is shown Hex also checks each pump
-turn that the panel is on the active Space, and re-homes it when a Space switch
-or a full-screen exit left it behind: it orders the panel out, clears and
-restores the mask, and orders it back in. That reorders the panel but leaves
-Rune's presence state and alpha alone. It is attempted once per show, and once
-more for each later Space change after the panel has been seen on the active
-Space, so a repair that did not take cannot loop. The live-text plate beside
-the HUD is a separate panel and does not get this repair yet. Not yet observed
-on hardware; only the macOS compile is checked.
+Settings) can leave the panel tied to one Space while AppKit still reports the
+old mask and the active Space, and re-setting an unchanged mask does nothing.
+Rune repairs that only as its panel shows, so Hex also repairs the panel from
+the pump (`rune_hud::rehome`, `rune_hud::macos`):
+
+- While the HUD is shown, each pump turn checks whether the panel is on the
+  active Space. When a Space switch or a full-screen exit left it behind, Hex
+  orders the panel out, clears the mask, sets the mask Rune intends (never the
+  panel's read-back), and orders it back in. That reorders the panel but leaves
+  Rune's presence state and alpha alone. One stranding gets at most three
+  attempts, at least 150 ms apart, and the budget resets when the panel is seen
+  on the active Space or the HUD hides, so a repair that did not take cannot
+  loop.
+- Every change of the Dock icon's activation policy (the policy follows
+  Settings; an open Settings window forces the icon on) marks the panel for one
+  repair. A call that leaves the policy as it was, which is the usual case when
+  the icon stays on, does not. On the next pump turn a hidden panel only gets
+  the mask written again, so a queued hide is not undone and no repair attempt
+  is spent; a shown one is ordered out, written, and ordered back in whatever
+  AppKit reports. A change that arrives before Rune has made the panel waits
+  for it.
+
+The live-text plate beside the HUD is a separate panel and does not get this
+repair yet. Not yet observed on hardware; only the macOS compile and the pure
+`rune_hud::rehome` unit tests are checked.
 
 At the top position the HUD sits 6 pt below the menu bar (`rune_hud::hud_placement::TOP_OFFSET`), or below the
 notch (`NSScreen.safeAreaInsets`) where a fullscreen Space hides the menu bar

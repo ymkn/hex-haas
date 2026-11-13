@@ -416,7 +416,7 @@ const TRANSLATIONS: &[(&str, [&str; 6])] = &[
     ("Transcribing took too long.", ["Transkrypcja trwała zbyt długo.", "转写耗时过长。", "文字起こしに時間がかかりすぎました。", "Die Transkription hat zu lange gedauert.", "La transcripción tardó demasiado.", "Розпізнавання тривало задовго."]),
     ("Transcription was cancelled.", ["Transkrypcja została anulowana.", "转写已取消。", "文字起こしはキャンセルされました。", "Die Transkription wurde abgebrochen.", "Se canceló la transcripción.", "Розпізнавання скасовано."]),
     ("Section key alone", ["Klawisz § bez modyfikatora", "单独使用 § 键", "§ キーを単独で使う", "§-Taste allein", "Tecla § sola", "Клавіша § окремо"]),
-    ("Use the § key, left of 1 on ISO keyboards, as a shortcut without a modifier. Hex takes § from every app while it's bound", ["Pozwala użyć klawisza § (na lewo od 1 na klawiaturach ISO) jako skrótu bez modyfikatora. Gdy jest przypisany, Hex przejmuje § od wszystkich aplikacji", "将 § 键（ISO 键盘上 1 左侧的键）单独用作快捷键。设为快捷键期间，所有应用都收不到 § 键，由 Hex 使用", "§ キー（ISO キーボードで 1 の左にあるキー）を修飾キーなしのショートカットとして使います。割り当てている間、Hex はすべてのアプリから § を受け取ります", "Die §-Taste links neben der 1 auf ISO-Tastaturen ohne Zusatztaste als Kürzel verwenden. Solange sie zugewiesen ist, nimmt Hex allen Apps die §-Taste weg", "Usa la tecla §, a la izquierda del 1 en teclados ISO, como atajo sin modificador. Mientras esté asignada, Hex toma la tecla § de todas las apps", "Використовуйте клавішу § (ліворуч від 1 на клавіатурах ISO) як комбінацію без модифікатора. Поки її призначено, Hex забирає § у всіх програм"]),
+    ("Use the key left of 1 on ISO keyboards, § or a dead key such as ^, alone as a shortcut; Hex takes it from every app while it's bound", ["Użyj klawisza na lewo od 1 na klawiaturach ISO, § lub martwego klawisza takiego jak ^, jako skrótu bez modyfikatora; gdy jest przypisany, Hex przejmuje go od wszystkich aplikacji", "将 § 键或 ^ 等死键（ISO 键盘上 1 左侧的键）单独用作快捷键。设为快捷键期间，所有应用都收不到该键，由 Hex 使用", "§ キー、または ^ などのデッドキー（ISO キーボードで 1 の左にあるキー）を修飾キーなしのショートカットとして使います。割り当てている間、Hex はすべてのアプリからそのキーを受け取ります", "Die Taste links neben der 1 auf ISO-Tastaturen, § oder eine Tottaste wie ^, ohne Zusatztaste als Kürzel verwenden. Solange sie zugewiesen ist, nimmt Hex allen Apps diese Taste weg", "Usa la tecla a la izquierda del 1 en teclados ISO, § o una tecla muerta como ^, como atajo sin modificador. Mientras esté asignada, Hex toma esa tecla de todas las apps", "Використовуйте клавішу ліворуч від 1 на клавіатурах ISO, § або мертву клавішу на кшталт ^, як комбінацію без модифікатора. Поки її призначено, Hex забирає цю клавішу у всіх програм"]),
     ("Follow live transcript", ["Śledzenie transkrypcji na żywo", "跟随实时转写", "ライブ文字起こしを追う", "Live-Transkript folgen", "Seguir la transcripción en vivo", "Стежити за розшифровкою наживо"]),
     ("More call apps", ["Więcej aplikacji do rozmów", "更多通话应用", "その他の通話アプリ", "Mehr Anruf-Apps", "Más apps de llamadas", "Більше програм для дзвінків"]),
     ("Offer to record calls in Signal, Telegram, WeChat, LINE, Webex, Element and the Phone app, and name calls on more websites.", ["Proponuj nagrywanie rozmów w Signal, Telegram, WeChat, LINE, Webex, Element i aplikacji Telefon oraz nazywaj rozmowy na większej liczbie stron", "在 Signal、Telegram、WeChat、LINE、Webex、Element 和“电话”应用中提议录制通话，并在更多网站上识别通话", "Signal、Telegram、WeChat、LINE、Webex、Element、電話アプリの通話を録音するか提案し、より多くのウェブサイトで通話を判別します", "Biete an, Anrufe in Signal, Telegram, WeChat, LINE, Webex, Element und der Telefon-App aufzunehmen, und erkenne Anrufe auf mehr Websites", "Ofrece grabar llamadas en Signal, Telegram, WeChat, LINE, Webex, Element y la app Teléfono, y nombra llamadas en más sitios web", "Пропонуйте записувати дзвінки в Signal, Telegram, WeChat, LINE, Webex, Element і програмі Телефон та розпізнавайте дзвінки на більшій кількості сайтів"]),
@@ -571,6 +571,9 @@ const TRANSLATIONS: &[(&str, [&str; 6])] = &[
     ("Restore default shortcut", ["Przywróć domyślny skrót", "恢复默认快捷键", "既定のショートカットに戻す", "Standardkürzel wiederherstellen", "Restaurar atajo predeterminado", "Відновити типову комбінацію"]),
     ("Default shortcut: {}", ["Domyślny skrót: {}", "默认快捷键：{}", "既定のショートカット: {}", "Standardkürzel: {}", "Atajo predeterminado: {}", "Типова комбінація: {}"]),
     ("Unload after", ["Zwolnij po", "卸载前等待", "解放までの時間", "Entladen nach", "Descargar tras", "Вивантажити через"]),
+    ("Keep mic open after dictating", ["Mikrofon włączony po dyktowaniu", "听写后保持麦克风开启", "音声入力の後もマイクを開く", "Mikrofon nach Diktat offen lassen", "Micrófono abierto tras dictar", "Мікрофон відкритий після диктування"]),
+    ("With Turn off the mic when not dictating on, the microphone stays open for a while after each dictation, so the next one starts at once", ["Gdy opcja Wyłączaj mikrofon, gdy nie dyktujesz jest włączona, mikrofon zostaje włączony przez chwilę po każdym dyktowaniu, więc następne zaczyna się od razu", "开启“不听写时关闭麦克风”后，麦克风在每次听写结束后会保持开启一段时间，下一次听写即可立即开始", "「音声入力していないときはマイクをオフにする」がオンのとき、音声入力の後もマイクをしばらく開いたままにして、次の音声入力をすぐ始められるようにします", "Mit „Mikrofon ausschalten, wenn du nicht diktierst“ an bleibt das Mikrofon nach jedem Diktat eine Weile offen, damit das nächste sofort beginnt", "Con «Apagar el micrófono cuando no dictas» activado, el micrófono sigue abierto un rato después de cada dictado, para que el siguiente empiece al instante", "Коли ввімкнено «Вимикати мікрофон, коли не диктуєте», мікрофон лишається відкритим деякий час після кожного диктування, тож наступне почнеться одразу"]),
+    ("Keep open for", ["Pozostaw włączony przez", "保持开启", "開いたままにする時間", "Offen lassen für", "Mantener abierto durante", "Залишати відкритим"]),
     ("Turn off the mic when not dictating", ["Wyłączaj mikrofon, gdy nie dyktujesz", "不听写时关闭麦克风", "音声入力していないときはマイクをオフにする", "Mikrofon ausschalten, wenn du nicht diktierst", "Apagar el micrófono cuando no dictas", "Вимикати мікрофон, коли не диктуєте"]),
     ("The mic opens only while you dictate; the first moment can be clipped", ["Mikrofon otwiera się tylko podczas dyktowania; pierwsza chwila może zostać ucięta", "麦克风只在听写时打开；开头一瞬间可能被截掉", "マイクは音声入力中だけ開きます。最初の一瞬が切れることがあります", "Das Mikrofon öffnet sich nur beim Diktieren; der erste Moment kann abgeschnitten werden", "El micrófono solo se abre mientras dictas; el primer instante puede cortarse", "Мікрофон відкривається лише під час диктування; перша мить може обрізатися"]),
     ("The mic stays ready so dictation starts instantly; your system shows it in use", ["Mikrofon jest stale gotowy, więc dyktowanie zaczyna się od razu; system pokazuje, że jest używany", "麦克风保持就绪，听写可立即开始；系统会显示它正在使用", "マイクを待機させておくので音声入力がすぐ始まります。システムには使用中と表示されます", "Das Mikrofon bleibt bereit, damit das Diktat sofort beginnt; dein System zeigt es als benutzt an", "El micrófono queda listo para que el dictado empiece al instante; tu sistema lo muestra en uso", "Мікрофон лишається готовим, тож диктування починається миттєво; система показує, що він використовується"]),
@@ -1201,6 +1204,8 @@ const TRANSLATIONS: &[(&str, [&str; 6])] = &[
     ("Enabling…", ["Włączanie…", "正在启用…", "有効化中…", "Wird aktiviert…", "Activando…", "Увімкнення…"]),
     ("Disabling…", ["Wyłączanie…", "正在停用…", "無効化中…", "Wird deaktiviert…", "Desactivando…", "Вимкнення…"]),
     ("Couldn't enable", ["Nie udało się włączyć", "无法启用", "有効にできませんでした", "Aktivierung fehlgeschlagen", "No se pudo activar", "Не вдалося ввімкнути"]),
+    ("Stopped", ["Zatrzymany", "已停止", "停止中", "Gestoppt", "Detenido", "Зупинено"]),
+    ("Waiting for setup", ["Czeka na konfigurację", "等待设置", "セットアップ待ち", "Wartet auf Einrichtung", "Esperando la configuración", "Очікує налаштування"]),
     ("Saving settings", ["Zapisywanie ustawień", "正在保存设置", "設定を保存中", "Einstellungen werden gespeichert", "Guardando ajustes", "Збереження налаштувань"]),
     ("Service disconnected", ["Usługa rozłączona", "服务已断开", "サービスとの接続が切れました", "Dienst getrennt", "Servicio desconectado", "Звʼязок зі службою втрачено"]),
     ("Linux can't bind both sides. Use one with a key, like Space", ["Linux nie obsługuje obu stron naraz. Użyj jednej z klawiszem, np. Spacją", "Linux 无法绑定左右两侧。请用其中一侧加一个按键，例如空格", "Linux では左右両方は登録できません。片側とキー（Space など）を使ってください", "Linux kann nicht beide Seiten belegen. Nimm eine mit einer Taste, etwa Leertaste", "Linux no puede usar ambos lados. Usa uno con una tecla, como Espacio", "Linux не прив’язує обидві сторони. Використайте одну з клавішею, як-от Пробіл"]),
@@ -1637,11 +1642,14 @@ mod tests {
         include_str!("../rune_ui/general/extra_shortcuts.rs"),
         include_str!("../rune_ui/general/search.rs"),
         include_str!("../rune_ui/history.rs"),
+        include_str!("../rune_ui/history/selection.rs"),
         include_str!("../rune_ui/hud_lab.rs"),
         include_str!("../rune_ui/labs.rs"),
+        include_str!("../rune_ui/labs/browser_access.rs"),
         include_str!("../rune_ui/labs/group.rs"),
         include_str!("../rune_ui/labs/screenshots.rs"),
         include_str!("../rune_ui/labs/store.rs"),
+        include_str!("../rune_ui/labs/voice_prompt.rs"),
         include_str!("../rune_ui/linux_host.rs"),
         include_str!("../rune_ui/list_detail.rs"),
         include_str!("../rune_ui/lists.rs"),
@@ -1787,6 +1795,25 @@ mod tests {
                 translations
                     .iter()
                     .all(|translation| !translation.is_empty())
+            );
+        }
+    }
+
+    /// The listener card translates the status each OS's host publishes,
+    /// which is not a literal at the call.
+    #[test]
+    fn every_listener_status_has_every_language() {
+        use crate::desktop::host::ListenerStatus;
+        let table: std::collections::HashMap<_, _> = all_translations().copied().collect();
+        for english in ListenerStatus::ALL.into_iter().map(ListenerStatus::name) {
+            let translations = table
+                .get(english)
+                .unwrap_or_else(|| panic!("{english:?} has no translations"));
+            assert!(
+                translations
+                    .iter()
+                    .all(|translation| !translation.is_empty()),
+                "{english:?} is missing a language"
             );
         }
     }

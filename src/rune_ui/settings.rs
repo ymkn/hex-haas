@@ -365,8 +365,11 @@ pub(super) fn validate(
             tr("Unsupported key")
         });
     }
-    // The § key alone needs Labs › Section key alone (Linux).
-    if cfg!(target_os = "linux") && binding.is_lone_section_key() && !settings.section_key_allowed()
+    // The ISO section key alone needs Labs › Section key alone (Linux,
+    // macOS).
+    if cfg!(any(target_os = "linux", target_os = "macos"))
+        && binding.is_lone_section_key()
+        && !settings.section_key_allowed()
     {
         return Err(tr("Add a modifier"));
     }
@@ -516,7 +519,7 @@ pub(super) fn restore_default(ui: &mut Ui, target: ShortcutTarget, default: Hotk
 }
 
 pub(super) fn sound_volume_index(settings: &AppSettings) -> usize {
-    if !settings.sound_effects {
+    if !settings.sound_effects || settings.sound_effect_volume <= 0.0 {
         return 0;
     }
     SOUND_VOLUME_STEPS[1..]
@@ -643,7 +646,7 @@ pub(super) fn error_notes(p: Paint, error: &str) -> [El; 2] {
 pub(super) fn listener_card(ui: &Ui, p: Paint) -> (String, El) {
     let running = ui.running();
     let status = match &ui.view {
-        Some(view) => tr(&view.listener.status).to_string(),
+        Some(view) => tr(view.listener.status.name()).to_string(),
         None if matches!(ui.service, Service::Fixture(_)) || ui.connection_error.is_some() => {
             tr("Service disconnected").to_string()
         }
@@ -1256,9 +1259,17 @@ mod special_keys_tests {
             );
         }
     }
+}
 
-    /// Issue 1050: § alone only with Labs › Section key alone on; § with a
-    /// modifier as before.
+/// Issue 1050: the ISO section key alone needs Labs › Section key alone on
+/// Linux and macOS; with a modifier it records as before. Linux's recorder
+/// checks the lab itself; macOS's recorder records the chord and `validate`
+/// refuses it here, before saving.
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+mod section_key_tests {
+    use super::*;
+    use crate::app_settings::ISO_SECTION_KEY_CODE;
+
     #[test]
     fn section_alone_needs_its_labs_toggle() {
         let section = HotkeyBinding {
@@ -1284,6 +1295,34 @@ mod special_keys_tests {
             Ok(())
         );
         assert_eq!(section.keycaps(), ["§"]);
+    }
+
+    /// macOS labels the section key by what it types on a dead-key layout,
+    /// `{code: 10, label: "^"}`; validation still knows it is the section
+    /// key.
+    #[test]
+    fn a_dead_key_section_binding_needs_its_labs_toggle_on_macos() {
+        if !cfg!(target_os = "macos") {
+            return;
+        }
+        let dead_key = HotkeyBinding {
+            modifiers: HotkeyModifiers::default(),
+            key: Some(HotkeyKey {
+                code: ISO_SECTION_KEY_CODE,
+                label: "^".into(),
+            }),
+        };
+        assert!(dead_key.is_lone_section_key());
+        let mut settings = AppSettings::default();
+        assert_eq!(
+            validate(&settings, ShortcutTarget::Dictation, &dead_key),
+            Err(tr("Add a modifier"))
+        );
+        settings.labs.section_key_alone = true;
+        assert_eq!(
+            validate(&settings, ShortcutTarget::Dictation, &dead_key),
+            Ok(())
+        );
     }
 }
 

@@ -370,6 +370,11 @@ pub struct HotkeyKey {
 /// Reserved input codes for the 32 mouse buttons CoreGraphics can report.
 pub(super) const MOUSE_INPUT_CODES: std::ops::Range<u16> = 0x8000..0x8020;
 
+/// macOS's virtual key code for the ISO section key, left of 1 on ISO
+/// keyboards (`kVK_ISO_Section`). Layouts label it § or a dead key such as
+/// `^`, `´`, or `` ` ``.
+pub const ISO_SECTION_KEY_CODE: u16 = 10;
+
 impl HotkeyKey {
     /// macOS mouse buttons occupy a separate input-code range, beyond every
     /// native keyboard code used by macOS. A shared trigger code lets keyboard
@@ -1347,9 +1352,12 @@ pub struct RuntimeHotkeys {
 }
 
 impl RuntimeHotkeys {
+    /// The shortcuts [`Self::all`] lists by name, before the extra rows.
+    const NAMED: usize = 8;
+
     /// Every shortcut Hex matches, for suppression and chord evidence.
-    pub fn all(self) -> [Option<RuntimeHotkey>; 8 + MAX_EXTRA_DICTATION_SHORTCUTS] {
-        let named = [
+    pub fn all(self) -> [Option<RuntimeHotkey>; Self::NAMED + MAX_EXTRA_DICTATION_SHORTCUTS] {
+        let named: [_; Self::NAMED] = [
             Some(self.dictation),
             self.paste_last,
             self.paste_meeting,
@@ -1359,7 +1367,7 @@ impl RuntimeHotkeys {
             self.typed_text,
             self.second_dictation,
         ];
-        let mut all = [None; 8 + MAX_EXTRA_DICTATION_SHORTCUTS];
+        let mut all = [None; Self::NAMED + MAX_EXTRA_DICTATION_SHORTCUTS];
         all[..named.len()].copy_from_slice(&named);
         all[named.len()..].copy_from_slice(&self.extra_dictation);
         all

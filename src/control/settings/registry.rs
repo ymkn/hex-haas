@@ -16,6 +16,8 @@ pub(super) enum Kind {
         max: u64,
     },
     Choice(&'static [&'static str]),
+    /// A choice whose values are whole numbers in settings.json.
+    NumberChoice(&'static [&'static str]),
     Text,
     Shortcut(HotkeySlot),
     Path,
@@ -28,7 +30,7 @@ impl Kind {
             Self::Bool => "bool",
             Self::Number { .. } => "number",
             Self::Integer { .. } => "integer",
-            Self::Choice(_) => "choice",
+            Self::Choice(_) | Self::NumberChoice(_) => "choice",
             Self::Text => "text",
             Self::Shortcut(_) => "shortcut",
             Self::Path => "path",
@@ -79,10 +81,6 @@ const fn read_only(key: &'static str, kind: Kind, about: &'static str, why: &'st
 
 const UNIT: Kind = Kind::Number { min: 0.0, max: 1.0 };
 const MODEL_CHANGE: &str = "change the transcription model with `hex model use`";
-
-/// Choice keys whose values are numbers in settings.json.
-pub(super) const NUMERIC_CHOICES: [&str; 2] =
-    ["meetings.calendar.lead_minutes", "labs.unload_idle_minutes"];
 
 pub(super) const KEYS: &[Key] = &[
     key(
@@ -320,6 +318,11 @@ pub(super) const KEYS: &[Key] = &[
         "Labs: bias Parakeet transcription toward the vocabulary",
     ),
     key(
+        "labs.screen_vocabulary",
+        Kind::Bool,
+        "Labs: use names and terms visible in the focused window as temporary vocabulary for each dictation (macOS)",
+    ),
+    key(
         "labs.mouse_shortcuts",
         Kind::Bool,
         "Labs: record mouse buttons as shortcuts (macOS)",
@@ -331,8 +334,18 @@ pub(super) const KEYS: &[Key] = &[
     ),
     key(
         "labs.unload_idle_minutes",
-        Kind::Choice(&["5", "15", "30", "60"]),
+        Kind::NumberChoice(&["5", "15", "30", "60"]),
         "Minutes unused before Labs › Unload model when idle unloads the model",
+    ),
+    key(
+        "labs.keep_microphone_open",
+        Kind::Bool,
+        "Labs: with Release microphone while idle on, keep the microphone open for a while after each dictation so the next one starts at once",
+    ),
+    key(
+        "labs.keep_microphone_open_seconds",
+        Kind::NumberChoice(&["30", "60", "180", "300", "1800"]),
+        "Seconds the microphone stays open after a dictation with Labs › Keep mic open after dictating on: 30 s, 1, 3, 5, or 30 minutes",
     ),
     key(
         "labs.restore_shortcut_default",
@@ -342,7 +355,7 @@ pub(super) const KEYS: &[Key] = &[
     key(
         "labs.keep_on_clipboard",
         Kind::Bool,
-        "Labs: leave the dictation on the clipboard after pasting instead of restoring what was there (macOS and Windows)",
+        "Labs: leave the dictation on the clipboard after pasting instead of restoring what was there",
     ),
     key(
         "labs.copy_only",
@@ -441,7 +454,8 @@ pub(super) const KEYS: &[Key] = &[
     key(
         "labs.section_key_alone",
         Kind::Bool,
-        "Labs: a shortcut may be the § key, left of 1 on ISO keyboards, with no modifier (Linux); off puts such a shortcut back to its default",
+        "Labs: a shortcut may be the key left of 1 on ISO keyboards, § or a dead key such as ^, \
+         with no modifier (Linux, macOS); off puts such a shortcut back to its default",
     ),
     key(
         "labs.keep_recordings",
@@ -452,6 +466,11 @@ pub(super) const KEYS: &[Key] = &[
         "labs.history_stats",
         Kind::Bool,
         "Labs: a summary of retained dictations at the top of History, and hex history stats",
+    ),
+    key(
+        "labs.history_multi_select",
+        Kind::Bool,
+        "Labs: select several dictations in History with Shift-click, Cmd-click (Ctrl on Windows and Linux), or a drag, then copy or delete them together",
     ),
     key(
         "labs.recent_dictations",
@@ -532,6 +551,11 @@ pub(super) const KEYS: &[Key] = &[
         "labs.annotate_replay",
         Kind::Bool,
         "Labs: keep a rolling 15-second screen buffer so hex capture replay or capture.replay_hotkey saves what just happened; macOS shows the screen-recording dot the whole time it's on (macOS 27+)",
+    ),
+    key(
+        "labs.copy_capture_zip",
+        Kind::Bool,
+        "Labs: a finished Annotate capture copies to the clipboard as one light zip file you can attach anywhere, without its video and audio (macOS, Linux, Windows)",
     ),
     key(
         "labs.gnome_clipboard_restore",
@@ -616,6 +640,18 @@ pub(super) const KEYS: &[Key] = &[
          in a transcript, as the speech model heard them (timestamps=segment|word)",
     ),
     key(
+        "labs.api_browser_access",
+        Kind::Bool,
+        "Labs: web pages from the origins in labs.api_browser_origins can call Hex's local API \
+         from the browser; every request still needs the API token",
+    ),
+    key(
+        "labs.api_browser_origins",
+        Kind::Json,
+        "Labs: the browser origins allowed to call Hex's local API, as a JSON list of \
+         http:// or https:// scheme://host[:port] origins; an entry that isn't one is ignored",
+    ),
+    key(
         "labs.speakers_only",
         Kind::Bool,
         "Labs: While dictating applies only while the default output is speakers; headphones are \
@@ -626,6 +662,24 @@ pub(super) const KEYS: &[Key] = &[
         Kind::Bool,
         "Labs: the menu bar offers Pause Hex, which makes every capture shortcut inert until \
          Resume; a restart starts unpaused (macOS)",
+    ),
+    key(
+        "labs.print_start",
+        Kind::Bool,
+        "Labs: `hex dictation start --print` records a dictation whose transcript goes to \
+         that command, never pasted or copied, however the recording ends (macOS)",
+    ),
+    key(
+        "labs.voice_prompt",
+        Kind::Bool,
+        "Labs: a spoken phrase inside a dictation hands the mode's OpenCode model a one-off \
+         instruction for that dictation",
+    ),
+    key(
+        "labs.voice_prompt_phrase",
+        Kind::Text,
+        "Labs: the words that start a voice prompt, at least two words and six letters; \
+         \"rewrite this\" by default",
     ),
     key(
         "meetings.enabled",
@@ -690,7 +744,7 @@ pub(super) const KEYS: &[Key] = &[
     ),
     key(
         "meetings.calendar.lead_minutes",
-        Kind::Choice(&["0", "1", "2", "5"]),
+        Kind::NumberChoice(&["0", "1", "2", "5"]),
         "Minutes before a meeting its reminder shows",
     ),
     key(

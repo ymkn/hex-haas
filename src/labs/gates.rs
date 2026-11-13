@@ -38,15 +38,36 @@ pub fn vocabulary_biasing() -> bool {
     on(VOCABULARY_BIASING)
 }
 
+/// Names and terms visible in the focused window join one dictation's
+/// vocabulary, read once as the capture becomes real (macOS; read by the
+/// listener at its hold threshold, its control start, or the released
+/// microphone opening).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn screen_vocabulary() -> bool {
+    // The state word has no bit for it: its own atomic, written by
+    // `labs::apply`, and loaded here first in a process that never applied.
+    let _ = state();
+    SCREEN_VOCABULARY.load(Ordering::Acquire) && Feature::ScreenVocabulary.on_this_os()
+}
+
 /// Mouse buttons may be recorded as shortcuts (macOS).
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn mouse_shortcuts() -> bool {
     on(MOUSE_SHORTCUTS)
 }
 
+/// A finished Annotate capture copies to the clipboard as one light zip file
+/// rather than its image and summary (read where a written capture is copied).
+#[cfg_attr(not(hex_capture), allow(dead_code))]
+pub fn copy_capture_zip() -> bool {
+    // The state word has no bit for it: its own atomic, written by
+    // `labs::apply`, and loaded here first in a process that never applied.
+    let _ = state();
+    COPY_CAPTURE_ZIP.load(Ordering::Acquire) && Feature::CopyCaptureZip.on_this_os()
+}
+
 /// A pasted dictation stays on the clipboard rather than the previous
-/// clipboard being restored (macOS and Windows; read as each paste commits).
-#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
+/// clipboard being restored (read as each paste commits).
 pub fn keep_on_clipboard() -> bool {
     on(KEEP_ON_CLIPBOARD)
 }
@@ -130,6 +151,14 @@ pub fn parakeet_ultra() -> bool {
 /// when the History pane reloads and when the command starts).
 pub fn history_stats() -> bool {
     on(HISTORY_STATS)
+}
+
+/// History selects several dictations at once, with Shift, Command (Control
+/// on Windows and Linux), or a drag, and copies or deletes them together.
+/// The window reads the same switch from `settings.labs`, as it reads Keep
+/// recordings; this process's copy is logged at launch with the other labs.
+pub fn history_multi_select() -> bool {
+    on(HISTORY_MULTI_SELECT)
 }
 
 /// The menu bar's Copy Recent Dictation submenu (macOS; read each time the
@@ -301,6 +330,45 @@ pub fn caps_lock_dictation() -> bool {
     on(CAPS_LOCK_DICTATION) && Feature::CapsLockDictation.on_this_os()
 }
 
+/// `hex dictation start --print` records a dictation whose transcript goes
+/// to the command that started it, never pasted or copied, however it ends
+/// (macOS; read as each printing start arrives).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn print_start() -> bool {
+    // The state word has no bit for it: its own atomic, written by
+    // `labs::apply`, and loaded here first in a process that never applied.
+    let _ = state();
+    PRINT_START.load(Ordering::Acquire) && Feature::PrintStart.on_this_os()
+}
+
+/// A spoken trigger phrase inside a dictation turns what follows it into a
+/// one-off instruction for the mode's OpenCode model (read as each
+/// dictation's processing starts). An organization's
+/// DisableOpenCodeProcessing lock reads as off.
+pub fn voice_prompt() -> bool {
+    voice_prompt_under(crate::policy::Policy::current())
+}
+
+/// [`voice_prompt`] under an explicit policy, so its managed lock is read
+/// where the gate is tested.
+pub(crate) fn voice_prompt_under(policy: crate::policy::Policy) -> bool {
+    // The state word has no bit for it: its own atomic, written by
+    // `labs::apply`, and loaded here first in a process that never applied.
+    let _ = state();
+    VOICE_PROMPT.load(Ordering::Acquire)
+        && Feature::VoicePrompt.on_this_os()
+        && !policy.locks(crate::policy::Lock::OpenCodeProcessing)
+}
+
+/// The words that start a voice prompt (read as each dictation's processing
+/// starts, only while [`voice_prompt`] is on).
+pub fn voice_prompt_phrase() -> String {
+    VOICE_PROMPT_PHRASE
+        .read()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone()
+}
+
 /// Whether the Caps Lock light blinks slowly while recording instead of
 /// staying solid (macOS; read by the light model for each pattern).
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -329,6 +397,22 @@ pub fn api_timestamps() -> bool {
     on(API_TIMESTAMPS) && Feature::ApiTimestamps.on_this_os()
 }
 
+/// The browser origins the local API answers with CORS, while Labs › Browser
+/// access to the local API is on (read as each request's `Origin` is
+/// checked). Empty turns every response back to what it was, without CORS.
+pub fn api_browser_origins() -> Vec<String> {
+    // A process that never applied its settings still loads its saved
+    // switches on the first read, as `screen_vocabulary` does.
+    let _ = state();
+    if !API_BROWSER_ACCESS.load(Ordering::Acquire) || !Feature::ApiBrowserAccess.on_this_os() {
+        return Vec::new();
+    }
+    API_BROWSER_ORIGINS
+        .read()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone()
+}
+
 /// Finished meetings may drop their WAV tracks on `meetings.audio_retention`
 /// (read by the meeting controller's expiry pass and the window's Settings
 /// row).
@@ -342,4 +426,19 @@ pub fn unload_idle() -> Option<std::time::Duration> {
     let state = state();
     (state & UNLOAD_IDLE != 0)
         .then(|| std::time::Duration::from_secs(((state >> MINUTES_SHIFT) & MINUTES_MASK) * 60))
+}
+
+/// How long a capture's microphone keeps open after it ends, while Labs ›
+/// Keep mic open after dictating is on: read as each capture ends and
+/// on every pass that would release the microphone, so turning the lab off
+/// releases it. `None` leaves Release microphone while idle exactly as it was.
+pub fn microphone_linger() -> Option<std::time::Duration> {
+    let state = state();
+    if state & KEEP_MICROPHONE_OPEN == 0 {
+        return None;
+    }
+    match MICROPHONE_LINGER_SECONDS.load(Ordering::Acquire) {
+        0 => None,
+        seconds => Some(std::time::Duration::from_secs(seconds)),
+    }
 }
