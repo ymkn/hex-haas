@@ -62,9 +62,9 @@ if ($Arch -eq 'x64') {
     }
     $llvmArchive = Join-Path $tools 'llvm.tar.xz'
     if (!(Test-Path $llvmArchive)) {
-        Get-PinnedDownload 'https://github.com/llvm/llvm-project/releases/download/llvmorg-20.1.8/clang+llvm-20.1.8-aarch64-pc-windows-msvc.tar.xz' -OutFile $llvmArchive
+        Get-PinnedDownload 'https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/clang+llvm-22.1.8-aarch64-pc-windows-msvc.tar.xz' -OutFile $llvmArchive
     }
-    if ((Get-FileHash $llvmArchive -Algorithm SHA256).Hash -ne '0DF3E81E8FE26370DD2B60B9E009D81CD130D3FDC41B257434AA663C5D9F0C13') { throw 'LLVM checksum mismatch' }
+    if ((Get-FileHash $llvmArchive -Algorithm SHA256).Hash -ne 'DE718C58EBBC5F61D58C17B90457FCF42983BC2C4A4ABA3E010D108713BFD7F1') { throw 'LLVM checksum mismatch' }
     if (!(Test-Path "$tools\llvm\bin\clang-cl.exe")) {
         New-Item -ItemType Directory -Force "$tools\llvm" | Out-Null
         tar -xJf $llvmArchive -C "$tools\llvm" --strip-components 1

@@ -183,7 +183,7 @@ Windows版リリースがないためです。設定・履歴・モデルはx64�
 
 ggmlのARMバックエンドはMSVCを拒否するため、上流のWindows ARM64構成と同じく
 clang-cl + Ninjaでネイティブコアをビルドします（`GGML_NATIVE=OFF`、OpenMPなし）。
-CMake 4.4.5・Ninja 1.12.1・LLVM 20.1.8（ARM64 Windows版clang-cl）を固定バージョンで
+CMake 4.4.5・Ninja 1.12.1・LLVM 22.1.8（ARM64 Windows版clang-cl）を固定バージョンで
 取得しハッシュ検証します。LLVMがARM64バイナリーのため、ビルドはARM64 Windows
 ホスト専用です（他アーキテクチャーのホストではスクリプトが止まります）。CIは
 `windows-11-arm` ランナーで行います。

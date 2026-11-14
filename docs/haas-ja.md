@@ -186,8 +186,8 @@ an ARM64 binary); CI uses the `windows-11-arm` runner.
 ```
 
 The ARM64 setup additionally pins CMake 4.4.5 (`cmake-4.4.5-windows-arm64.zip`),
-Ninja 1.12.1 (`ninja-winarm64.zip`), and LLVM 20.1.8
-(`clang+llvm-20.1.8-aarch64-pc-windows-msvc.tar.xz`), all hash-verified,
+Ninja 1.12.1 (`ninja-winarm64.zip`), and LLVM 22.1.8
+(`clang+llvm-22.1.8-aarch64-pc-windows-msvc.tar.xz`), all hash-verified,
 beside the same speech.cpp and ggml pins as x64. MSVC ARM64 build tools
 (link.exe, import libraries, Windows SDK) come from Visual Studio; the
 scripts accept the ARM64 component or any install that actually ships
