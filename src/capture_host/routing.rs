@@ -37,8 +37,9 @@ use session_name::{name_answer, session_name};
 const RETRY_EVERY: Duration = Duration::from_secs(15);
 /// How long taking back a send may wait on OpenCode.
 const UNDO_DEADLINE: Duration = Duration::from_secs(10);
-/// How long a rule's send waits for Undo before it goes.
-const SEND_HOLD: Duration = Duration::from_secs(3);
+/// How long a rule's send waits for Undo before it goes. The capsule's
+/// Undo ring drains over this same time, from when the rule shows.
+pub const SEND_HOLD: Duration = Duration::from_secs(3);
 /// A held send resumes with at least this long left, so it never goes the
 /// instant the pointer leaves the capsule.
 const RESUME_LEFT: Duration = Duration::from_secs(1);
@@ -2221,7 +2222,7 @@ mod tests {
                 assert!(started.elapsed() < Duration::from_millis(200));
                 let current = worker.current.as_ref().unwrap();
                 assert!(current.sent.is_none());
-                assert!(current.due.unwrap() >= started + Duration::from_secs(3));
+                assert!(current.due.unwrap() >= started + SEND_HOLD);
                 assert!(matches!(
                     current.route.answer,
                     RouteAnswer::Rule { .. } | RouteAnswer::ResolvingRule { .. }
@@ -2318,6 +2319,47 @@ mod tests {
             );
             drop(found);
             worker.pending = None;
+            std::fs::remove_dir_all(bundle.parent().unwrap()).ok();
+        }
+
+        /// The capsule starts a rule's Undo ring when it first shows the
+        /// rule. A rule still being looked up when its capture was written
+        /// holds its send from its answer, not from the write, so the send
+        /// never goes before the ring runs out.
+        #[test]
+        fn a_rule_answered_late_holds_its_send_from_the_answer() {
+            let router = router_with(|c| {
+                c.apps
+                    .insert("com.example.board".into(), "ses_board".into());
+            });
+            let (look, found) = held_look(router, look::Live::default());
+            let outcomes = SharedOutcomes::default();
+            let mut worker = worker(outcomes.clone());
+            let bundle = written("com.example.board");
+            lock(&outcomes).fail(bundle.clone(), "test".into());
+            worker.written(bundle.clone(), look);
+            // As if the local read found no rule yet, and its hold ran out
+            // while the capsule still said nothing.
+            let current = worker.current.as_mut().unwrap();
+            current.route.answer = RouteAnswer::Looking;
+            current.destination = None;
+            current.due = Some(Instant::now());
+            drop(found);
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while matches!(
+                worker.current.as_ref().unwrap().route.answer,
+                RouteAnswer::Looking
+            ) {
+                assert!(Instant::now() < deadline, "the rule never came");
+                worker.prepared();
+                std::thread::park_timeout(Duration::from_millis(1));
+            }
+            let answered = Instant::now();
+            let current = worker.current.as_ref().unwrap();
+            assert!(current.sent.is_none(), "not before its ring runs out");
+            assert!(current.due.unwrap() + Duration::from_millis(100) >= answered + SEND_HOLD);
+            settle(&mut worker);
+            assert!(worker.current.as_ref().unwrap().sent.is_some());
             std::fs::remove_dir_all(bundle.parent().unwrap()).ok();
         }
 
@@ -2670,12 +2712,21 @@ mod tests {
             }
         }
 
+        /// `path` as an absolute path on this OS: Windows needs a drive.
+        fn absolute(path: &str) -> String {
+            if cfg!(windows) {
+                format!("C:{path}")
+            } else {
+                path.to_owned()
+            }
+        }
+
         /// SEER and RUNE DESKTOP working in one checkout, SEER the newer.
         fn one_checkout(path: &str, _: Duration) -> anyhow::Result<Vec<u8>> {
             let session = |id: &str, title: &str, updated: u64| {
                 serde_json::json!({
                     "id": id, "title": title, "parentID": null,
-                    "time": {"updated": updated}, "location": {"directory": "/p/seer"},
+                    "time": {"updated": updated}, "location": {"directory": absolute("/p/seer")},
                 })
             };
             let all = [
@@ -2737,7 +2788,8 @@ mod tests {
             // What it saved before: the checkout, whose newest session is SEER.
             let (_, sent) = route(
                 router_with(|c| {
-                    c.apps.insert("com.example.rune".into(), "/p/seer".into());
+                    c.apps
+                        .insert("com.example.rune".into(), absolute("/p/seer"));
                 }),
                 "com.example.rune",
                 senses(),
@@ -2759,13 +2811,13 @@ mod tests {
                 }
             }
             fn in_seer(_: &str, _: Option<i32>) -> Option<look::Pane> {
-                Some(shell_in("/p/seer"))
+                Some(shell_in(&absolute("/p/seer")))
             }
             fn below(_: &str, _: Option<i32>) -> Option<look::Pane> {
-                Some(shell_in("/p/seer/site"))
+                Some(shell_in(&absolute("/p/seer/site")))
             }
             fn elsewhere(_: &str, _: Option<i32>) -> Option<look::Pane> {
-                Some(shell_in("/p/other"))
+                Some(shell_in(&absolute("/p/other")))
             }
             let senses = |terminal: fn(&str, Option<i32>) -> Option<look::Pane>| look::Senses {
                 hooks: Hooks {
@@ -2798,7 +2850,7 @@ mod tests {
             let (kind, key, target) = worker.rule_for("ses_rune").expect("a terminal rule");
             assert_eq!(
                 (kind, key.as_str(), target.as_str()),
-                (RuleKind::Terminal, "/p/seer", "ses_rune")
+                (RuleKind::Terminal, absolute("/p/seer").as_str(), "ses_rune")
             );
             let saved = RouterConfig {
                 send_captures: true,

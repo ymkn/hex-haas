@@ -253,6 +253,12 @@ impl GgufArtifact {
 impl ModelDefinition {
     /// A catalog GGUF model, or an import that is on, present, and unchanged.
     pub fn available(&self) -> bool {
+        self.available_where(crate::labs::k_quant_models())
+    }
+
+    /// [`available`] against `k_quants` rather than this process's Labs
+    /// switch, so a test can run either side of Labs › Smaller model files.
+    pub(crate) fn available_where(&self, k_quants: bool) -> bool {
         if self.id == TranscriptionModelId::HaasJaV1 {
             // This fork's own build, so no Lab, experiment, or env switch.
             #[cfg(target_os = "windows")]
@@ -264,6 +270,7 @@ impl ModelDefinition {
             (ModelRuntime::AppleSpeech, _) => false,
             (ModelRuntime::Gguf(_), TranscriptionModelId::Custom(id)) => {
                 super::custom_models::usable(id)
+                    && (!super::custom_models::uses_k_quants(id) || k_quants)
             }
             (ModelRuntime::Gguf(_), TranscriptionModelId::ParakeetUltra) => {
                 crate::labs::parakeet_ultra()
@@ -842,11 +849,20 @@ pub fn validate_saved(selection: &TranscriptionSelection) -> Result<()> {
 }
 
 pub fn validate(selection: &TranscriptionSelection) -> Result<&'static ModelDefinition> {
+    validate_where(selection, crate::labs::k_quant_models())
+}
+
+/// [`validate`] against `k_quants` rather than this process's Labs switch, so
+/// a test can run either side of Labs › Smaller model files.
+pub(crate) fn validate_where(
+    selection: &TranscriptionSelection,
+    k_quants: bool,
+) -> Result<&'static ModelDefinition> {
     if !is_known_language(&selection.language) {
         bail!("unsupported transcription language: {}", selection.language);
     }
     let model = definition(selection.model);
-    if !model.available() {
+    if !model.available_where(k_quants) {
         bail!("{} is unavailable", model.name);
     }
     if !model.supports_language(&selection.language) {
@@ -880,9 +896,14 @@ pub(crate) fn set_test_models_dir(directory: Option<PathBuf>) {
 pub fn max_audio_chunk_samples(architecture: &str, max_audio_ms: i64) -> Option<usize> {
     // Cohere's encoder capacity is not its recommended transcription window.
     // The pinned model's reference processor chunks long audio at 35 seconds.
+    // Whisper decodes one 30-second window at a time; handed a longer clip its
+    // own long-form loop also decodes a near-silent remainder, which it fills
+    // with invented text (#1770).
     let maximum_ms = match (architecture, max_audio_ms) {
         ("cohere_asr", limit) if limit > 0 => limit.min(35_000),
         ("cohere_asr", _) => 35_000,
+        ("whisper", limit) if limit > 0 => limit.min(30_000),
+        ("whisper", _) => 30_000,
         (_, limit) => limit,
     };
     usize::try_from(maximum_ms)
@@ -2548,7 +2569,14 @@ mod tests {
         );
         assert_eq!(max_audio_chunk_samples("cohere_asr", 0), Some(560_000));
         assert_eq!(max_audio_chunk_samples("cohere_asr", 10_000), Some(160_000));
-        assert_eq!(max_audio_chunk_samples("whisper", 0), None);
         assert_eq!(max_audio_chunk_samples("parakeet", 60_000), Some(960_000));
+    }
+
+    #[test]
+    fn whisper_chunks_at_its_thirty_second_window() {
+        assert_eq!(max_audio_chunk_samples("whisper", 0), Some(480_000));
+        assert_eq!(max_audio_chunk_samples("whisper", 30_000), Some(480_000));
+        assert_eq!(max_audio_chunk_samples("whisper", 45_000), Some(480_000));
+        assert_eq!(max_audio_chunk_samples("whisper", 20_000), Some(320_000));
     }
 }

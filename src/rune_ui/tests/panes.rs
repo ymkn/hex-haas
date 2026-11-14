@@ -1928,6 +1928,26 @@ fn voice_filter_sliders_set_the_filter_from_the_pointer() {
 }
 
 #[test]
+fn sound_volume_slider_sets_the_level_and_zero_turns_tones_off() {
+    let mut rt = runtime("mac-settings-advanced", true, (980.0, 1500.0));
+    let (x, y) = rt.find("sound-volume-slider/track").unwrap();
+    rt.pointer_down(x + 75.0, y);
+    rt.pointer_up(x + 75.0, y);
+    settle(&mut rt);
+    assert!(rt.state.settings.sound_effects);
+    assert_eq!(rt.state.settings.sound_effect_volume, 1.0);
+
+    rt.pointer_down(x - 75.0, y);
+    rt.pointer_up(x - 75.0, y);
+    settle(&mut rt);
+    assert!(!rt.state.settings.sound_effects);
+    assert_eq!(
+        rt.state.settings.sound_effect_volume, 1.0,
+        "keeps the level"
+    );
+}
+
+#[test]
 fn try_it_records_and_plays_through_the_host() {
     use platform::DemoRequest;
     let mut rt = runtime("mac-voice-filter", true, PANE_SIZE);
@@ -2388,10 +2408,40 @@ fn unload_when_idle_shows_its_minutes_on_its_card_while_on() {
     let mut rt = runtime("mac-labs", true, (980.0, 4000.0));
     rt.update(|ui, _| ui.lab_store.group = Some(crate::labs::Feature::UnloadIdle.group()));
     settle(&mut rt);
-    assert!(rt.find("unload-idle-minutes").is_none(), "hidden while off");
+    assert!(
+        rt.find("unload-idle-minutes-trigger").is_none(),
+        "hidden while off"
+    );
     tap(&mut rt, "lab-unload-idle");
     assert!(rt.state.settings.labs.unload_idle);
-    assert!(rt.find("unload-idle-minutes").is_some());
+    assert!(rt.find("unload-idle-minutes-trigger").is_some());
+}
+
+/// At the window's smallest size, in a longer language, the minutes stay
+/// inside their card and the last choice is still reachable.
+#[test]
+fn unload_after_fits_its_card_in_a_small_translated_window() {
+    let mut rt = runtime("mac-labs", true, (860.0, 560.0));
+    crate::desktop::i18n::apply(Some("de"));
+    rt.update(|ui, _| {
+        ui.lab_store.group = Some(crate::labs::Feature::UnloadIdle.group());
+        ui.settings.labs.unload_idle = true;
+    });
+    settle(&mut rt);
+    let (control, _) = rt
+        .presented("unload-idle-minutes-trigger")
+        .expect("the minutes' control");
+    let (card, _) = rt.presented("lab-card-unload-idle").expect("its card");
+    assert!(
+        control[0] >= card[0] && control[0] + control[2] <= card[0] + card[2],
+        "the minutes' control stays inside its card: {control:?} in {card:?}"
+    );
+    tap(&mut rt, "unload-idle-minutes-trigger");
+    tap(&mut rt, "option3");
+    assert_eq!(
+        rt.state.settings.labs.unload_idle_minutes,
+        crate::app_settings::UNLOAD_IDLE_MINUTES[3]
+    );
 }
 
 #[test]
@@ -2514,6 +2564,28 @@ fn the_labs_store_filters_by_tab_chip_and_search() {
     settle(&mut rt);
     assert!(rt.find("empty-copy").is_some());
     assert!(rt.find("lab-card-live-text").is_none());
+}
+
+#[test]
+fn the_labs_search_clear_button_empties_the_field_and_brings_every_card_back() {
+    let mut rt = runtime("mac-labs", true, (980.0, 4000.0));
+    unfold_labs(&mut rt);
+    rt.update(|ui, _| ui.lab_store.search = rune::TextEdit::new("live text".to_string()));
+    settle(&mut rt);
+    assert!(rt.find("lab-card-live-text").is_some());
+    assert!(
+        rt.find("lab-card-mouse-shortcuts").is_none(),
+        "the search filters"
+    );
+    tap(&mut rt, "labs-search/action");
+    assert!(
+        rt.state.lab_store.search.text.is_empty(),
+        "the clear button empties the field"
+    );
+    assert!(
+        rt.find("lab-card-mouse-shortcuts").is_some(),
+        "and the filtered-out cards come back"
+    );
 }
 
 #[test]

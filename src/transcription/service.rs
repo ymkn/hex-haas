@@ -6,7 +6,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use color_eyre::eyre::Result;
-use hound::{Sample, SampleFormat, WavReader};
+use hound::{Sample, SampleFormat, WavReader, WavSpec};
 
 use crate::transcription::engine::{
     HeldModel, dictation_busy, held, timestamp_level, transcribe_clip, transcribe_clip_timed,
@@ -33,8 +33,9 @@ const SHARED_RETRY: Duration = Duration::from_millis(50);
 /// using a copy of the service's own.
 const SHARED_WAIT: Duration = Duration::from_secs(20);
 /// Longer host audio would hold a dictation released during it behind it on
-/// the shared engine, so it runs on a copy of the service's own.
-const SHARED_MAX_SAMPLES: usize = 30 * 16_000;
+/// the shared engine, so it runs on a copy of the service's own. `hex
+/// transcribe` sends a long file in pieces of this length.
+pub(crate) const SHARED_MAX_SAMPLES: usize = 30 * 16_000;
 
 pub struct TranscriptionService {
     commands: Option<SyncSender<Command>>,
@@ -49,7 +50,8 @@ pub struct TranscriptionServiceHandle {
 
 #[derive(Debug)]
 pub struct AudioClip {
-    samples: Vec<f32>,
+    /// The 16 kHz mono samples every transcriber runs.
+    pub(crate) samples: Vec<f32>,
     pub duration_ms: u64,
 }
 
@@ -65,6 +67,39 @@ pub enum AudioError {
     Invalid,
     Unsupported,
     ResourceExhausted,
+}
+
+/// The sample types the canonical WAV decoder reads, chosen by a file's spec.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum WavFormat {
+    F32,
+    I8,
+    I16,
+    I32,
+}
+
+/// The accepted WAV input: 8 kHz through 192 kHz and one through eight
+/// channels. `Unsupported` for anything else, before any samples are
+/// allocated.
+pub(crate) fn validate_wav_input(spec: &WavSpec) -> Result<(), AudioError> {
+    if !(MIN_SAMPLE_RATE..=MAX_SAMPLE_RATE).contains(&spec.sample_rate)
+        || !(1..=MAX_CHANNELS).contains(&spec.channels)
+    {
+        return Err(AudioError::Unsupported);
+    }
+    Ok(())
+}
+
+/// The sample type `spec` selects: integer PCM or 32-bit float. `Unsupported`
+/// for a format the decoder does not read.
+pub(crate) fn wav_format(spec: &WavSpec) -> Result<WavFormat, AudioError> {
+    Ok(match (spec.sample_format, spec.bits_per_sample) {
+        (SampleFormat::Float, 32) => WavFormat::F32,
+        (SampleFormat::Int, 1..=8) => WavFormat::I8,
+        (SampleFormat::Int, 9..=16) => WavFormat::I16,
+        (SampleFormat::Int, 17..=32) => WavFormat::I32,
+        _ => return Err(AudioError::Unsupported),
+    })
 }
 
 #[derive(Debug)]
@@ -218,11 +253,7 @@ impl AudioClip {
     pub fn decode_wav<R: Read + Seek>(reader: R) -> std::result::Result<Self, AudioError> {
         let mut reader = WavReader::new(reader).map_err(|_| AudioError::Invalid)?;
         let spec = reader.spec();
-        if !(MIN_SAMPLE_RATE..=MAX_SAMPLE_RATE).contains(&spec.sample_rate)
-            || !(1..=MAX_CHANNELS).contains(&spec.channels)
-        {
-            return Err(AudioError::Unsupported);
-        }
+        validate_wav_input(&spec)?;
         let frames =
             usize::try_from(reader.duration()).map_err(|_| AudioError::ResourceExhausted)?;
         let normalized_samples = frames
@@ -238,26 +269,19 @@ impl AudioClip {
         }
         let channels = usize::from(spec.channels);
         let int_scale = 2_f32.powi(i32::from(spec.bits_per_sample) - 1);
-        let mono = match (spec.sample_format, spec.bits_per_sample) {
-            (SampleFormat::Float, 32) => {
+        let mono = match wav_format(&spec)? {
+            WavFormat::F32 => {
                 decode_mono::<_, f32, _>(&mut reader, channels, frames, |sample| sample)?
             }
-            (SampleFormat::Int, 1..=8) => {
-                decode_mono::<_, i8, _>(&mut reader, channels, frames, |sample| {
-                    f32::from(sample) / 128.0
-                })?
-            }
-            (SampleFormat::Int, 9..=16) => {
-                decode_mono::<_, i16, _>(&mut reader, channels, frames, |sample| {
-                    f32::from(sample) / int_scale
-                })?
-            }
-            (SampleFormat::Int, 17..=32) => {
-                decode_mono::<_, i32, _>(&mut reader, channels, frames, |sample| {
-                    sample as f32 / int_scale
-                })?
-            }
-            _ => return Err(AudioError::Unsupported),
+            WavFormat::I8 => decode_mono::<_, i8, _>(&mut reader, channels, frames, |sample| {
+                f32::from(sample) / 128.0
+            })?,
+            WavFormat::I16 => decode_mono::<_, i16, _>(&mut reader, channels, frames, |sample| {
+                f32::from(sample) / int_scale
+            })?,
+            WavFormat::I32 => decode_mono::<_, i32, _>(&mut reader, channels, frames, |sample| {
+                sample as f32 / int_scale
+            })?,
         };
         let duration_ms = mono.len() as u64 * 1_000 / u64::from(spec.sample_rate);
         let samples = crate::dictation::try_resample_for_parakeet(&mono, spec.sample_rate)
@@ -474,6 +498,9 @@ fn transcribe(
 ) -> std::result::Result<Transcript, TranscriptionServiceError> {
     check_canceled(canceled)?;
     let mut samples = clip.samples;
+    if heard_nothing(selection, &samples, timings) {
+        return Ok(Transcript::default());
+    }
     let engine_has_model = if samples.len() <= SHARED_MAX_SAMPLES {
         let audio = Arc::new(samples);
         let shared = {
@@ -502,6 +529,25 @@ fn transcribe(
     let transcript = transcript?;
     check_canceled(canceled)?;
     Ok(transcript)
+}
+
+/// Whether a GGUF clip holds only silence, as a long GGUF clip's silent
+/// chunks are skipped: models invent text for silence (#1194) or run to their
+/// generation cap (#968). Only an installed speech detector is asked, so a
+/// request never starts its download, and a timed request still gets the
+/// model's own answer or refusal.
+fn heard_nothing(
+    selection: &TranscriptionSelection,
+    samples: &[f32],
+    timings: TimestampLevel,
+) -> bool {
+    timings == TimestampLevel::None
+        && matches!(
+            crate::transcription::models::definition(selection.model).runtime,
+            crate::transcription::models::ModelRuntime::Gguf(_)
+        )
+        && crate::transcription::models::speech_detector_installed()
+        && !crate::transcription::gguf_session::chunk_may_hold_speech(samples)
 }
 
 /// Transcribes `samples` on a held model, with the model's own timings only

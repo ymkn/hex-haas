@@ -69,6 +69,7 @@ mod transcript;
 mod warning;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) mod watcher;
+pub use capture::voice_level;
 #[cfg(all(debug_assertions, target_os = "macos"))]
 pub use chapters::chapters_file;
 #[cfg(target_os = "macos")]
@@ -80,7 +81,7 @@ pub use notes::{MeetingNotes, display_title, notes_in_progress, notes_wanted, sp
 pub use notes::{summarize, summarize_file};
 #[cfg(test)]
 pub use retention::audio_expired;
-pub use retention::{expire, expire_audio, expired, retention_for};
+pub use retention::{expire, expire_audio, list, retention_for};
 pub use transcript::TranscriptReader;
 pub use warning::TrackWarning;
 
@@ -1013,7 +1014,8 @@ pub fn finish_pending(id: &str) -> Result<Option<MeetingManifest>> {
     finish::finish_transcription(&directory, manifest, &selection).map(Some)
 }
 
-pub fn list() -> Result<Vec<MeetingManifest>> {
+/// Maintenance must still see expired folders, including failed Trash attempts.
+fn list_all() -> Result<Vec<MeetingManifest>> {
     let root = root()?;
     let mut meetings = Vec::new();
     for entry in match fs::read_dir(root) {

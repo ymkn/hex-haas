@@ -384,8 +384,8 @@ impl WindowsDesktopHost {
         }
     }
 
-    /// Follows the foreground layout while switching is on, and starts the
-    /// installed-only preparation of a mapping once it is due.
+    /// Follows the focused window's layout while switching is on, and starts
+    /// the installed-only preparation of a mapping once it is due.
     fn switch_with_keyboard(&mut self) {
         let enabled = self.settings.keyboard_model_switching.enabled;
         if enabled != self.input_sources.is_some() {
@@ -395,11 +395,17 @@ impl WindowsDesktopHost {
             .input_sources
             .as_mut()
             .and_then(|watcher| watcher.poll())
-            && self
+        {
+            tracing::info!(
+                source = source.as_deref().unwrap_or("none"),
+                "keyboard input source changed"
+            );
+            if self
                 .keyboard_switcher
                 .source_changed(source, Instant::now())
-        {
-            self.supersede_automatic();
+            {
+                self.supersede_automatic();
+            }
         }
         let Some(choice) = self.keyboard_switcher.take_due(Instant::now()) else {
             return;
@@ -642,12 +648,13 @@ impl WindowsDesktopHost {
         self.preparation.set_error(Some(failed.error));
     }
 
-    /// Hosts the personal transformations workspace while any mode uses a
-    /// transformation or the workspace exists.
+    /// Hosts the personal transformations workspace under the shared policy.
     fn refresh_personal_commands_host(&mut self) {
-        let enabled =
-            crate::app_settings::transformations_used(&self.settings.dictation_processing)
-                || crate::personal_commands::workspace_configured();
+        let enabled = crate::personal_commands::host_needed(
+            crate::personal_commands::custom_transformations_selected(
+                &self.settings.dictation_processing,
+            ),
+        );
         match (enabled, self.personal_commands.is_some()) {
             (true, false) => {
                 self.personal_commands =

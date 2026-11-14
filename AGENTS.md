@@ -45,7 +45,8 @@ alone), Playground (Dev), Live text, Live chapters, Vocabulary biasing,
 Screen vocabulary (macOS), Switch
 model with keyboard language (#216), Mouse shortcuts (#209, macOS), Also
 pause the browser (#301, macOS), Share dictation shortcut (#176, Windows),
-Unload model when idle (#442), Terminal paste (Windows), and Terminal paste
+Unload model when idle (#442), Smaller model files (macOS), Terminal paste
+(Windows), and Terminal paste
 shortcut (Windows, Linux). Externally contributed features land there too.
 Annotate is a normal feature in every build, stable included, on macOS,
 Linux, and Windows; only developer tools (`dev_build::is_dev_build()` with
@@ -187,7 +188,8 @@ substitute for source inspection or a second roadmap.
   Orukeet).
 - `transcription/custom_models`, `transcription/gguf_header`: your own speech
   models: GGUF imports checked from their header alone (family, variant,
-  languages, F32/F16/Q8_0 tensors), copied into `models/custom/` under their
+  languages, F32/F16/Q8_0 tensors, plus Q4_K/Q5_K/Q6_K under Labs › Smaller
+  model files on macOS), copied into `models/custom/` under their
   SHA-256 with a receipt and manifest (or recorded in place for a found file),
   `TranscriptionModelId::Custom` IDs, and the default-model fallback for an
   import that can't run.
@@ -508,7 +510,7 @@ substitute for source inspection or a second roadmap.
   prevention while recording, and reveal and Trash.
 - `meeting/capture`: independent self-healing microphone (cpal) and system
   audio sources (macOS: Core Audio process tap, ScreenCaptureKit fallback;
-  Linux: `pw-record` of the default output's monitor; Windows: WASAPI
+  Linux: one `pw-record` per hardware sink's monitor, mixed; Windows: WASAPI
   loopback); one failing never stops the other, and resumed audio is padded
   onto the timeline.
 - `meeting/runtime`: the Linux and Windows apps' meeting controller thread,
@@ -1092,11 +1094,11 @@ CoreAudio formats, AppleScript details, or event serialization.
   can replace; after Stop they read the final transcript.
 - Meeting system audio uses a Core Audio process tap on macOS (System Audio
   Recording consent), never requiring a display; ScreenCaptureKit is only the
-  fallback. Linux records the default output's PipeWire monitor through
-  `pw-record` and Windows its WASAPI loopback; neither asks for consent.
-  Losing either source never stops the other or the meeting: it retries until
-  Stop, and resumed audio is padded with silence so WAV positions stay on the
-  shared capture clock.
+  fallback. Linux records every hardware output's PipeWire monitor through one
+  `pw-record` each, mixed, and Windows its WASAPI loopback; neither asks for
+  consent. Losing either source never stops the other or the meeting: it
+  retries until Stop, and resumed audio is padded with silence so WAV
+  positions stay on the shared capture clock.
 - Meeting recording prevents idle sleep but does not apply dictation mute or
   pause-media behavior.
 - Meeting notes (Apple Intelligence, or OpenCode only once the user turns on

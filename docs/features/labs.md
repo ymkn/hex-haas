@@ -51,7 +51,6 @@ Feature             Pane  Toggle (settings.json, hex settings)   On: what it doe
 ├── Keep mic open after dictating no labs.keep_microphone_open + labs.keep_microphone_open_seconds (30/60/180/300/1800, default 60)
 │                                        with Turn off the mic when not dictating on, the microphone stays open for that
 │                                        long after a capture, so the next dictation starts at once
-├── Restore shortcut default no labs.restore_shortcut_default   Paste last dictation's row offers its default back (#613)
 ├── Keep dictation on clipboard no labs.keep_on_clipboard (every OS) a pasted dictation stays on the clipboard; the previous one is not restored (#200)
 ├── Copy dictation only no labs.copy_only (macOS, Windows)    a dictation goes to the clipboard and is never pasted; Paste last dictation still pastes (#629)
 ├── Return to app   no    labs.return_to_app           (macOS)   a dictation pastes into the app it started in, switching back to it first when another app came forward
@@ -97,7 +96,7 @@ Feature             Pane  Toggle (settings.json, hex settings)   On: what it doe
 ├── Skip long pauses no    labs.skip_pauses             (Linux, Windows) a whole-clip dictation run hears only the head and tail of each long pause (#899)
 ├── Stop when the call ends no labs.stop_when_call_ends (macOS) a recording Hex started on its own stops 30 s after its call app leaves the microphone and goes quiet (#835)
 ├── More call apps no    labs.more_call_apps             (every OS with Meetings) Signal, Telegram, WeChat, LINE, Webex, Element, and Phone calls are offered,
-│                                        and calls on Google Voice, Messenger, Teams, FaceTime, GroupMe, and Webex pages are named
+│                                        and calls on Google Voice, Messenger, FaceTime, GroupMe, and Webex pages are named
 ├── Fix results in Output no labs.output_fixes           Output's Try card offers Vocabulary and Fix this, which copies an agent prompt naming the wrong result (#989)
 ├── Process API transcripts no labs.api_processing       (every OS) apps using Hex's local API can add process=global to
 │                                        POST /transcriptions and POST /streams/{id}/finish to get the text after Global
@@ -139,18 +138,21 @@ Feature             Pane  Toggle (settings.json, hex settings)   On: what it doe
 │                                        // from a real browser page, and no live macOS or Windows request
 ├── Model in use first no labs.picker_active_first     the speech model picker shows the model in use first: Compare's first column, Every model's first row (#1019)
 ├── Use model files where they are no labs.model_in_place the picker adds a model file without copying it, so accounts can share one (#941)
+├── Smaller model files no labs.k_quant_models         (macOS) adding a model file also accepts Q6_K, Q5_K, and Q4_K weights, smaller than Q8_0 and unverified
+│                                        // checks: k_quants_are_known_only_where_the_caller_runs_them,
+│                                        // k_quant_tensors_are_measured_in_their_ggml_block_sizes (gguf_header);
+│                                        // a_k_quant_import_needs_the_lab_and_falls_back_without_it (custom_models);
+│                                        // smaller_model_files_is_its_own_switch_and_macos_only (labs.rs); not observed on Metal
 ├── Downloaded models only no labs.picker_downloaded   the picker's All speech models view can show only downloaded models, with the space Hex's copies take (#1018)
-├── Transcribe files no   labs.transcribe_files        (every OS) `hex transcribe <file>` prints a saved WAV recording's transcript
-│                                        from the selected model (or --model); Hex running sends it to POST /transcriptions with that
-│                                        model named (≤30 s on the dictation engine's loaded copy, longer clips on the service's
-│                                        own), Hex stopped loads the model here on Linux and Windows (macOS answers
-│                                        not-running); the file is capped at 64 MiB and checked as WAV here; no paste, History, or processing
-│                                        // checks: the_lab_off_refuses_and_names_its_toggle,
-│                                        // a_file_that_is_not_wav_is_refused_before_any_transcription,
-│                                        // a_wav_uses_the_selected_model_and_language, an_empty_transcript_is_no_speech,
-│                                        // a_refusal_follows_hexs_code_rather_than_its_status
-│                                        // (control/cli/transcribe.rs); a running service answered model-unavailable for an uninstalled
-│                                        // model, but no transcript answer or offline model load was observed, and nothing ran on macOS or Windows
+├── Shell completions no  labs.shell_completions        (every OS) `hex completions <shell>` prints a bash, zsh, fish,
+│                                        elvish, or PowerShell completion script for `hex`, generated at runtime from the
+│                                        same clap tree the CLI parses, so new commands and flags are in it; off, it
+│                                        answers disabled and names its toggle, and the command stays out of `hex --help`
+│                                        // checks: the_lab_off_refuses_and_names_its_toggle and
+│                                        // every_shell_gets_a_script_with_the_command_tree (control/cli/completions.rs);
+│                                        // the_cli_prints_completion_scripts (linux.rs, main.rs, windows.rs);
+│                                        // shell_completions_is_its_own_switch_and_everywhere (labs.rs); not observed as
+│                                        // a sourced script in a real shell
 ├── Keep recordings no    labs.keep_recordings         History entries keep their dictation audio; Play hears it, and Transcribe again runs it through another installed model (#1032)
 ├── Hide menu bar icon no labs.hide_menu_bar_icon      (macOS) the menu-bar icon hides while no meeting is under way; shortcuts keep working, reopening Hex shows Settings (#1064)
 ├── Pause from menu bar no labs.pause_menu             (macOS) the menu bar's action block offers Pause Hex; while paused every capture shortcut and the secure-input hotkeys are inert, the event tap passes keys through, and Resume waits for a neutral keyboard (#82)
@@ -286,7 +288,12 @@ Settings › Labs                          // labs.page, a store (labs/store.rs)
 ├── A chip, a search (name, description, group), or Turned on -> only the matching cards,
 │   still under their headers; a chip or search shows every match whatever the folds,
 │   under a plain heading; none -> "No labs match" / "Nothing turned on yet"
-│   // checks: labs_groups_fold_and_remember_it, labs_groups_follow_each_os (tests/panes.rs);
+│   // checks: the_labs_search_clear_button_empties_the_field_and_brings_every_card_back,
+│   // labs_groups_fold_and_remember_it, labs_groups_follow_each_os (tests/panes.rs);
+│   // labs_search_clears_across_the_titlebar_button_and_keeps_typing (labs/store.rs):
+│   // macOS runtime, top/middle/bottom presses with the native titlebar band, both
+│   // appearances, typed and linked searches, restored cards, retained focus and typing;
+│   // observed failing without the clear callback and passing with it; no AppKit window
 │   // every_group_has_a_feature_and_round_trips_its_id (labs/group.rs);
 │   // goldens mac-labs (light, dark), windows-labs, linux-labs, mac-labs-link
 ├── Card -> neutral icon tile, name with New / Dev tags on one line, up to two lines of description, a switch;
@@ -552,17 +559,11 @@ last free bit and the window lives in its own atomic, both written by
 page goldens were regenerated for the new card. Not yet observed on a real
 Mac, Windows PC, or Linux desktop: no capture has been run with the lab on.
 
-Restore shortcut default (`restore-shortcut-default`, issue 613): while on,
-General › Advanced › Paste last dictation shows a Restore default shortcut
-button (`restore-paste-last`) whenever the shortcut is not its default
-(Option-Shift-V on macOS, Ctrl+Alt+V elsewhere), and a cleared shortcut's
-row reads "Default shortcut: …". Pressing it saves the default through the
-same checks a recorded shortcut meets; if another Hex shortcut already uses
-it, nothing changes and the recorder opens with "Already in use". Off, the
-row is exactly as before. The gate is the row itself (the feature does no
-other work). Check:
-`restore_default_brings_back_paste_last_only_with_its_lab_on` in
-[tests.rs](../../src/rune_ui/tests.rs).
+Restore shortcut default (`restore-shortcut-default`, issue 613) graduated:
+Paste last dictation's row always offers Reset when its shortcut isn't the
+default (see [dictation.md](dictation.md)). `labs.restore_shortcut_default`
+is read and ignored, and `hex labs on restore-shortcut-default` says it
+graduated.
 
 Settings search (`settings-search`, every OS): while on, General starts with
 a single-line search field. Typing keeps only the rows and cards whose title
@@ -577,8 +578,9 @@ restores the pane. The gate is the pane
 `labs::Feature::SettingsSearch`), so off, General is exactly as before.
 Checks: `settings_search_shows_with_its_lab_and_filters_general`,
 `settings_search_matches_descriptions`,
-`settings_search_keeps_permissions_and_status_cards`, and
-`command_f_focuses_general_search_only_with_its_lab_and_pane` in
+`settings_search_keeps_permissions_and_status_cards`,
+`the_settings_search_clear_button_empties_the_field_and_restores_the_pane`,
+and `command_f_focuses_general_search_only_with_its_lab_and_pane` in
 [tests.rs](../../src/rune_ui/tests.rs) and the matching test in
 [general/search.rs](../../src/rune_ui/general/search.rs). Not yet observed
 in a real window; the Labs page goldens were regenerated for macOS
@@ -655,8 +657,9 @@ it snapshots nothing, schedules no 500 ms restore, and calls its
 `Restore::keep`, so a paste made while the lab was on leaves nothing for a
 later paste with it off to bring back. A typed-text replacement, which saved
 the clipboard before it copied the selection, and a capture's PNG still
-restore; one whose clipboard snapshot failed has nothing to restore and falls
-back to the ordinary paste, so it follows the toggle too. Off, pasting and
+restore; one with no readable format, or one whose clipboard changed while it
+was read, has nothing to restore and falls back to the ordinary paste, so it
+follows the toggle too. Off, pasting and
 clipboard restore are exactly as before. Checks:
 `a_kept_paste_leaves_nothing_to_restore` and
 `a_kept_transcript_is_an_ordinary_clipboard_entry` in
@@ -1704,13 +1707,55 @@ the call app coming back drops it too. After 30 s (`AUTO_STOP_GRACE`,
 `AutoStop` in [meeting/detection.rs](../../src/meeting/detection.rs)) the
 controller stops the recording as Stop & Transcribe does and logs it. Manual,
 offered, and calendar recordings never stop, and off, nothing reads the
-output and the capsule and controller are exactly as before. Not built: the
-leave-call button as a signal, per-app rules, and holding off while the
-network is down. Checks: `stop_when_call_ends_is_its_own_bit_and_off_by_default`
-in [labs.rs](../../src/labs.rs) and the auto-stop checks listed in
-[meetings.md](meetings.md#record). Not yet observed: a real WhatsApp, Zoom,
-or Teams call on a Mac with the toggle on; the row renders only in macOS
-builds, so no golden changes.
+output and the capsule and controller are exactly as before.
+
+A browser that never releases the microphone between calls is the second
+signal (#1775; Arc). Leaving a Google Meet call and opening the next one in
+the same browser leaves the microphone and output open, so the absence above
+never comes and one recording spanned both calls. While such a recording
+runs, an automatic one whose call's page named its code (a Meet code, from
+the address or a code-only tab title) keeps that browser's page being read
+every 2 s (`TabProbe::watching`, `TAB_QUERY_WATCH`) instead of dropping it as
+every other recording does, and the controller compares the code with the
+one the recording started with (`CallSwitch` in
+[meeting/detection.rs](../../src/meeting/detection.rs)). Another code showing
+for 4 s (`CALL_CHANGED_AFTER`) is a different call: the same "left the call"
+capsule with the 30 s grace
+(`ControllerEvent::CallEnded { auto_stop: true }`, logged "the page named a
+different call; the recording stops after its grace unless kept"), then Stop
+& Transcribe on its own `AutoStop` deadline, logged "meeting recording
+stopped automatically after its page named another call". Its deadline is
+separate from the absence one because a browser still on the microphone keeps
+the call app present, which drops that one every pass. Keep recording
+disarms both and `CallSwitch::keep()` remembers the code so it never ends
+this recording, however long it shows; a third code still does, and a
+Keep recording after the microphone-release capsule never forgets it. Hex
+reads that page about every 2 s while such a recording runs; a page that
+names no call (mail, another site) never ends it, so switching to a
+non-meeting tab mid-call stops nothing. The 4 s and the grace mean roughly
+the next call's first half-minute lands in the previous recording, and the
+next recording starts once this one finishes transcribing.
+Detection is untouched: once the recording finishes, the new code is offered
+or recorded as a new call rather than snoozed as the first one (#1113). Limits:
+only calls whose page names a code carry this signal (Google Meet today; a
+browser that exposes no address and a tab title without a code names none), a
+tab with no meeting never ends a recording, and the other apps' absence rule
+is unchanged. Not built: the leave-call button as a signal, per-app rules, and
+holding off while the network is down. Checks: `stop_when_call_ends_is_its_own_bit_and_off_by_default`
+in [labs.rs](../../src/labs.rs), and the auto-stop checks listed in
+[meetings.md](meetings.md#record), including
+`a_call_switch_fires_once_after_another_code_holds_for_a_few_seconds`,
+`a_brief_glance_at_another_call_does_not_end_a_recording`,
+`keeping_a_different_call_never_ends_the_recording_for_that_code`,
+`a_call_switch_without_a_recorded_code_never_fires`,
+`a_call_switched_to_while_the_browser_stays_on_the_microphone_is_not_snoozed`,
+`a_watched_page_is_queried_every_two_seconds_instead_of_backing_off`,
+`only_an_automatic_browser_call_with_a_code_keeps_reading_its_page`,
+`keep_recording_disarms_the_call_switch_stop_too`, and
+`keep_recording_keeps_the_code_that_was_counting`. Not yet observed: a real
+WhatsApp, Zoom, or Teams call on a Mac with the toggle on, or a real Meet call
+switched in the same Arc window; the row renders only in macOS builds, so no
+golden changes.
 
 More call apps (`more-call-apps`, every OS with Meetings; its row shows
 wherever Meetings does): for calls in messaging apps and on websites call
@@ -1734,17 +1779,18 @@ Webex app's Windows host. Signal, Telegram, WeChat, LINE, Element, Messenger,
 and GroupMe also hold the microphone for voice notes or clips, so they keep
 it about 20 s before they count as calls, as WhatsApp does; Webex and Phone
 count after 2 s. A browser on Google Voice (`voice.google.com`), Messenger
-(`messenger.com`), Teams (`teams.live.com`), FaceTime
-(`facetime.apple.com`), GroupMe (`web.groupme.com`), or any `webex.com`
-subdomain is named after the service; these names need the browser's page,
-which Hex reads on macOS ([meetings.md](meetings.md#detect-and-offer)).
-Detected calls lists the seven apps, Google Voice, Messenger, and GroupMe
-while the lab is on. A Teams page gets its own `teams.live.com` choice from
-an offer's "…", shown as "Teams (web)", and a FaceTime page its own
-`facetime.apple.com` choice ("FaceTime (web)"); neither follows the Teams or
-FaceTime app's choice. A Webex page's `webex.com` choice is set the same way
-and covers every subdomain, so those three have no always-listed row; Ask /
-Always record / Never offer work as for the existing services. Off, offers are unchanged: those processes are not meeting apps,
+(`messenger.com`), FaceTime (`facetime.apple.com`), GroupMe
+(`web.groupme.com`), or any `webex.com` subdomain is named after the service;
+these names need the browser's page, which Hex reads on macOS
+([meetings.md](meetings.md#detect-and-offer)). Detected calls lists the seven
+apps, Google Voice, Messenger, and GroupMe while the lab is on. A FaceTime page
+gets its own `facetime.apple.com` choice from an offer's "…", shown as
+"FaceTime (web)", which does not follow the FaceTime app's choice. A Webex
+page's `webex.com` choice is set the same way and covers every subdomain, so
+those two have no always-listed row; Ask / Always record / Never offer work as
+for the existing services. Teams pages are not part of this lab: they are
+recognised without it, and follow the Microsoft Teams app's choice
+([meetings.md](meetings.md#detect-and-offer)). Off, offers are unchanged: those processes are not meeting apps,
 the pages stay unknown pages ("Browser call") after 20 s, and Detected calls
 lists exactly the services it did before. Checks:
 `more_call_apps_are_unknown_until_their_lab_is_on`,
@@ -1820,6 +1866,29 @@ in [transcription/custom_models.rs](../../src/transcription/custom_models.rs);
 [labs.rs](../../src/labs.rs). Not yet observed: a real window or a second
 macOS account; the Labs page goldens need regenerating on Linux with the new
 row.
+
+Smaller model files (`k-quant-models`, macOS): for an imported speech model
+quantized smaller than Q8_0. While on, "Add model file…" and "Use model file
+where it is…" accept Q6_K, Q5_K, and Q4_K tensors too, through the one header
+check (`custom_models::profile`, given the types this build can run:
+`gguf_header::TensorTypes`). The import's manifest records `k_quants`, and a
+saved choice of one while the lab is off stays saved while the listener runs
+the default model, with `hex status` saying "its Labs toggle is off"
+(`FallbackReason::LabsOff`, the path Parakeet Ultra uses); `hex model use` on
+one is refused and names `hex labs on k-quant-models`. Off, the rule and its
+message are exactly F32, F16, and Q8_0. Linux and Windows never run these
+files: their Vulkan builds embed shaders only for the catalog's types, so the
+lab is not listed there and the check refuses the file either way. The tensor
+sizes the header check uses come from ggml's block sizes (256 values in 144,
+176, and 210 bytes), so a cut-short file is still refused. Checks:
+`k_quants_are_known_only_where_the_caller_runs_them`,
+`k_quant_tensors_are_measured_in_their_ggml_block_sizes` in
+[gguf_header.rs](../../src/transcription/gguf_header.rs),
+`a_k_quant_import_needs_the_lab_and_falls_back_without_it` in
+[custom_models.rs](../../src/transcription/custom_models.rs), and
+`smaller_model_files_is_its_own_switch_and_macos_only` in
+[labs.rs](../../src/labs.rs). Not yet observed: a real K-quant file transcribed
+on Metal (macOS), or the row in a real window.
 
 Downloaded models only (`picker-downloaded`, issue 1018, every OS): for
 seeing which speech models take disk space and deleting unused ones. While
@@ -2093,7 +2162,8 @@ shortcut uses) opens a second copy of Annotate's capture picker
 ├── Space      -> window mode: a camera replaces the pointer and the window under it highlights;
 │                 Space again -> area
 ├── Click      -> the whole display ("Full screen · Click to capture")
-├── Escape     -> closes it, nothing shot; Escape reaches no other app or Hex shortcut
+├── Escape     -> closes it, nothing shot; Escape reaches no other app or Hex shortcut;
+│                 a permission reply for that opening cannot reopen it or change a later pick
 └── Release    -> shot at the display's own pixels (ScreenCaptureKit), Hex's overlays,
                   the picker, and the pointer left out
                   ├── PNG (pHYs at the display's scale) -> "Hex Screenshot 2026-11-04 at 14.03.22.png"
@@ -2137,7 +2207,8 @@ cards
 CleanShot's ⌘S saves the capture; every Hex capture is already saved,
 so ⌘S shows it in Finder instead.
 
-Every shot and recording the Lab saves is also listed in the Captures
+Every shot and recording the Lab saves, and every annotation and replay
+Annotate wrote to its captures folder, is also listed in the Captures
 pane ([captures.rs](../../src/rune_ui/captures.rs)), which sits under
 History in the sidebar while the Lab is on. It is its own pane rather than
 a part of History: its rows are pictures and movies with their own
@@ -2146,12 +2217,19 @@ actions, and History's retention menu and Clear all don't apply to them.
 ```ts
 Captures
 ├── search      -> every word in what was said over it, its file name, or its kind
+│                  (an annotation: its words, app, the session it went to)
 ├── rows        -> newest first, the last 30 days, only files still where they were saved:
 │                  thumbnail · the words said over it (else the file's name) ·
-│                  "Screenshot · 2880 × 1800" or "Screen recording · 0:42" · its age
-├── click       -> the editor (a shot with its words; a recording to trim)
-├── drag        -> the file
+│                  "Screenshot · 2880 × 1800", "Screen recording · 0:42",
+│                  "Annotation · 0:18", or "Annotation · Video expired" · its age
+├── click       -> the editor (a shot with its words; a recording, or an
+│                  annotation's movie with its timed words, to trim; an
+│                  annotation whose movie expired: its first keyframe)
+├── drag        -> the file (an annotation's movie, else its keyframe)
 ├── hover       -> Copy, Show in Finder, Move to Trash in the age's place
+│                  (Copy: a check only once the clipboard has it, else the
+│                  error tone; an annotation copies as Annotate does; Trash
+│                  moves an annotation's whole bundle)
 └── nothing yet -> "No captures yet." and what shows here
 ```
 
@@ -2159,19 +2237,34 @@ The list reads an owner-only index in Application Support
 (`captures/index.json`, 0600 in a 0700 folder) with a 240 px PNG thumbnail
 per entry beside it ([history/captures.rs](../../src/history/captures.rs)),
 never the files themselves. A shot is remembered as it saves, a recording
-once its movie is saved, and words said over a shot in the editor replace
-its entry's words. Entries past 30 days or past 500 entries drop with
+once its movie is saved, and each accepted dictation over a shot appends to
+that shot's entry. Closing or replacing its editor before release returns
+the dictation to ordinary paste. After release, its words stay attached to
+the original shot even if the editor closes; they never land on a different
+shot or finish a newer dictation. Escape cancels only that narration request.
+Pure request tests live in `screenshot_thumbnail/editor/narration.rs` and
+`screenshots/picker.rs`; these are not native shortcut or permission proof.
+Entries past 30 days or past 500 entries drop with
 their thumbnails the next time one is added; each keeps at most 4 KiB of
 words. Move to Trash (a card's or the pane's) forgets the entry. The
 editor's Save makes a new file that isn't listed. Writes are atomic, and a
 malformed index is kept aside as `index.json.corrupt`.
+
+Annotations come from the captures folder itself
+([history/annotations.rs](../../src/history/annotations.rs)), never an
+index: while the pane shows, a `hex-captures-scan` thread lists the
+`*.scrawl` bundles at most every 5 s, skips any whose name dates it past 30
+days, and reads only the `scrawl.json` files that changed since the last
+scan. Annotate's replays are written as ordinary bundles, so they list as
+annotations too.
 
 The last ten cards closed (by ✕, a key, the menu, opening the editor, or
 the stack reaching the top) are kept in memory. The menu bar's Restore
 Last Capture, shown while the Lab is on and dimmed until a card was
 closed, brings back the newest of them, sliding in from the right edge
 into the corner; one whose file is gone is skipped, and Move to Trash
-keeps none. They don't outlast Hex.
+keeps none. They don't outlast Hex: after a relaunch the Captures pane is
+the way back to a closed card's capture.
 
 The card's overlay is the whole display under the pointer, click-through
 outside the card, so the card can start anywhere a shot was taken from.
@@ -2387,7 +2480,9 @@ and the mark model in [screenshot_thumbnail/editor/marks.rs](../../src/rune_ui/s
 `screenshots_is_its_own_bit_and_off_by_default` in [labs.rs](../../src/labs.rs);
 the index's order, reopen, owner-only modes, search, window, caps, forgetting,
 words, and a malformed file in [history/captures.rs](../../src/history/captures.rs);
-the Captures pane as the `captures` golden (light and dark) and
+the annotation listing's window, order, expired movies, search, and rescan in
+[history/annotations.rs](../../src/history/annotations.rs);
+the Captures pane (with an annotation row) as the `captures` golden (light and dark) and
 `--scene captures-empty`;
 its card renders as `--scene mac-labs-screenshots`; the card's entrance
 and the stack's motion are `thumbnail_frames` (`HEX_SCREENSHOT_FRAMES`
@@ -2742,6 +2837,12 @@ written while the lab was on still follows later notes and renames. Checks:
 [labs.rs](../../src/labs.rs). The Labs page goldens (`mac-labs`,
 `windows-labs`, `linux-labs`) show the new card. Not yet observed: a real macOS
 end-to-end run writing, renaming, and trashing a separate notes file.
+
+Transcribe files (`transcribe-files`) graduated: `hex transcribe <file>`
+always works now, reads common audio and video formats, and starts its own
+embedded service when Hex isn't running ([control-cli.md](control-cli.md)).
+`hex labs on|off transcribe-files` still answers with that and exits 0
+(`labs::GRADUATED`); the saved `labs.transcribe_files` key is ignored.
 
 Meeting platform icons (`meeting-platform-icons`, issue 1290) graduated:
 each recording in the Meetings list always shows its call service's icon, or

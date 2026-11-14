@@ -41,9 +41,6 @@ impl Feature {
             Self::KeepMicrophoneOpen => {
                 "With Turn off the mic when not dictating on, keep the microphone open for a while after each dictation (labs.keep_microphone_open_seconds), so the next one starts at once"
             }
-            Self::RestoreShortcutDefault => {
-                "Offer Restore default next to Paste last dictation's shortcut"
-            }
             Self::KeepOnClipboard => {
                 "Leave the dictation on the clipboard after pasting instead of restoring what was there"
             }
@@ -118,6 +115,9 @@ impl Feature {
             Self::PickerActiveFirst => "The speech model picker lists the model you're using first",
             Self::ModelInPlace => {
                 "Add a speech model file and use it where it is, without copying it, so several accounts can share one file"
+            }
+            Self::KQuantModels => {
+                "Add your own speech model files that use Q6_K, Q5_K, or Q4_K weights. They are smaller than Q8_0 but Hex hasn't verified them, so accuracy may vary."
             }
             Self::PickerDownloaded => {
                 "Show only downloaded speech models in the picker, with the space they take"
@@ -196,9 +196,6 @@ impl Feature {
             Self::OpenCodeInWsl => {
                 "Use an OpenCode service running in your default WSL distribution for Modes rewriting and the Modes model picker; looking for it can start WSL"
             }
-            Self::TranscribeFiles => {
-                "Turn a WAV recording into text with hex transcribe <file> and your dictation model"
-            }
             Self::ApiProcessing => {
                 "Let apps using Hex's local API ask for transcripts with your Global mode's corrections, rewrite, and transformations applied"
             }
@@ -219,6 +216,9 @@ impl Feature {
             }
             Self::VoicePrompt => {
                 "Say \"rewrite this\" in a dictation, then an instruction; Hex applies it with the mode's OpenCode model"
+            }
+            Self::ShellCompletions => {
+                "Print a completion script for bash, zsh, fish, elvish, or PowerShell with hex completions <shell>"
             }
         }
     }

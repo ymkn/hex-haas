@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand};
 use color_eyre::Result;
 use color_eyre::eyre::{WrapErr, bail};
 use windows_sys::Win32::System::Console::{
@@ -174,7 +174,7 @@ pub fn run(shutdown: &'static AtomicBool) -> Result<()> {
     // Control and read commands talk to the running Hex or read files: no
     // log, lock, or Hex of their own.
     if let Command::Control(command) = command {
-        crate::control::cli::finish(crate::control::cli::run(command));
+        crate::control::cli::finish(crate::control::cli::run(command, Cli::command));
     }
     // The fork's self-update runs locally like a control command: no log,
     // lock, or Hex of its own.
@@ -220,14 +220,15 @@ pub fn run(shutdown: &'static AtomicBool) -> Result<()> {
                 fallback_to_default_device: false,
                 ..crate::windows::dictation::WindowsDictationConfig::from_settings(&settings)
             };
-            let _personal_commands =
-                crate::app_settings::transformations_used(&settings.dictation_processing)
-                    .then(|| {
-                        crate::personal_commands::PersonalCommands::start(
-                            config.transformations.clone(),
-                        )
-                    })
-                    .flatten();
+            let _personal_commands = crate::personal_commands::host_needed(
+                crate::personal_commands::custom_transformations_selected(
+                    &settings.dictation_processing,
+                ),
+            )
+            .then(|| {
+                crate::personal_commands::PersonalCommands::start(config.transformations.clone())
+            })
+            .flatten();
             // Settings a foreground listener loaded stay as they are, and
             // only its shortcut drives it.
             crate::windows::dictation::run(
@@ -585,6 +586,26 @@ fn fail_capture(events: &EventLog, device: &str, error: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_cli_prints_completion_scripts() {
+        use clap::CommandFactory;
+        use clap_complete::Shell;
+
+        for shell in [Shell::Bash, Shell::Zsh, Shell::Fish] {
+            let mut script = Vec::new();
+            clap_complete::generate(shell, &mut Cli::command(), "hex", &mut script);
+            let script = String::from_utf8(script).expect("a completion script is UTF-8");
+            assert!(
+                script.contains("dictation"),
+                "{shell:?} script has no dictation"
+            );
+            assert!(
+                script.contains("stream-bench"),
+                "{shell:?} script has no Windows-only stream-bench command"
+            );
+        }
+    }
 
     #[test]
     fn polish_selection_uses_the_multilingual_parakeet_model() {

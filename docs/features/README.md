@@ -33,9 +33,7 @@ Agents can [read retained transcripts](transcript-cli.md) and
 [Labs](labs.md) gives every unfinished feature its own switch, off by
 default, listed under collapsible groups (Dictation, Output, History,
 Meetings, Annotate, Shortcuts, Models) with only this OS's labs.
-Its Restore shortcut default toggle (off by default) puts a Restore default
-button beside Paste last dictation's shortcut (#613); its Sort and filter
-models toggle (off by default) adds a sort and a saved-language filter to the
+Its Sort and filter models toggle (off by default) adds a sort and a saved-language filter to the
 Local transcription picker (#645); its Benchmark details toggle (off by
 default) shows each model's raw WER or CER with its language, dataset, source,
 and conditions (#647); its Settings search toggle (off by default) puts a
@@ -43,9 +41,7 @@ search field at the top of General that filters its rows; its Release notes
 link toggle (off by default) puts a link to this build's release notes in the
 sidebar footer; its Appearance toggle (off by default) forces the main window
 light or dark instead of following the OS, while the HUD and other overlays
-keep following it; its Transcribe files toggle (off by default) adds
-`hex transcribe <file>`, which prints a saved WAV recording's transcript from
-the selected model ([control-cli.md](control-cli.md)); its Screen vocabulary
+keep following it; its Screen vocabulary
 toggle (off by default, macOS) uses names and terms visible in the focused
 window as temporary vocabulary for each dictation, read locally through
 Accessibility and never saved ([vocabulary.md](vocabulary.md)).
@@ -59,7 +55,8 @@ Taiwan-usage phrase converter (`desktop/i18n/traditional_chinese.rs`), not yet
 reviewed by a native speaker.
 The [vocabulary](vocabulary.md) biases transcription toward names you list.
 [Your own speech models](own-models.md) covers adding a GGUF file and using
-models another app already downloaded.
+models another app already downloaded; its Labs › Smaller model files toggle
+(off by default, macOS) also accepts imports quantized to Q6_K, Q5_K, or Q4_K.
 [Annotate](capture.md) (macOS, Linux,
 and Windows) records the screen while you draw and talk and sends it to an agent.
 [Screenshots](labs.md) (Labs, macOS) takes CleanShot-style ⌘⇧4 area and
@@ -246,7 +243,17 @@ Launch Hex, setup incomplete              // setup.tour; every build and OS, ful
 │   │   each card floats off once allowed
 │   │   ├── No Input Monitoring row: Accessibility also lets the shortcut taps listen
 │   │   ├── Microphone -> macOS prompt; refused -> "Open System Settings" + guide
+│   │   │   ├── Until then, tones stay silent when the default output also records
+│   │   │   │   (a USB headset, a Mac VM's one sound device): opening it would
+│   │   │   │   make macOS prompt before the page asks
+│   │   │   └── A grant macOS took another way (CoreAudio's prompt, the switch in
+│   │   │       System Settings) reads from TCC, since AVFoundation keeps its first
+│   │   │       answer. Check: `a_microphone_answer_avfoundation_has_not_seen_reads_from_tcc`
 │   │   ├── Accessibility -> Privacy pane + drag guide
+│   │   │   ├── Granted while System Settings is still in front (within 3 s) ->
+│   │   │   │   Hex comes back in front; another app in front keeps it (also
+│   │   │   │   System Audio and Screen Recording). Check:
+│   │   │   │   `hex_returns_after_a_grant_only_while_system_settings_is_in_front`
 │   │   │   ├── Retired Hex bundle IDs (`com.kitlangton.hex2`, `com.kitlangton.Hex`,
 │   │   │   │   `com.kitlangton.Hex.debug`) cleared once in the background (`tccutil reset`,
 │   │   │   │   ignoring `OSStatus -10814` when no bundle is on disk)
@@ -278,6 +285,9 @@ Launch Hex, setup incomplete              // setup.tour; every build and OS, ful
 ├── Listener cannot start after setup     // setup.relaunch; event tap refused
 │   ├── First time -> Hex records a marker, reopens itself, resumes at the practice
 │   └── Within 2 min of that relaunch -> "Hex's shortcut didn't start." + Reopen Hex
+│       in place of the practice's hold prompt, idle pill, and hint (never a
+│       second Reopen Hex in the top banner); Hex is ready keeps the banner.
+│       Check: `a_shortcut_that_did_not_start_shows_only_reopen`
 └── Hex is ready -> where Hex lives (menu bar, system tray, or app launcher)
     ├── macOS: "Open Hex when your Mac starts?" + Launch at login
     ├── Try again -> back to the practice game
@@ -395,13 +405,23 @@ Checks: `prompt_echo_is_dropped`, `speech_containing_the_hints_is_kept`,
 
 Models trained on subtitled video can end a clip with a subtitle credit nobody
 said, such as "Sous-titrage Société Radio-Canada" from Cohere Transcribe in
-French after a trailing pause (#1141). Every GGUF run and live stream drops a
-known credit only when it is the very end of the text (letters and digits
-compared, case and punctuation ignored), with its segment and words, in
+French after a trailing pause (#1141), or "İzlediğiniz için teşekkür ederim"
+and "Altyazı M.K." from Whisper in Turkish (#1770). Every GGUF run and live
+stream drops a known credit only when it is the very end of the text (letters
+and digits compared, case and punctuation ignored, Turkish dotted and dotless
+`i` folded together), with its segment and words, in
 dictation, meetings, and the local API alike; the same words elsewhere stay.
-The list is in
+A credit spoken mid-chunk and followed by more speech is kept. A dictation that
+genuinely ends with a listed phrase, such as the Turkish thanks, loses it: the
+list cannot tell it from the invention. Folding drops the combining marks in
+U+0300–U+036F, not only the Turkish dot: a decomposed `é` folds to `e`, while a
+precomposed one is unchanged. The list is in
 [transcription/subtitle_credits.rs](../../src/transcription/subtitle_credits.rs).
 Checks: `a_trailing_subtitle_credit_is_removed`,
+`a_turkish_thanks_for_watching_is_removed`,
+`a_truncated_turkish_credit_is_removed`,
+`the_same_words_mid_sentence_are_kept`,
+`a_combining_mark_inside_a_word_does_not_split_it`,
 `speech_without_a_trailing_credit_is_kept`, and
 `a_trailing_subtitle_credit_is_dropped_from_text_segments_and_words`. No
 inference reproduces the credit.
@@ -640,19 +660,21 @@ longer offers is dropped when settings load. Removing a source hides its row
 without erasing its saved mapping.
 
 Hex reads input sources only while the setting is on: the Windows runtime's poll
-of the foreground window's layout and the Linux host's XKB connection (polled
-every 250 ms) exist only then, and the macOS main-thread TIS
-distributed-notification observer, which always runs to rebuild the keyboard
-layout snapshot ([recovery](recovery.md#keyboard-layout-resolution)), reports
-the selected source only then; all work without a Settings window, and the
-window lists enabled sources only then. Windows lists the language bar's layouts, named by language and
-keyboard. On Linux the row appears only in X11 sessions: Wayland compositors keep
-the active layout to themselves, with no general protocol (IBus and Fcitx report
-input-method engines, not the compositor's layout), so Wayland is unavailable. Source changes cancel
-obsolete automatic work but keep manual preparation until a mapped choice is
-due. An unmapped source cancels only automatic work. This reuses the shared model
-selection, recording/stream fallback, and meeting-engine behavior; it adds no
-recording-time routing, model cache, or notifications.
+of the keyboard-focused window's layout, which ignores Hex's own windows, and
+the Linux host's XKB connection (polled every 250 ms) exist only then, and the
+macOS main-thread TIS distributed-notification observer, which always runs to
+rebuild the keyboard layout snapshot
+([recovery](recovery.md#keyboard-layout-resolution)), reports the selected
+source only then; all work without a Settings window, and the window lists
+enabled sources only then. Windows lists the language bar's layouts, named by
+language and keyboard. On Linux the row appears only in X11 sessions: Wayland
+compositors keep the active layout to themselves, with no general protocol
+(IBus and Fcitx report input-method engines, not the compositor's layout), so
+Wayland is unavailable. Source changes cancel obsolete automatic work but keep
+manual preparation until a mapped choice is due. An unmapped source cancels only
+automatic work. This reuses the shared model selection, recording/stream
+fallback, and meeting-engine behavior; it adds no recording-time routing, model
+cache, or notifications.
 
 Sources: observers for [macOS](../../src/keyboard_input_sources/macos.rs),
 [Windows](../../src/keyboard_input_sources/windows.rs), and
@@ -661,9 +683,10 @@ Sources: observers for [macOS](../../src/keyboard_input_sources/macos.rs),
 runtimes ([macOS](../../src/macos_rune.rs),
 [Windows](../../src/windows/app.rs), [Linux](../../src/linux/app.rs)), and
 [settings UI](../../src/rune_ui/settings.rs).
-Checks: the switch policy and settings/CLI validation tests, the runtime
-scheduling tests in [macos_rune/tests.rs](../../src/macos_rune/tests.rs) (macOS),
-the settings interaction tests in
+Checks: the switch policy and settings/CLI validation tests, the window-source
+decision tests (Hex's own windows and a missing layout name no source), the
+runtime scheduling tests in [macos_rune/tests.rs](../../src/macos_rune/tests.rs)
+(macOS), the settings interaction tests in
 [keyboard_model_tests.rs](../../src/rune_ui/keyboard_model_tests.rs), and the
 `mac-input-source-models` golden, and the XKB symbols-name tests in the X11
 observer. No check delivers native input-source notifications or switches
@@ -1015,7 +1038,7 @@ General                                  // settings
 │       ├── Turning it on without System Audio Recording -> ask now, never while dictating
 │       ├── On -> Screen & System Audio Recording row: Allow / waiting / Allowed
 │       └── Dictation -> browser_media sequence below
-├── Sound volume -> immediate feedback; zero suppresses tones
+├── Sound volume -> slider 0-100%; release saves and previews the start sound; zero suppresses tones
 │   └── A saved zero displays Off; enabling sounds through the CLI restores the default level
 │   └── Default output changes or disappears (macOS) -> next tone reopens on the current default
 ├── Sounds -> Sheet: hear each set on Hex's real HUD, pick one
@@ -1321,6 +1344,20 @@ under its own `timeout` (1 s by default, 30 s when the config uses host APIs,
 context to the configured provider; speech transcription stays local.
 
 ```ts
+Discover custom transformations           // personal_commands::host_needed; every OS
+├── A config exists (Set up, hex commands init, or a manual file) -> start the host
+├── A custom transformation is selected -> start, even if its config is missing
+├── Only built-ins selected, no config -> native transforms only, no script host
+└── DisableTransforms policy -> no host, regardless of config or selection
+```
+
+The macOS listener rechecks discovery every 250 ms; Linux and Windows use
+their host's refresh. `host_startup_discovers_a_config_without_selecting_a_transformation`
+in [personal_commands.rs](../../src/personal_commands.rs) covers the shared
+decision, policy denial, built-ins, and custom selection in global and other
+modes. This is a pure decision check, not a live Set up walkthrough.
+
+```ts
 Transform host APIs                      // personal_commands/{io,fetch,process,trust}.rs
 ├── fetch(url, { method, headers, body, signal }) -> Response (ureq, platform TLS)
 ├── node:child_process execFile / exec (+ node:util promisify, input option)
@@ -1484,6 +1521,8 @@ or the driver installed; off, the pane is hidden  // fun.hex-microphone; macOS, 
 │   │   node hex_microphone) that Hex plays into through `pw-cat` while the Voice Filter is on
 │   │   ├── Status -> Starting… / Available ("Choose Hex Microphone as your input…") / Unavailable + reason
 │   │   ├── pw-cat missing or exits -> Unavailable with its last error line; retries every 2 s
+│   │   ├── --raw -> only where pw-cat's help lists it (PipeWire 1.3.81+);
+│   │   │   1.2 and older reject it and already play raw on -
 │   │   ├── Off or Hex quits -> the source disappears (pw-cat ends with its input); no root, nothing installed
 │   │   └── Session priority 1 -> WirePlumber never picks it as the default input Hex records
 │   ├── macOS driver status -> Installed v<ver> / In use by <app> + Uninstall
@@ -1561,6 +1600,10 @@ Menu bar and Settings                    // maintenance
 │   │       window instead; dictation keeps running, the menu bar icon quits (labs.md)
 │   ├── No Meetings… (Settings… opens the same window) and no Show Hex in
 │   │   Screen Recordings (Annotate's pane has it)
+│   ├── In the interface language: macOS title case in English, else the
+│   │   window's translated labels; fixed rows retitle as the menu opens, state
+│   │   rows (meeting, pause, update) with each update; meeting titles never
+│   │   translate. Check: the_menu_follows_the_interface_language
 │   └── check: the_menu_reads_meeting_then_actions_then_the_app,
 │       paste_last_shows_the_saved_binding_or_nothing,
 │       the_pause_row_reads_pause_or_resume (status_item.rs; the
@@ -2014,9 +2057,17 @@ Linux beta                               // not macOS feature parity
 ├── Paste -> Restore the previous clipboard 500 ms after the shortcut  // linux.clipboard-restore
 │   ├── Labs > Keep dictation on clipboard (off) -> no snapshot, no restore; an
 │   │   earlier paste's pending restore stands down and the dictation stays (labs.md)
-│   ├── Before the transcript -> snapshot every format (32 MiB, 1 s); empty -> cleared again
+│   ├── Before the transcript -> read every offered format (32 MiB, 1 s shared)
+│   │   text and image/png first, then the rest, and offer them back in the
+│   │   offer's own order; empty offer -> cleared again; nothing is read once
+│   │   the deadline has passed
+│   ├── One format unreadable, or over the remaining cap -> that format is
+│   │   skipped and the rest still come back; an INFO line says how many came
+│   │   back and names the first eight skipped
+│   ├── No format could be read, or the clipboard's owner changed while it was
+│   │   being read -> transcript stays; the all-failed error names the first
+│   │   eight skipped formats and how many more there were
 │   ├── Later paste, copy, or another client replaced the transcript -> left alone
-│   ├── Over the cap or unreadable -> transcript stays; the log says why
 │   ├── Paste only reached the clipboard -> transcript stays for Ctrl+V
 │   └── Wayland without ext- or wlr-data-control -> transcript stays (KWin offers ext, #719)
 │       ├── Settings › Output -> note pointing to Labs › Restore clipboard on GNOME while it is off
@@ -2095,7 +2146,11 @@ Clipboard restoration lives in [linux/paste.rs](../../src/linux/paste.rs)
 empty one empty; a full dictation from a file-fed ALSA microphone pasted into a
 GTK target, then Ctrl+V pasted the original text; an X11 round trip on Xwayland
 restored a 3 MB image through INCR. Not observed on X11 dictation, KDE, or
-Hyprland.
+Hyprland. `collect_formats` (a skipped format, all lost, an empty offer, an
+empty read, read order, and the deadline cutoff) is unit-tested against fake
+reads only. The owner-change guards are not covered by any test: X11 compares
+the selection's owner window, so the same window replacing its contents mid-read
+is not seen, and Wayland compares the selection offer after one roundtrip.
 The Wayland paste choice lives in [linux/paste.rs](../../src/linux/paste.rs) and
 [linux/remote_desktop.rs](../../src/linux/remote_desktop.rs). Observed: the
 wtype path in the headless-Sway smoke and the virtual-keyboard probe on niri
@@ -2405,8 +2460,8 @@ or physical logout, Wayland, or signed cross-version update proof.
 ```ts
 Linux General > Sound volume              // dictate.feedback.linux; X11 + Wayland
 ├── Default / older settings -> 50%
-├── Off -> No recording tones
-└── 25% / 50% / 75% / 100% -> Save and apply live; preview the start sound
+├── Slider at 0 -> No recording tones; the last level is kept
+└── Release above 0 -> Save and apply live; preview the start sound
 Linux General > Sounds                    // dictate.sound-theme
 └── Signature / Classic -> Save and apply live; preview the start sound
 
@@ -2464,6 +2519,8 @@ TypeScript SDK + local service             // macOS, Linux, Windows
 │   └── Dictation first; uses the loaded model only (docs/streams.md)
 ├── Running app's /transcriptions -> Listener's engine when it holds the model
 │   ├── Otherwise the service's own copy of the requested model
+│   ├── Whole-clip run -> A Whisper clip's silent edges dropped, and a window
+│   │   the detector hears no speech in skipped (see dictation)
 │   ├── ?process=global -> Global mode's output processing (Labs › Process API transcripts)
 │   └── ?timestamps=segment|word -> The model's own segment or word times
 │       └── 422 unsupported-timestamps when it has no such level (Labs › Timestamps in API transcripts)
@@ -2471,8 +2528,9 @@ TypeScript SDK + local service             // macOS, Linux, Windows
 │   ├── A listed origin -> OPTIONS 204 + Access-Control-Allow-Origin, then a token-bearing request
 │   └── Any other origin, or the lab off -> OPTIONS 401, no CORS headers
 ├── Running desktop capture API -> Separate microphone ownership protocol
-│   ├── No silence gate                  // model output, unlike hotkey dictation;
-│   │                                     // only recognition-hint echoes are dropped
+│   ├── No capture silence gate           // model output, unlike hotkey dictation;
+│   │   └── its whole-clip run still drops a Whisper clip's silent edges,
+│   │       skips a window with no speech, and drops hint echoes
 │   ├── Linux, Windows -> The listener records it (dictation::service owner)
 │   │   ├── With the microphone chosen in Settings, as the shortcut does
 │   │   ├── Shortcut or `hex dictation` records -> 409 dictation-busy

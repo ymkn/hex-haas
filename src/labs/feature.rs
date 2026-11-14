@@ -22,7 +22,6 @@ pub enum Feature {
     ShareShortcut,
     UnloadIdle,
     KeepMicrophoneOpen,
-    RestoreShortcutDefault,
     KeepOnClipboard,
     CopyOnly,
     ReturnToApp,
@@ -48,6 +47,7 @@ pub enum Feature {
     OutputFixes,
     PickerActiveFirst,
     ModelInPlace,
+    KQuantModels,
     PickerDownloaded,
     SectionKeyAlone,
     KeepRecordings,
@@ -74,7 +74,6 @@ pub enum Feature {
     ExpireMeetingAudio,
     CapsLockDictation,
     OpenCodeInWsl,
-    TranscribeFiles,
     ApiProcessing,
     ApiTimestamps,
     ApiBrowserAccess,
@@ -84,6 +83,7 @@ pub enum Feature {
     PrintStart,
     VoicePrompt,
     CopyCaptureZip,
+    ShellCompletions,
 }
 
 impl Feature {
@@ -105,7 +105,6 @@ impl Feature {
         Self::ShareShortcut,
         Self::UnloadIdle,
         Self::KeepMicrophoneOpen,
-        Self::RestoreShortcutDefault,
         Self::KeepOnClipboard,
         Self::CopyOnly,
         Self::ReturnToApp,
@@ -131,6 +130,7 @@ impl Feature {
         Self::OutputFixes,
         Self::PickerActiveFirst,
         Self::ModelInPlace,
+        Self::KQuantModels,
         Self::PickerDownloaded,
         Self::SectionKeyAlone,
         Self::KeepRecordings,
@@ -157,7 +157,6 @@ impl Feature {
         Self::ExpireMeetingAudio,
         Self::CapsLockDictation,
         Self::OpenCodeInWsl,
-        Self::TranscribeFiles,
         Self::ApiProcessing,
         Self::ApiTimestamps,
         Self::ApiBrowserAccess,
@@ -167,5 +166,6 @@ impl Feature {
         Self::PrintStart,
         Self::VoicePrompt,
         Self::CopyCaptureZip,
+        Self::ShellCompletions,
     ];
 }

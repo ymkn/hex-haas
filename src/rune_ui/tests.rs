@@ -339,20 +339,12 @@ fn gnome_desktops_point_to_the_clipboard_lab_until_it_is_on() {
 }
 
 #[test]
-fn restore_default_brings_back_paste_last_only_with_its_lab_on() {
+fn reset_brings_back_paste_lasts_default() {
     use crate::app_settings::HotkeyBinding;
     let default = HotkeyBinding::paste_last_default();
     let mut rt = runtime("portal", true, TALL_SIZE);
     open_advanced(&mut rt, Pane::General);
     rt.state.settings.paste_last_hotkey = None;
-    rt.invalidate();
-    settle(&mut rt);
-    assert!(
-        rt.find("restore-paste-last").is_none(),
-        "hidden while Labs › Restore shortcut default is off"
-    );
-
-    rt.state.settings.labs.restore_shortcut_default = true;
     rt.invalidate();
     settle(&mut rt);
     let note = format!("Default shortcut: {}", default.keycaps().join("+"));
@@ -380,6 +372,36 @@ fn restore_default_brings_back_paste_last_only_with_its_lab_on() {
         rt.state.capture,
         settings::Capture::Listening {
             message: Some(_),
+            ..
+        }
+    ));
+}
+
+/// The Paste last recorder says Backspace turns it off, and plain
+/// Backspace does; Dictation's recorder says nothing and keeps its binding.
+#[test]
+fn backspace_in_an_optional_recorder_turns_the_shortcut_off() {
+    let hint = "Press Backspace to turn it off";
+    let mut rt = runtime("portal", true, TALL_SIZE);
+    open_advanced(&mut rt, Pane::General);
+    assert!(rt.state.settings.paste_last_hotkey.is_some());
+    assert!(!texts(&rt).iter().any(|text| text == hint));
+    tap(&mut rt, "paste-last-hotkey");
+    assert!(texts(&rt).iter().any(|text| text == hint));
+    key(&mut rt, Key::Backspace, Mods::default());
+    assert_eq!(rt.state.settings.paste_last_hotkey, None);
+    assert!(!matches!(rt.state.capture, Capture::Listening { .. }));
+    assert!(!texts(&rt).iter().any(|text| text == hint));
+
+    let dictation = rt.state.settings.dictation_hotkey.clone();
+    tap(&mut rt, "dictation-hotkey");
+    assert!(!texts(&rt).iter().any(|text| text == hint));
+    key(&mut rt, Key::Backspace, Mods::default());
+    assert_eq!(rt.state.settings.dictation_hotkey, dictation);
+    assert!(matches!(
+        rt.state.capture,
+        Capture::Listening {
+            message: Some("Add a modifier"),
             ..
         }
     ));
@@ -430,6 +452,27 @@ fn settings_search_shows_with_its_lab_and_filters_general() {
     assert!(rt.find("settings-empty").is_none());
     assert!(rt.find("microphone").is_some());
     assert!(rt.find("basics").is_some());
+}
+
+#[test]
+fn the_settings_search_clear_button_empties_the_field_and_restores_the_pane() {
+    let mut rt = runtime("portal", true, TALL_SIZE);
+    rt.state.settings.labs.settings_search = true;
+    rt.invalidate();
+    settle(&mut rt);
+    rt.update(|ui, _| ui.general_search = rune::TextEdit::new("microphone"));
+    settle(&mut rt);
+    assert!(rt.find("microphone").is_some());
+    assert!(rt.find("transcription").is_none());
+    tap(&mut rt, "settings-search/action");
+    assert!(
+        rt.state.general_search.text.is_empty(),
+        "the clear button empties the field"
+    );
+    assert!(
+        rt.find("transcription").is_some(),
+        "and the rest of the pane comes back"
+    );
 }
 
 #[test]
@@ -3429,7 +3472,7 @@ fn typed_text_shows_its_recorder_only_with_its_lab() {
     );
 }
 
-/// Labs › Fix results in Output: the Try card offers Vocabulary and Fix
+/// Labs › Fix results in Output: the Try row offers Vocabulary and Fix
 /// this only with the toggle on, and Fix this copies for the sentence typed.
 #[test]
 fn output_fixes_show_only_with_their_lab_and_fix_this_copies_for_the_sentence() {

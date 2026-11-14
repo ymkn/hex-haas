@@ -348,11 +348,6 @@ pub(super) const KEYS: &[Key] = &[
         "Seconds the microphone stays open after a dictation with Labs › Keep mic open after dictating on: 30 s, 1, 3, 5, or 30 minutes",
     ),
     key(
-        "labs.restore_shortcut_default",
-        Kind::Bool,
-        "Labs: offer Restore default beside the Paste last dictation shortcut",
-    ),
-    key(
         "labs.keep_on_clipboard",
         Kind::Bool,
         "Labs: leave the dictation on the clipboard after pasting instead of restoring what was there",
@@ -525,7 +520,7 @@ pub(super) const KEYS: &[Key] = &[
     key(
         "labs.more_call_apps",
         Kind::Bool,
-        "Labs: offer to record calls in Signal, Telegram, WeChat, LINE, Webex, Element and the Phone app, and name calls on Google Voice, Messenger, Teams, FaceTime, GroupMe, and Webex pages",
+        "Labs: offer to record calls in Signal, Telegram, WeChat, LINE, Webex, Element and the Phone app, and name calls on Google Voice, Messenger, FaceTime, GroupMe, and Webex pages",
     ),
     key(
         "labs.movable_meeting_capsules",
@@ -618,14 +613,20 @@ pub(super) const KEYS: &[Key] = &[
         "Labs: the speech model picker's Use model file where it is… adds a GGUF file without copying it, so several accounts can share one file",
     ),
     key(
+        "labs.k_quant_models",
+        Kind::Bool,
+        "Labs: add your own speech model files that use Q6_K, Q5_K, or Q4_K weights (macOS); they are smaller than Q8_0 but Hex hasn't verified them",
+    ),
+    key(
         "labs.picker_downloaded",
         Kind::Bool,
         "Labs: the speech model picker's All speech models view offers Only downloaded models, with the space they take",
     ),
     key(
-        "labs.transcribe_files",
+        "labs.shell_completions",
         Kind::Bool,
-        "Labs: hex transcribe <file> turns a WAV recording into text with the selected dictation model",
+        "Labs: hex completions <shell> prints a completion script for bash, zsh, fish, elvish, or \
+         PowerShell, generated from Hex's own commands",
     ),
     key(
         "labs.api_processing",

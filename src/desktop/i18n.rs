@@ -13,6 +13,7 @@ mod failures;
 mod french;
 mod labs;
 mod meetings;
+mod menu;
 mod onboarding;
 mod portuguese;
 mod russian;
@@ -301,6 +302,13 @@ pub(crate) fn tr(english: &str) -> &str {
     table.get(english).copied().unwrap_or(english)
 }
 
+/// Whether the interface is in English, for labels whose English form
+/// differs from the translated key (macOS menus' title case).
+#[cfg(target_os = "macos")]
+pub(crate) fn english() -> bool {
+    current() == ENGLISH
+}
+
 /// Translate a `{}` template and substitute the dynamic value, keeping
 /// language-specific word order intact.
 pub(crate) fn tr_fill(template: &str, value: &str) -> String {
@@ -340,8 +348,8 @@ fn tables() -> &'static [HashMap<&'static str, &'static str>; 6] {
     })
 }
 
-/// Every translated string: the main, Meetings, Labs, failure, and first-run
-/// rows.
+/// Every translated string: the main, Meetings, Labs, failure, first-run,
+/// and menu bar rows.
 pub(super) fn all_translations() -> impl Iterator<Item = &'static (&'static str, [&'static str; 6])>
 {
     TRANSLATIONS
@@ -350,6 +358,7 @@ pub(super) fn all_translations() -> impl Iterator<Item = &'static (&'static str,
         .chain(labs::TRANSLATIONS)
         .chain(failures::TRANSLATIONS)
         .chain(onboarding::TRANSLATIONS)
+        .chain(menu::TRANSLATIONS)
 }
 
 /// Columns: Polish, Chinese (Simplified), Japanese, German, Spanish, Ukrainian.
@@ -466,8 +475,6 @@ const TRANSLATIONS: &[(&str, [&str; 6])] = &[
     ("Mouse shortcuts are in Labs now, so your mouse-button shortcut went back to the default. Turn on Labs › Mouse shortcuts to use one again.", ["Skróty myszy są teraz w Laboratorium, więc skrót przycisku myszy wrócił do domyślnego. Włącz Laboratorium › Skróty myszy, aby znów go używać.", "鼠标快捷键已移至实验室，因此你的鼠标按键快捷键已恢复为默认值。开启实验室 › 鼠标快捷键即可再次使用。", "マウスショートカットはラボに移ったため、マウスボタンのショートカットは既定に戻りました。再び使うにはラボ › マウスショートカットをオンにしてください。", "Maus-Kürzel sind jetzt in Labs, daher wurde dein Maustasten-Kürzel auf den Standard zurückgesetzt. Schalte Labs › Maus-Kürzel ein, um wieder eines zu nutzen.", "Los atajos de ratón están ahora en Labs, así que tu atajo con botón del ratón volvió al predeterminado. Activa Labs › Atajos de ratón para volver a usar uno.", "Комбінації з мишею тепер у Лабораторії, тож вашу комбінацію з кнопкою миші повернуто до типової. Увімкніть Лабораторія › Комбінації з мишею, щоб знову її використати."]),
     ("Unload model when idle", ["Zwalniaj model, gdy nieużywany", "空闲时卸载模型", "アイドル時にモデルを解放", "Modell im Leerlauf entladen", "Descargar el modelo en reposo", "Вивантажувати модель під час простою"]),
     ("Frees the speech model's memory after a while unused; the next dictation reloads it", ["Zwalnia pamięć modelu mowy po pewnym czasie bez użycia; następne dyktowanie wczyta go ponownie", "一段时间未使用后释放语音模型的内存；下次听写时会重新加载", "しばらく使わないと音声モデルのメモリを解放し、次の音声入力で再び読み込みます", "Gibt den Speicher des Sprachmodells nach einer Weile ohne Nutzung frei; das nächste Diktat lädt es neu", "Libera la memoria del modelo de voz tras un rato sin usarlo; el siguiente dictado lo vuelve a cargar", "Звільняє пам'ять мовної моделі після простою; наступне диктування завантажить її знову"]),
-    ("Restore shortcut default", ["Przywracanie domyślnego skrótu", "恢复默认快捷键", "ショートカットを既定に戻す", "Standardkürzel wiederherstellen", "Restaurar atajo predeterminado", "Відновлення типової комбінації"]),
-    ("Offer Restore default next to Paste last dictation's shortcut", ["Pokazuj Przywróć domyślny obok skrótu Wklej ostatnie dyktowanie", "在“粘贴上次听写”的快捷键旁提供“恢复默认”", "「最後の音声入力を貼り付け」のショートカットの横に「既定に戻す」を表示します", "Bietet „Standard wiederherstellen“ neben dem Kürzel für „Letztes Diktat einfügen“", "Ofrece Restaurar predeterminado junto al atajo de Pegar último dictado", "Пропонує «Відновити типову» поруч із комбінацією «Вставити останнє диктування»"]),
     ("Keep dictation on clipboard", ["Zostawiaj dyktowanie w schowku", "将听写保留在剪贴板", "音声入力をクリップボードに残す", "Diktat in der Zwischenablage lassen", "Mantener el dictado en el portapapeles", "Залишати диктування в буфері обміну"]),
     ("Leave the dictation on the clipboard after pasting instead of restoring what was there", ["Po wklejeniu zostawia dyktowanie w schowku zamiast przywracać poprzednią zawartość", "粘贴后将听写内容留在剪贴板，而不恢复原先的内容", "貼り付け後、元の内容を戻さずに音声入力をクリップボードに残します", "Lässt das Diktat nach dem Einfügen in der Zwischenablage, statt den vorherigen Inhalt wiederherzustellen", "Deja el dictado en el portapapeles después de pegar en lugar de restaurar lo que había", "Після вставлення залишає диктування в буфері обміну замість відновлення попереднього вмісту"]),
     ("Copy dictation only", ["Tylko kopiuj dyktowanie", "仅复制听写", "音声入力をコピーのみ", "Diktat nur kopieren", "Solo copiar el dictado", "Лише копіювати диктування"]),
@@ -569,6 +576,7 @@ const TRANSLATIONS: &[(&str, [&str; 6])] = &[
     ("Discards the recording", ["Odrzuca nagranie", "丢弃当前录音", "録音を破棄します", "Verwirft die Aufnahme", "Descarta la grabación", "Відкидає запис"]),
     ("Bind hex dictation cancel to a key in your desktop's keyboard shortcuts", ["Przypisz hex dictation cancel do klawisza w skrótach klawiszowych pulpitu", "在桌面的键盘快捷键中为 hex dictation cancel 绑定一个按键", "デスクトップのキーボードショートカットで hex dictation cancel をキーに割り当ててください", "Lege hex dictation cancel in den Tastenkürzeln deines Desktops auf eine Taste", "Asigna hex dictation cancel a una tecla en los atajos de teclado de tu escritorio", "Призначте hex dictation cancel клавішу в комбінаціях клавіш вашого робочого столу"]),
     ("Restore default shortcut", ["Przywróć domyślny skrót", "恢复默认快捷键", "既定のショートカットに戻す", "Standardkürzel wiederherstellen", "Restaurar atajo predeterminado", "Відновити типову комбінацію"]),
+    ("Press {} to turn it off", ["Naciśnij {}, aby wyłączyć", "按 {} 关闭", "{} でオフにします", "Drücke {}, um es auszuschalten", "Pulsa {} para desactivarlo", "Натисніть {}, щоб вимкнути"]),
     ("Default shortcut: {}", ["Domyślny skrót: {}", "默认快捷键：{}", "既定のショートカット: {}", "Standardkürzel: {}", "Atajo predeterminado: {}", "Типова комбінація: {}"]),
     ("Unload after", ["Zwolnij po", "卸载前等待", "解放までの時間", "Entladen nach", "Descargar tras", "Вивантажити через"]),
     ("Keep mic open after dictating", ["Mikrofon włączony po dyktowaniu", "听写后保持麦克风开启", "音声入力の後もマイクを開く", "Mikrofon nach Diktat offen lassen", "Micrófono abierto tras dictar", "Мікрофон відкритий після диктування"]),
@@ -602,6 +610,9 @@ const TRANSLATIONS: &[(&str, [&str; 6])] = &[
     ("Clear words", ["Wyczyść słowa", "清除文字", "言葉を消去", "Worte löschen", "Borrar palabras", "Очистити слова"]),
     ("Hold your dictation shortcut to talk over it", ["Przytrzymaj skrót dyktowania, aby skomentować głosem", "按住听写快捷键即可配上讲解", "音声入力のショートカットを押したまま話して説明できます", "Halte dein Diktierkürzel gedrückt, um dazu zu sprechen", "Mantén pulsado tu atajo de dictado para comentarlo en voz alta", "Утримуйте комбінацію диктування, щоб прокоментувати голосом"]),
     ("Couldn't copy", ["Nie udało się skopiować", "无法复制", "コピーできませんでした", "Kopieren fehlgeschlagen", "No se pudo copiar", "Не вдалося скопіювати"]),
+    ("Couldn't draw your marks", ["Nie udało się narysować oznaczeń", "无法绘制标注", "マークを描画できませんでした", "Markierungen konnten nicht gezeichnet werden", "No se pudieron dibujar las marcas", "Не вдалося намалювати позначки"]),
+    ("Summary copied", ["Skopiowano podsumowanie", "已复制摘要", "概要をコピーしました", "Zusammenfassung kopiert", "Resumen copiado", "Підсумок скопійовано"]),
+    ("Movie copied", ["Skopiowano film", "已复制影片", "ムービーをコピーしました", "Film kopiert", "Película copiada", "Відео скопійовано"]),
     ("Couldn't send", ["Nie udało się wysłać", "无法发送", "送信できませんでした", "Senden fehlgeschlagen", "No se pudo enviar", "Не вдалося надіслати"]),
     ("Looking for sessions…", ["Szukanie sesji…", "正在查找会话…", "セッションを検索中…", "Sitzungen werden gesucht…", "Buscando sesiones…", "Пошук сесій…"]),
     ("No sessions", ["Brak sesji", "没有会话", "セッションがありません", "Keine Sitzungen", "No hay sesiones", "Немає сесій"]),
@@ -799,7 +810,6 @@ const TRANSLATIONS: &[(&str, [&str; 6])] = &[
     ("Only: {}", ["Tylko: {}", "仅：{}", "のみ：{}", "Nur: {}", "Solo: {}", "Лише: {}"]),
     ("Copied", ["Skopiowano", "已复制", "コピーしました", "Kopiert", "Copiado", "Скопійовано"]),
     ("Copy new", ["Kopiuj nowe", "复制新内容", "新しい分をコピー", "Neues kopieren", "Copiar lo nuevo", "Копіювати нове"]),
-    ("Copy new ({})", ["Kopiuj nowe ({})", "复制新内容（{}）", "新しい分をコピー（{}）", "Neues kopieren ({})", "Copiar lo nuevo ({})", "Копіювати нове ({})"]),
     ("Copy all", ["Kopiuj wszystko", "全部复制", "すべてコピー", "Alles kopieren", "Copiar todo", "Копіювати все"]),
     ("Copy section", ["Kopiuj sekcję", "复制本节", "このセクションをコピー", "Abschnitt kopieren", "Copiar sección", "Копіювати розділ"]),
     ("Chapters", ["Rozdziały", "章节", "チャプター", "Kapitel", "Capítulos", "Розділи"]),
@@ -1084,7 +1094,6 @@ const TRANSLATIONS: &[(&str, [&str; 6])] = &[
     ("Always record", ["Zawsze nagrywaj", "始终录制", "常に録音", "Immer aufnehmen", "Grabar siempre", "Завжди записувати"]),
     ("Slack huddles", ["Huddle w Slacku", "Slack 语音小组会", "Slack ハドル", "Slack-Huddles", "Huddles de Slack", "Хадли в Slack"]),
     ("Recording automatically", ["Automatyczne nagrywanie", "正在自动录制", "自動で録音中", "Automatische Aufnahme", "Grabando automáticamente", "Автоматичний запис"]),
-    ("Started automatically · {}", ["Rozpoczęto automatycznie · {}", "已自动开始 · {}", "自動で開始 · {}", "Automatisch gestartet · {}", "Iniciada automáticamente · {}", "Розпочато автоматично · {}"]),
     ("Required to hear the other participants.", ["Wymagane, aby słyszeć pozostałych uczestników.", "需要此权限才能听到其他参与者。", "ほかの参加者の声を聞くために必要です。", "Nötig, um die anderen Teilnehmenden zu hören.", "Necesario para oír a los demás participantes.", "Потрібно, щоб чути інших учасників."]),
     ("Transcript folder", ["Folder transkrypcji", "转写文件夹", "文字起こしフォルダー", "Transkriptordner", "Carpeta de transcripciones", "Папка транскриптів"]),
     ("Finished meetings are saved here as Markdown", ["Zakończone spotkania są zapisywane tu jako Markdown", "已结束的会议以 Markdown 格式保存在此处", "終了した会議はここに Markdown で保存されます", "Beendete Besprechungen werden hier als Markdown gespeichert", "Las reuniones terminadas se guardan aquí en Markdown", "Завершені зустрічі зберігаються тут у форматі Markdown"]),
@@ -1104,9 +1113,6 @@ const TRANSLATIONS: &[(&str, [&str; 6])] = &[
     ("Hex is still recording.", ["Hex nadal nagrywa.", "Hex 仍在录制。", "Hex はまだ録音中です。", "Hex nimmt weiter auf.", "Hex sigue grabando.", "Hex досі записує."]),
     ("Keep recording", ["Nagrywaj dalej", "继续录制", "録音を続ける", "Weiter aufnehmen", "Seguir grabando", "Продовжити запис"]),
     ("Markdown not saved: {}", ["Nie zapisano Markdown: {}", "未保存 Markdown：{}", "Markdown を保存できませんでした: {}", "Markdown nicht gespeichert: {}", "No se guardó el Markdown: {}", "Файл Markdown не збережено: {}"]),
-    ("Saved in Meetings", ["Zapisano w Spotkaniach", "已保存到会议", "ミーティングに保存しました", "In Meetings gespeichert", "Guardado en Reuniones", "Збережено в розділі «Зустрічі»"]),
-    ("Meeting transcript ready", ["Transkrypcja spotkania gotowa", "会议转写已就绪", "ミーティングの文字起こしができました", "Meeting-Transkript fertig", "Transcripción de la reunión lista", "Транскрипт зустрічі готовий"]),
-    ("Ready · {}", ["Gotowe · {}", "已就绪 · {}", "完了 · {}", "Fertig · {}", "Lista · {}", "Готово · {}"]),
     ("Open", ["Otwórz", "打开", "開く", "Öffnen", "Abrir", "Відкрити"]),
     ("Finalizing…", ["Kończenie…", "正在完成…", "仕上げ中…", "Wird abgeschlossen…", "Finalizando…", "Завершення…"]),
     ("Interrupted", ["Przerwano", "已中断", "中断", "Unterbrochen", "Interrumpido", "Перервано"]),
@@ -1362,11 +1368,8 @@ const TRANSLATIONS: &[(&str, [&str; 6])] = &[
     ("You", ["Ty", "你", "あなた", "Du", "Tú", "Ви"]),
     ("Your 5s sample", ["Twoja próbka 5 s", "你的 5 秒录音", "あなたの5秒サンプル", "Deine 5-Sek.-Aufnahme", "Tu muestra de 5 s", "Ваш зразок на 5 с"]),
     ("Your voice", ["Twój głos", "你的声音", "自分の声", "Deine Stimme", "Tu voz", "Ваш голос"]),
-    ("and answer the one that's lit.", ["i odpowiedz na podświetloną.", "并回复亮起的那条。", "して、光っているメッセージに答えます。", "und beantworte die hervorgehobene.", "y responde al que está iluminado.", "і дайте відповідь на підсвічене."]),
-    ("and say anything.", ["i powiedz cokolwiek.", "，随便说点什么。", "して、何か話してください。", "und sag irgendetwas.", "y di cualquier cosa.", "і скажіть будь-що."]),
     ("and say it.", ["i to powiedz.", "，说出来。", "して、話してください。", "und sprich es aus.", "y dilo.", "і скажіть це."]),
     ("Answering under pressure, the usual way.", ["Odpowiadanie pod presją, po staremu.", "在压力下回复，用老办法。", "急かされながら、いつもの方法で返信。", "Antworten unter Druck, wie immer.", "Respondiendo bajo presión, como siempre.", "Відповідаєте під тиском, як зазвичай."]),
-    ("anywhere, then talk.", ["gdziekolwiek i mów.", "，在任何地方开口说。", "どこでも、そのまま話します。", "irgendwo und sprich.", "en cualquier lugar y habla.", "будь-де й говоріть."]),
     ("by voice, no typing", ["głosem, bez pisania", "用语音，无需打字", "声だけで、タイピングなし", "per Stimme, ohne Tippen", "por voz, sin teclear", "голосом, без набору"]),
     ("Certificate of completion", ["Certyfikat ukończenia", "完成证书", "修了証", "Abschlusszertifikat", "Certificado de finalización", "Сертифікат про завершення"]),
     ("Clear your messages", ["Wyczyść wiadomości", "清空你的消息", "メッセージを片付けましょう", "Räum deine Nachrichten ab", "Despeja tus mensajes", "Розберіть свої повідомлення"]),
@@ -1719,6 +1722,10 @@ mod tests {
         include_str!("../rune_ui/vocabulary.rs"),
         include_str!("../rune_ui/windows_host.rs"),
         include_str!("tray_menu.rs"),
+        include_str!("../macos_rune/status_item.rs"),
+        include_str!("../rune_ui/onboarding_kit/first_screen.rs"),
+        include_str!("../rune_ui/onboarding_kit/login.rs"),
+        include_str!("../rune_ui/onboarding_kit/versus/stage_fx.rs"),
         include_str!("../rune_ui/meetings_host.rs"),
         include_str!("../windows/app.rs"),
         include_str!("../windows/rune.rs"),

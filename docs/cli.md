@@ -39,7 +39,7 @@ hex
 │   └── start|toggle --raw         paste the transcript as heard, skipping the Output steps
 ├── paste-last                     paste the last dictation (Option-Shift-V); refused while recording
 ├── typed-text                     Labs › Transform typed text (Linux): replace the focused field's text
-├── transcribe <file> [--model <id>] [--language L]  Labs › Transcribe files: print a WAV file's transcript
+├── transcribe <file> [--model <id>] [--language L]  print an audio or video file's transcript
 ├── meetings
 │   ├── record [--title T]         as the menu bar's Record Meeting; needs meetings.enabled
 │   ├── stop                       Stop & Transcribe
@@ -83,6 +83,7 @@ hex
 │   └── link <feature>             macOS: print hex://labs/<feature>, the link that opens Hex's Labs page on that lab's group
 ├── check-for-updates              check for an update now
 ├── launch-at-login [on|off]       report or change Launch at Login (macOS: installed Hex.app only; Windows Run key; Linux XDG autostart)
+├── completions <shell>            Labs › Shell completions: print a completion script for hex
 └── logs [--process] [-n N] [-f]   tail live.ndjson (or process.log); no running Hex needed
 ```
 
@@ -167,24 +168,58 @@ shortcut is on (`disabled`), because its Ctrl+V would become Ctrl+Shift+V. It
 sends Ctrl+A and Ctrl+C, so it is not meant for terminals. While a capture
 records or finishes, it answers done but the listener drops the job.
 
-`transcribe <file>` (Labs › Transcribe files, off by default) prints a saved
-WAV recording's transcript to stdout with the selected dictation model, or
-the one `--model` names; `--language` picks a language the model supports.
-It is refused with `disabled` while the lab is off. The file is read here and
-capped at 64 MiB, and Hex's own WAV decoder checks it first, so a file that
-isn't WAV is refused with `unsupported` (convert it first, for example with
-ffmpeg) before anything else runs. With Hex running, the file goes to its
-local API's `POST /transcriptions` with that model named: a clip up to 30 s
-runs on Hex's dictation engine when it already holds that model, and a longer
-one makes Hex's transcription service load its own copy. With Hex stopped,
-Linux and Windows load the model in this process, as `hex model transcribe`
-does; macOS answers `not-running`. An empty transcript answers `no-speech`
-(exit 4). It never pastes, records History, or runs mode processing. With
-`--json` the reply is the same `transcript` status `dictation stop --print`
-uses. The lab
-is read from `settings.json` (`AppSettings::read`), as `hex labs` reads it,
-whether or not Hex is running; a running Hex saves its Labs toggle there at
-once.
+`transcribe <file>` prints a recording's transcript to stdout with the
+selected dictation model, or the one `--model` names; `--language` picks a
+language the model supports. It reads WAV, AIFF, CAF, FLAC, MP3, Ogg (Vorbis
+and Opus), WebM/Matroska audio, and MP4/M4A/MOV audio (AAC-LC, HE-AAC, ALAC),
+from audio files or a video's soundtrack, decoded in this process with no
+external tool. The file is opened and its first audio decoded before anything
+else runs, so a file Hex can't read is refused with `unsupported`. A
+recording of any length is decoded and sent in pieces of at most 30 seconds,
+so Hex holds about one piece rather than the whole file; the pieces' text is
+joined with one space.
+
+Each piece goes to the local API's `POST /transcriptions` with that model
+named. With Hex running, that is the app's own API: a piece that short runs
+on Hex's dictation engine when it already holds that model, so no second copy
+loads and dictation can run between pieces. With Hex stopped, the command
+starts its own `hex service --embedded` (the TypeScript SDK's direct child),
+uses it for every piece, and ends it on every exit; it never publishes it or
+starts a second service beside a running Hex. A model that isn't downloaded
+is offered once, `Download <model> (<size>)? [Y/n]`, only when stdin and
+stderr are terminals and `--json` is off; yes downloads, verifies, and loads
+it, then the piece is tried again. Otherwise the command answers
+`model-unavailable` and names `hex model install`.
+
+The service skips silence (a piece the speech detector hears nothing in, once
+it is installed), and only a file with no speech at all answers `no-speech`
+(exit 4). stdout carries only the transcript or the `--json` reply (the same
+`transcript` status `dictation stop --print` uses); a progress line goes to
+stderr only when it is a terminal. Ctrl-C ends the command and its service,
+printing nothing, with exit 130. It never pastes, records History, runs mode
+processing, or logs the transcript.
+
+`completions <shell>` (Labs › Shell completions, off by default) prints a
+completion script for `hex` to stdout and nothing else. The script is
+generated at runtime from the same clap definitions every command parses, so
+a new command or flag is in it without anyone writing the script out again;
+`bash`, `zsh`, `fish`, `elvish`, and `powershell` are the shells.
+
+```sh
+hex completions bash > ~/.local/share/bash-completion/completions/hex
+mkdir -p ~/.zfunc && hex completions zsh > ~/.zfunc/_hex
+hex completions fish > ~/.config/fish/completions/hex.fish
+```
+
+For zsh, put `~/.zfunc` on `fpath` before `compinit` runs, in `~/.zshrc`:
+`fpath=(~/.zfunc $fpath)`. Elsewhere, write the script into a directory
+already on `fpath`.
+
+It is refused with `disabled` while the lab is off, and its Labs toggle is
+what turns it on: `hex labs on shell-completions`. The command stays out of
+`hex --help`; `hex labs` lists the toggle. The lab is read from
+`settings.json` (`AppSettings::read`), as `hex labs` lists it, whether or not
+Hex is running; a running Hex saves the toggle there at once.
 
 `model import`, `rename`, `repair`, and `remove` run in this process on every
 OS; `hex models` is an alias for `hex model`. An import's id is `custom-` and
@@ -221,10 +256,10 @@ build and waits for it to answer (#915); one not run by the unit has to be
 quit from its window or tray.
 
 `model install` with Hex running downloads in the background, as Settings
-does; on Linux and Windows with no Hex running it downloads here and then
-selects the model, printing progress (the source-install step `hex model
+does; with no Hex running it downloads here (on macOS through an embedded
+service, as `hex transcribe` does) and then selects the model, printing progress (the source-install step `hex model
 install`). A Hex that starts while the download runs makes the switch instead.
-`model status`, `devices`, `check`, and `transcribe` are local tools on Linux
+`model status`, `devices`, `check`, and `model transcribe` are local tools on Linux
 and Windows and take the selected model unless one is named; macOS answers
 `unsupported`.
 
@@ -277,6 +312,7 @@ state, the recording capsule, and Stop & Transcribe all apply to it.
 2  usage error (clap)
 3  Hex isn't running (code `not-running`); control commands never launch it
 4  `dictation start --print`, `dictation stop --print`, or `hex transcribe` heard no speech (code `no-speech`); nothing printed
+130  `hex transcribe` or `hex model install` ended by Ctrl-C; nothing printed
 ```
 
 ## Transport
@@ -307,10 +343,12 @@ transcription and `/streams`, but answer `/control` with
   `504 control-timeout`. Bad or missing tokens get `401` like every other
   route.
 
-`hex transcribe` uses that same owner-only discovery file and bearer token,
-but sends the file's bytes to `POST /transcriptions?model=<id>&language=<code>`
-with `Content-Type: audio/wav` instead, up to 64 MiB. The route answers the
-transcript (`{"transcript": "…", "durationMs": …}`) or a code such as
+`hex transcribe` uses that same owner-only discovery file and bearer token
+(or, with Hex stopped, the endpoint and token its embedded service prints),
+but sends the file one 30 s piece at a time, as 16 kHz mono WAV, to
+`POST /transcriptions?model=<id>&language=<code>` with `Content-Type:
+audio/wav`. The route answers each piece's transcript
+(`{"transcript": "…", "durationMs": …}`) or a code such as
 `model-not-ready`, `unsupported-audio`, `queue-full`, or `resource-exhausted`.
 
 ## Wire format (version 4)
@@ -436,7 +474,7 @@ shortcut-in-use        another Hex shortcut already uses that binding
 not-found              no such capture, or it has no scrawl.json yet
 unknown-model          no such model id (`hex model list`)
 model-unavailable      an imported model that is missing, changed, or behind its Labs toggle,
-                       or one `hex transcribe` named that the running Hex can't use
+                       or one `hex transcribe` named that isn't downloaded or ready
 not-installed          `model use` on a model that isn't downloaded (`hex model install`)
 feature-off            the command needs an opt-in that is off (Meetings)
 disabled               a Labs toggle the command needs is off (the message names it)
@@ -444,9 +482,9 @@ not-ready              Hex is waiting for setup (permissions or the dictation mo
 meeting-active         quit/restart while a meeting records (pass --force)
 busy                   something is in progress (recording, transcribing, a full queue),
                        or the listener couldn't confirm it's idle
-resource-exhausted     `hex transcribe`'s file is over 64 MiB or too long to decode
+resource-exhausted     a running Hex refused a `hex transcribe` piece as too large or too long
 discarded              `stop` dropped the clip: no audio yet, or silent; nothing transcribes
-no-speech              `dictation start --print` or `stop --print` heard no speech; nothing printed (exit 4)
+no-speech              `dictation start --print` or `stop --print` heard no speech, or `hex transcribe`'s file had none; nothing printed (exit 4)
 not-recording          `dictation stop --print` with nothing recording
 unavailable            a part of Hex the command needs isn't available
 unsupported            this build or OS can't do it (e.g. restart from a development binary)

@@ -84,6 +84,7 @@ impl Feature {
             | Self::ApiTimestamps
             | Self::ApiBrowserAccess
             | Self::PrintStart
+            | Self::ShellCompletions
             | Self::VoicePrompt => Group::Output,
             Self::KeepRecordings
             | Self::HistoryStats
@@ -114,7 +115,6 @@ impl Feature {
             | Self::SidedChords
             | Self::TapOrHold
             | Self::DoubleTapModifiers
-            | Self::RestoreShortcutDefault
             | Self::StandaloneSpecialKeys
             | Self::SectionKeyAlone
             | Self::ShareShortcut
@@ -127,9 +127,9 @@ impl Feature {
             | Self::BenchmarkDetails
             | Self::PickerActiveFirst
             | Self::ModelInPlace
+            | Self::KQuantModels
             | Self::PickerDownloaded
-            | Self::ParakeetUltra
-            | Self::TranscribeFiles => Group::Models,
+            | Self::ParakeetUltra => Group::Models,
         }
     }
 }

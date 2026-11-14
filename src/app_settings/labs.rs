@@ -56,7 +56,7 @@ impl AppearanceTheme {
     }
 }
 
-/// The `labs` switches (`crate::labs`), each off by default; older Labs features keep their own keys, and retired switches (`labs.enabled`, `labs.collapsible_meeting_sections`, `labs.meeting_platform_icons`) are ignored.
+/// The `labs` switches (`crate::labs`), each off by default; older Labs features keep their own keys, and retired switches (`labs.enabled`, `labs.collapsible_meeting_sections`, `labs.meeting_platform_icons`, `labs.transcribe_files`, `labs.restore_shortcut_default`) are ignored.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default)]
 pub struct LabsSettings {
@@ -87,8 +87,6 @@ pub struct LabsSettings {
     /// default.
     #[serde(deserialize_with = "deserialize_keep_microphone_open_seconds")]
     pub keep_microphone_open_seconds: u32,
-    /// Paste last dictation's row offers its default shortcut back (issue 613).
-    pub restore_shortcut_default: bool,
     /// A pasted dictation stays on the clipboard, not the previous one (macOS and Windows, issue 200).
     pub keep_on_clipboard: bool,
     /// A dictation is put on the clipboard and never pasted (macOS and Windows, issue 629).
@@ -143,6 +141,9 @@ pub struct LabsSettings {
     pub picker_active_first: bool,
     /// The picker's "Use model file where it is…" adds a GGUF file without copying it (issue 941).
     pub model_in_place: bool,
+    /// An import may use Q6_K, Q5_K, or Q4_K weights, which Metal runs and
+    /// Hex hasn't verified (macOS).
+    pub k_quant_models: bool,
     /// The picker's All speech models view offers "Only downloaded models" (issue 1018).
     pub picker_downloaded: bool,
     /// The ISO section key, left of 1, may be a shortcut on its own (Linux
@@ -210,9 +211,9 @@ pub struct LabsSettings {
     /// for Modes rewriting and the Modes model picker when no Windows
     /// service answers (Windows).
     pub opencode_in_wsl: bool,
-    /// `hex transcribe <file>` turns a WAV recording into text with the
-    /// dictation model.
-    pub transcribe_files: bool,
+    /// `hex completions <shell>` prints a completion script for bash, zsh,
+    /// fish, elvish, or PowerShell, generated from Hex's own commands.
+    pub shell_completions: bool,
     /// The local API's `process=global` returns transcripts after Global
     /// mode's output processing.
     pub api_processing: bool,
@@ -323,7 +324,6 @@ impl Default for LabsSettings {
             unload_idle_minutes: 15,
             keep_microphone_open: false,
             keep_microphone_open_seconds: Self::DEFAULT_KEEP_MICROPHONE_OPEN_SECONDS,
-            restore_shortcut_default: false,
             keep_on_clipboard: false,
             copy_only: false,
             return_to_app: false,
@@ -350,6 +350,7 @@ impl Default for LabsSettings {
             output_fixes: false,
             picker_active_first: false,
             model_in_place: false,
+            k_quant_models: false,
             picker_downloaded: false,
             section_key_alone: false,
             keep_recordings: false,
@@ -370,7 +371,7 @@ impl Default for LabsSettings {
             annotate_replay: false,
             more_call_apps: false,
             opencode_in_wsl: false,
-            transcribe_files: false,
+            shell_completions: false,
             api_processing: false,
             api_timestamps: false,
             api_browser_access: false,

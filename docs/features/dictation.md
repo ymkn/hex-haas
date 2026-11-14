@@ -153,6 +153,28 @@ Checks: `a_recorder_shows_the_modifiers_held_so_far` in `rune_ui/tests.rs`,
 `rune_ui/tests/panes.rs`, the `shortcut-row*` scenes, and the `ChordCapture`
 tests in `rune_ui/macos_host.rs` (no native end-to-end run).
 
+```ts
+Shortcut row (General, Output)
+├── binding differs from its default (Paste last dictation, Cancel), off included
+│   └── a quiet Reset left of the keys (`restore-{key}`, read as "Restore default shortcut")
+│       └── saves the default under the recorder's checks; one in use opens the recorder with "Already in use"
+├── off, with a default ── the row reads "Default shortcut: …"
+└── recording an optional shortcut (Paste last, Dictate without processing,
+    second dictation, Type text on Linux, Terminal paste on Windows and Linux)
+    ├── the row reads "Press ⌫ to turn it off" (Backspace off macOS)
+    ├── plain ⌫ or Delete ── the shortcut turns off and the recorder closes
+    └── ⌫ with a modifier ── records like any key
+Dictation (required) ── plain ⌫ answers "Add a modifier" and keeps listening
+```
+
+There is no separate Clear button: ⌫ in the recorder is the only way to turn a
+shortcut off from the window. Checks: `erase_tests` in `rune_ui/settings.rs`
+(every OS), `backspace_in_an_optional_recorder_turns_the_shortcut_off` and
+`reset_brings_back_paste_lasts_default` in `rune_ui/tests.rs` (Linux),
+`delete_records_alone_for_the_window_to_turn_a_shortcut_off` in
+`rune_ui/macos_host.rs`, and the `mac-settings-reset`, `mac-settings-reset-off`,
+and `mac-settings-recording-optional` scenes (no native end-to-end run).
+
 **Fixed October 29, 2026 (issue 400):** macOS marks every function, arrow, and
 navigation key press with the Fn flag, and the recorder leaves it out of the
 binding, so a recorded F14 (or ⌘F14 for Voice Action) never matched and never
@@ -449,8 +471,9 @@ Output > Typed text                        // labs.md
     ├── otherwise Ctrl+V over the selection; a paste failure restores the
     │   clipboard, and a success restores it 500 ms later unless something newer
     │   replaced the result first
-    └── a clipboard Hex could not snapshot still clears and runs, but its result
-        stays on the clipboard
+    └── a clipboard with no readable format, or one whose owner changed while
+        it was read, still clears and runs, but its result stays on the
+        clipboard; one unreadable format no longer costs the whole restore
 ```
 
 Checks: `typed_text_is_its_own_bit_and_off_by_default` ([labs.rs](../../src/labs.rs)),
@@ -637,6 +660,37 @@ chunk still runs. Clips that fit the window are unchanged. Check:
 `a_long_clip_skips_only_chunks_the_detector_hears_no_speech_in` in
 [gguf_session.rs](../../src/transcription/gguf_session.rs) (detector verdict
 overridden; not run with Cohere on real audio).
+
+**Fixed November 13, 2026 (issue 1770):** Whisper was handed whole clips, so
+its own long-form loop also decoded a near-silent remainder (a 70 ms tail
+zero-padded to 30 s) and invented text: the Turkish
+"İzlediğiniz için teşekkür ederim.", "Altyazı M.K." (once truncated to
+"Altyazı M."), or "abone ol" repeated. A Whisper clip now chunks at Whisper's
+own 30-second window, each window passes the same detector gate as Cohere's,
+and a Whisper clip drops the audio outside its detected speech plus 500 ms
+before transcription (`whisper_audio` in
+[gguf_session.rs](../../src/transcription/gguf_session.rs)). Long Whisper
+dictations in every language now go through Hex's own 30 s chunking — each
+window cut at the quietest 100 ms of its last 5 s and decoded independently —
+instead of Whisper's long-form loop; not measured on long continuous speech.
+Another model, and a detector that is unavailable, keep every sample, as
+before. A clip the detector hears no speech in is left unchanged by the trim,
+though a silent Whisper clip over 30 s now has each window gated and can
+return empty text. Checks: `whisper_chunks_at_its_thirty_second_window` in
+[models.rs](../../src/transcription/models.rs),
+`a_whisper_clip_is_trimmed_to_its_speech_plus_a_margin`,
+`a_whisper_clip_is_trimmed_and_padded_to_a_chunks_minimum`, and
+`a_trimmed_chunks_times_stay_on_the_clips_timeline` (trim, padding, and the
+`chunk_offset_ms` helper the timed path uses; the end-to-end timed run needs a
+model and is not run) in
+[gguf_session.rs](../../src/transcription/gguf_session.rs), and
+`a_margin_around_the_speech_clamps_to_the_clip` and
+`detected_segments_bound_the_speech_inside_the_clip` in
+[speech_detector.rs](../../src/transcription/speech_detector.rs). Not run with
+Whisper on real Turkish audio. Known limits: a credit Whisper puts mid-chunk,
+followed by more speech, is still kept; a quiet first or last word the detector
+misses by more than 500 ms is cut from Whisper runs; meeting and word-time
+chunks keep their existing preparation.
 
 ### Vocabulary Quality Checks
 
@@ -915,6 +969,29 @@ restored afterwards, and `process.log` says why. Check:
 `an_unreadable_clipboard_still_pastes_and_restores_nothing` in
 [windows/paste.rs](../../src/windows/paste.rs) (constructed state; not run on
 a Windows PC).
+
+**Changed November 13, 2026:** a Linux paste dropped the whole restore when any
+one format of the previous clipboard could not be read, which on KDE is common:
+an image on the clipboard also advertises `image/jxl` and `image/heic`, and one
+of them timing out left the transcript there. Formats are now read text and
+`image/png` first under the shared 1 s deadline, a format that fails or is over
+the remaining 32 MiB cap is skipped (an INFO line says how many came back and
+names the first eight skipped), and the rest still come back in the offer's
+original order. Formats are not read at all once the deadline has passed.
+Nothing is restored only when no format could be read or the clipboard's owner
+changed while it was being read; X11 compares the owner window, Wayland the
+selection offer. Each failed X11 conversion now starts the next target on a
+fresh requestor window, so an abandoned INCR transfer cannot feed its chunks to
+the wrong MIME. Checks:
+`an_unreadable_format_is_skipped_and_the_rest_keep_the_offer_order`,
+`a_clipboard_with_no_readable_format_is_an_error`,
+`an_offer_with_no_formats_is_empty`,
+`formats_after_the_deadline_are_skipped_without_a_read`,
+`text_and_png_are_read_first_and_offered_back_in_offer_order`, and
+`a_format_over_the_remaining_cap_is_skipped_and_an_empty_one_is_kept` in
+[linux/clipboard.rs](../../src/linux/clipboard.rs) (fake reads; the
+owner-change and fresh-window guards are not covered by tests, and this was not
+run on KDE).
 
 **Changed October 22, 2026:** Kit holds Option a little past 300 ms before
 pressing the digit, which 2.3.0 and the Swift app both ignored after the
@@ -1556,13 +1633,18 @@ device; the stream's own loss is not fixed upstream.
 
 ```ts
 Completed long recording                  // dictate.model-windows
-├── Window of at most 35 seconds (Cohere) or the backend-advertised limit
+├── Whisper: audio outside detected speech + 500 ms dropped first
+├── Window of at most 35 seconds (Cohere), 30 seconds (Whisper), or the
+│   backend-advertised limit
 │   -> Last 5 s of the window: cut through the quietest 100 ms
 │   (a tie picks the latest span) -> the next window starts there
 └── Runs of at most one window, final remainder included
     -> Transcribe each -> Join text in original order
 
-Chunking bounds inference, not capture duration. No silence is removed.
+Chunking bounds inference, not capture duration. Two kinds of silence are
+dropped: a Whisper clip's edges outside its detected speech, and any window of
+a long clip the detector hears no speech in (#1194). Without the detector
+neither happens.
 ```
 
 Each window is cut through the middle of the quietest 100 ms in its last five
@@ -1586,9 +1668,13 @@ The shared `max_audio_chunk_samples` policy in
 reports a 400-second encoder capacity, while its reference processor uses a
 35-second transcription window. Treating the encoder capacity as a useful
 inference window caused [#73](https://github.com/anomalyco/hex/issues/73)'s lost
-passages. A stricter backend bound still wins; other model policies are unchanged.
+passages. Whisper reports no usable bound and decodes one 30-second window at
+a time; handed more, its own long-form loop fills a near-silent remainder with
+invented text, so it chunks at 30 seconds (#1770). A stricter backend bound
+still wins; other model policies are unchanged.
 
-`cohere_chunks_at_reference_window_not_encoder_capacity` checks the policy.
+`cohere_chunks_at_reference_window_not_encoder_capacity` and
+`whisper_chunks_at_its_thirty_second_window` check the policy.
 The opt-in `cohere_long_form_keeps_all_sections_with_and_without_pauses` runs the
 real pinned model on synthetic speech. Reproduce it on macOS with
 [`scripts/test-cohere-long-form.sh`](../../scripts/test-cohere-long-form.sh) and an
@@ -1686,8 +1772,14 @@ reporter's MacBook Pro, and not Linux runtime proof.
 ```ts
 Finish
   ├── Near-silent capture -> Discard, no inference    // dictate.silence-gate
-  │       // loudest 30 ms window (DC removed) below -50 dBFS; no paste,
-  │       // History, or last-result update; process.log records the level
+  │       // loudest 30 ms window (DC removed) below -50 dBFS with no
+  │       // contiguous 180 ms run: at least six 30 ms windows at the clip's
+  │       // own 10th-percentile noise floor + 12 dB (never below -66 dBFS),
+  │       // bridging one quiet window per gap; exact-zero windows don't set
+  │       // the floor; a relative-path clip also needs the speech detector
+  │       // to confirm speech, otherwise it is discarded; no paste, History,
+  │       // or last-result update; process.log records the level, noise
+  │       // floor, relative threshold, and run length
   ├── Louder capture, no detected speech -> Discard, no inference
   │       // the Silero speech detector, once installed, finds no speech of
   │       // at least 160 ms before the release; process.log records
@@ -1718,24 +1810,42 @@ The silence gate stops models from hallucinating closing phrases such as "thank
 you" on an empty hold ([#108](https://github.com/anomalyco/hex/issues/108)). It
 covers hotkey and voice-delimited captures on macOS, and the Linux
 hotkey loop. The local API's programmatic dictation and host-audio transcription
-are deliberately left ungated: they skip both silence checks, and only output
-that repeats the vocabulary prompt (Whisper, Qwen3-ASR) is dropped there.
-The threshold is conservative, so speech is not dropped; a noisy room, the start
-tone, or a key click can lift a capture above it. Those captures then go to the
-Silero speech detector ([transcription/speech_detector.rs](../../src/transcription/speech_detector.rs)),
-which discards them when it finds no speech. The detector (1.2 MB, pinned
-revision and checksum in [transcription/models.rs](../../src/transcription/models.rs))
+are deliberately left ungated at capture: they skip both capture-level silence
+checks, and only output that repeats the vocabulary prompt (Whisper, Qwen3-ASR)
+or ends with a known subtitle credit is dropped there. Their transcription runs
+through the same whole-clip chunked path, so a Whisper clip loses its silent
+edges and a long clip skips a window the detector hears no speech in.
+The fixed threshold is conservative, so speech that reaches it is not dropped
+and needs no detector to be transcribed; a noisy room, the start tone, or a key
+click can also lift a capture above it. A clip below it is kept only when at
+least 180 ms of its 30 ms windows form one contiguous run at least 12 dB above
+its own 10th-percentile noise floor (a threshold never below -66 dBFS), where a
+single quiet window between loud ones is bridged and exact-zero windows don't
+set the floor. That keeps a quiet built-in microphone's speech (13-25 dB above
+its room) while discarding a constant floor, scattered clicks, digital silence,
+or a DC offset. Such a relative-path clip also needs the Silero speech detector
+([transcription/speech_detector.rs](../../src/transcription/speech_detector.rs))
+to confirm speech, and is discarded when it finds none. The detector (1.2 MB,
+pinned revision and checksum in [transcription/models.rs](../../src/transcription/models.rs))
 downloads in the background whenever a transcription model is downloaded or
 activated, and at the first dictation, so an installed model still activates at
 once offline; a failed download is retried at the next dictation. Model
 preparation (macOS, Windows) and the Linux listener load it when present and
 never download it. It runs on the CPU with a speech threshold of 0.4 instead of
 Silero's 0.5, which misses a whisper at -43 dBFS. While it is missing or fails to
-load, captures above the threshold still reach the model, as before.
+load, a quiet relative-path clip is discarded as before, so only captures at or
+above the fixed threshold reach the model without one.
 Output that only repeats the vocabulary prompt (Whisper, Qwen3-ASR) is dropped as well
-([models](README.md#get-ready)). Other hallucinations after real
-speech are not addressed.
-`silence_gate_discards_only_near_silent_captures` and
+([models](README.md#get-ready)), and so is a known subtitle credit at the very
+end of the text, Turkish included (#1141, #1770). A Whisper clip also loses the
+audio outside its detected speech plus 500 ms before a whole-clip transcription
+run, and a chunk of a longer one the detector hears no speech in is skipped (see
+[ongoing jobs and output](#ongoing-jobs-and-output)). Other hallucinations
+after real speech are not addressed; a credit followed by more speech is kept.
+`silence_gate_discards_only_near_silent_captures`, the
+`relative_level_gate_*` tests (quiet speech needs the detector's confirmation;
+scattered clicks, a zero lead, the -66 dBFS clamp, the six-window boundary, and
+one quiet window bridged per gap), and
 `speech_detector_discards_loud_captures_without_speech` in
 [dictation.rs](../../src/dictation.rs) check the policy on synthetic samples
 with the detector's verdict fixed; `real_detector_rejects_silence_and_noise`,
@@ -2194,7 +2304,26 @@ isn't Hidden opens a fresh first-frame attempt: its own present baseline and
 clock, its own one recovery hide, and no inherited no-frame decision, so a
 previous attempt's reason can stay in Settings without hiding the new one,
 and a second start while the first still runs restarts the attempt. The
-attempt hides the overlay at once (the immediate hide, not the exit fade,
+attempt opens where the show is requested, in `Hud::handle` on Rune's thread,
+which shares one `Watch` with the sender; not where the listener sent the
+start. That keeps the listener thread and the event queue out of the budget,
+so the 1.5 s measures the show Rune runs rather than the wait in front of it
+(the start's `show` is itself a queued request, applied a turn later). It does
+not make a slow show fast. Rune's 600 to 850 ms is making a new device
+(adapter enumeration, the device and its pipelines); a surface on a device
+another surface already holds presents its first frame in about 16 ms. The
+window and swapchain are made for each show either way, since Windows' zero
+idle gives them back on every hide (#1308, #1359, #1793). Rune is also where
+the rest of that cost comes from: `prepare` can block the loop thread while
+the device Rune is making on `warm_gpu`'s thread is taken (`render/warm.rs`'s
+`take` waits on the `Making` state), the HUD's device is parked only when
+nothing else holds it (`Overlay::park`'s `Arc::try_unwrap`), and a surface
+that draws with the app's pooled device makes a new `Renderer` per show, which
+is a new `DeviceKey` and so a new painter here (`Painter`, 75 to 115 ms). The
+holder can be any window or overlay on that pool, the HUD's own live-text
+overlay included. Fixing that needs a Rune change: let an overlay keep its own
+parked device, and never block a show on a device being made.
+The attempt hides the overlay at once (the immediate hide, not the exit fade,
 which itself needs a frame) when it presents no frame after 1.5 s; Rune's
 overlay failure is reported as the reason but never hides on its own, since a
 failed overlay presents nothing and the frame-less check covers it. That
@@ -2202,12 +2331,38 @@ clears the HUD's shown state and lets Rune give its window and GPU surface
 back (Windows' zero idle parks both), so the next dictation start makes both
 again, and a lost GPU device such as a laptop resumed from standby costs one
 HUD rather than the rest of the session. Each attempt hides at most once, and
-a later frame-less start hides again. Checked by `rune_hud::tests`'
-first-frame tests (`a_frame_less_start_hides_once`,
+a later frame-less start hides again. The hide is queued for Rune's thread, so
+it carries the attempt and the present count it was decided with and does
+nothing if a start opened a later attempt or a frame presented since: a hide
+decided for a HUD that was only late never takes away one that is up. Every
+start also asks Rune for the HUD again, on Windows as well as Linux, clearing
+`shown` first. `shown` is Hex's record of a request, not of Rune's state: it
+is set before Rune applies the show, and `show_fading` gives up when the window
+or surface it has to make fails. A `ShowWindow` Windows leaves cloaked is the
+other reason not to trust it, but re-asking does not help there: Rune ignores a
+show while it counts the overlay shown, so only the 1.5 s recovery hide and the
+rebuild after it get a cloaked or stuck surface back. What re-asking does
+recover is a show that failed in setup, one Hex hid, and a layer surface the
+compositor closed (#1663), and Rune's show is a no-op while the overlay is
+visible, so it costs nothing. `fade_out` and `hide` both clear `shown`, so a
+start during the exit fade already reached Rune before this. While a recording
+runs, the HUD also asks on its own: a recording's own events are meters, so
+once its frames have stopped for `RESHOW_AFTER` (250 ms) it clears `shown` and
+asks. That is one ask, and the recovery hide frees exactly one more by
+restarting the clock and the ask together, so one rebuild follows the hide and
+a HUD that can never show does not rebuild its window and surface on every
+meter. Checked by `rune_hud::tests`' first-frame and
+recovery tests
+(`a_frame_less_start_hides_once`,
 `a_new_start_does_not_hide_on_the_previous_reason`,
 `a_second_start_while_pending_restarts_the_attempt`,
 `an_overlay_failure_never_hides_on_its_own`, `an_attempt_hides_only_once`,
-and `the_next_start_hides_again_after_a_hide`), not on Windows hardware.
+`the_next_start_hides_again_after_a_hide`,
+`a_stale_attempts_hide_leaves_a_newer_start_alone`,
+`a_hide_is_dropped_when_a_frame_presented_after_the_poll`, and
+`a_recording_asks_again_only_when_its_frames_stop`), and
+`only_the_recording_phase_is_recording` in `dictation::indicator` pins the one
+phase a re-ask may act on, not on Windows hardware.
 Every OS takes dark or light and Reduce Motion from Rune, and loads
 `dot-scope.json` at launch.
 Windows and Linux drop the HUD's painter, and its buffers, bind group and

@@ -39,7 +39,8 @@ use crate::desktop::host::DesktopAction;
 use crate::desktop::i18n::tr;
 use crate::desktop::login_item::{LoginItemFailure, LoginItemRequest, LoginItemWorker};
 use crate::desktop::onboarding::{
-    Input, PermissionAction, PermissionKind, PermissionState, StalePermissionTracker,
+    Input, PermissionAction, PermissionKind, PermissionState, ReturnFromSettings,
+    StalePermissionTracker,
 };
 use crate::macos_rune::RuntimeHandle;
 pub(super) use crate::macos_rune::{Request, ShortcutTarget};
@@ -328,9 +329,12 @@ impl ChordCapture {
         // Function and navigation keys type nothing, so one may be a shortcut
         // alone. The section key does type something, but the recorder takes it
         // alone too: `settings::validate` refuses it while Labs › Section key
-        // alone is off, as Linux's recorder does.
-        let stands_alone =
-            is_function_key(&key.label) || is_navigation_key(code) || key.is_section();
+        // alone is off, as Linux's recorder does. Plain ⌫ turns an optional
+        // shortcut off, and `settings::validate` refuses it as a binding.
+        let stands_alone = is_function_key(&key.label)
+            || is_navigation_key(code)
+            || key.is_section()
+            || key.is_erase();
         if modifiers.is_empty() && !stands_alone {
             return Some(Chord::Captured(Err(tr("Add a modifier"))));
         }
@@ -603,6 +607,8 @@ struct MacHost {
     /// Tracks System Settings return timing for Accessibility, System Audio,
     /// and Screen Recording.
     stale: [StalePermissionTracker; 3],
+    /// Brings Hex back once an asked permission is granted in System Settings.
+    returning: ReturnFromSettings,
     /// In-flight `"Still grey? Fix it"` resets, indexed by [`stale_slot`].
     resetting: [bool; 3],
     reset_tx: mpsc::Sender<PermissionKind>,
@@ -629,6 +635,7 @@ impl MacHost {
             folder_choice: None,
             calendar: CalendarFeed::default(),
             stale: Default::default(),
+            returning: ReturnFromSettings::default(),
             resetting: [false; 3],
             reset_tx,
             reset_rx,
@@ -938,12 +945,10 @@ impl NativeHost for MacHost {
         });
         changed |= state.permissions_asked.len() != asked_len;
         let now = Instant::now();
-        let focus = self
-            .stale
-            .iter()
-            .any(StalePermissionTracker::is_waiting)
-            .then(crate::desktop::permission_guide::settings_focus)
-            .unwrap_or_default();
+        let focus = (self.returning.is_pending()
+            || self.stale.iter().any(StalePermissionTracker::is_waiting))
+        .then(crate::desktop::permission_guide::settings_focus)
+        .unwrap_or_default();
         let mut next_stale = Vec::new();
         for (kind, untrusted) in [
             (
@@ -968,9 +973,16 @@ impl NativeHost for MacHost {
             let Some(slot) = stale_slot(kind) else {
                 continue;
             };
+            if !untrusted && self.stale[slot].is_waiting() {
+                self.returning.note_granted(now);
+            }
             if !self.resetting[slot] && self.stale[slot].poll(now, untrusted, focus) {
                 next_stale.push(kind);
             }
+        }
+        if self.returning.poll(now, focus) {
+            tracing::info!("permission granted in System Settings; bringing Hex back");
+            crate::macos_rune::bring_window_forward();
         }
         changed |= update(&mut state.permissions_stale, next_stale);
         changed |= update(&mut state.login_item_checking, self.login_checking);
@@ -1822,6 +1834,20 @@ mod tests {
         assert_eq!(single_key_character(Some("ab")), None);
         assert_eq!(single_key_character(Some("\u{0}")), None);
         assert_eq!(single_key_character(None), None);
+    }
+
+    /// Plain ⌫ and Forward Delete reach the window, which turns an optional
+    /// shortcut off with them; with a modifier they record as usual.
+    #[test]
+    fn delete_records_alone_for_the_window_to_turn_a_shortcut_off() {
+        let mut capture = ChordCapture::default();
+        for (code, flags) in [(51, 0), (117, FUNCTION)] {
+            let binding = captured(capture.key_down(code, false, None, flags)).unwrap();
+            assert!(binding.is_bare_erase(), "{code}");
+        }
+        let with_command = captured(capture.key_down(51, false, None, LEFT_COMMAND)).unwrap();
+        assert!(!with_command.is_bare_erase());
+        assert_eq!(with_command.modifiers.command, Some(ModifierSide::Either));
     }
 
     fn calendar_answer(granted: bool, status: CalendarAccess) -> AccessAnswer {

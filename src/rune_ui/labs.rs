@@ -852,12 +852,6 @@ fn rows(ui: &Ui) -> Vec<Row> {
         tr("Frees the speech model's memory after a while unused; the next dictation reloads it"),
     ));
     rows.push(row(
-        Feature::RestoreShortcutDefault,
-        Some(&KEYBOARD),
-        tr("Restore shortcut default"),
-        tr("Offer Restore default next to Paste last dictation's shortcut"),
-    ));
-    rows.push(row(
         Feature::SpokenFormatting,
         None,
         tr("Spoken formatting"),
@@ -929,6 +923,16 @@ fn rows(ui: &Ui) -> Vec<Row> {
         tr("Use model files where they are"),
         tr("Add a speech model file without copying it, so several accounts can share one file"),
     ));
+    // Metal has the K-quant kernels; the Vulkan builds embed shaders only for
+    // the catalog's types.
+    if caps.os == super::platform::Os::Macos {
+        rows.push(row(
+            Feature::KQuantModels,
+            None,
+            tr("Smaller model files"),
+            tr("Add your own speech model files that use Q6_K, Q5_K, or Q4_K weights. They are smaller than Q8_0 but Hex hasn't verified them, so accuracy may vary."),
+        ));
+    }
     rows.push(row(
         Feature::PickerDownloaded,
         None,
@@ -936,10 +940,10 @@ fn rows(ui: &Ui) -> Vec<Row> {
         tr("Show only downloaded speech models in the picker, with the space they take"),
     ));
     rows.push(row(
-        Feature::TranscribeFiles,
+        Feature::ShellCompletions,
         None,
-        tr("Transcribe files"),
-        tr("Adds hex transcribe <file> to turn a WAV recording into text with your dictation model."),
+        tr("Shell completions"),
+        tr("Print a completion script for bash, zsh, fish, elvish, or PowerShell with hex completions <shell>"),
     ));
     rows.push(row(
         Feature::ApiProcessing,
@@ -1137,7 +1141,6 @@ fn row_key(lab: Lab) -> &'static str {
         Feature::PauseBrowser => "lab-pause-browser",
         Feature::ShareShortcut => "lab-share-shortcut",
         Feature::UnloadIdle => "lab-unload-idle",
-        Feature::RestoreShortcutDefault => "lab-restore-shortcut-default",
         Feature::KeepOnClipboard => "lab-keep-on-clipboard",
         Feature::CopyOnly => "lab-copy-only",
         Feature::ReturnToApp => "lab-return-to-app",
@@ -1163,6 +1166,7 @@ fn row_key(lab: Lab) -> &'static str {
         Feature::OutputFixes => "lab-output-fixes",
         Feature::PickerActiveFirst => "lab-picker-active-first",
         Feature::ModelInPlace => "lab-model-in-place",
+        Feature::KQuantModels => "lab-k-quant-models",
         Feature::PickerDownloaded => "lab-picker-downloaded",
         Feature::SectionKeyAlone => "lab-section-key",
         Feature::KeepRecordings => "lab-keep-recordings",
@@ -1192,7 +1196,7 @@ fn row_key(lab: Lab) -> &'static str {
         Feature::MeetingNotesFile => "lab-meeting-notes-file",
         Feature::ExpireMeetingAudio => "lab-expire-meeting-audio",
         Feature::OpenCodeInWsl => "lab-opencode-in-wsl",
-        Feature::TranscribeFiles => "lab-transcribe-files",
+        Feature::ShellCompletions => "lab-shell-completions",
         Feature::ApiProcessing => "lab-api-processing",
         Feature::ApiTimestamps => "lab-api-timestamps",
         Feature::ApiBrowserAccess => "lab-api-browser-access",
@@ -1275,7 +1279,7 @@ fn extras(ui: &Ui, p: Paint, entry: &Row, layer: &mut Vec<El>) -> Option<El> {
                         .font(controls::DESCRIPTION)
                         .color(p.muted()),
                 )
-                .child(unload_after(ui, p)),
+                .child(unload_after(ui, p, layer)),
         ),
         Lab::Feature(Feature::KeepMicrophoneOpen) => Some(
             row()
@@ -1366,21 +1370,30 @@ fn appearance_theme(ui: &Ui, p: Paint) -> El {
 }
 
 /// How long the model sits unused before it unloads.
-fn unload_after(ui: &Ui, p: Paint) -> El {
+fn unload_after(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> El {
     use crate::app_settings::UNLOAD_IDLE_MINUTES;
     let labels: Vec<String> = UNLOAD_IDLE_MINUTES
         .iter()
         .map(|minutes| tr_fill("{} min", &minutes.to_string()))
         .collect();
-    let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
     let selected = UNLOAD_IDLE_MINUTES
         .iter()
         .position(|minutes| *minutes == ui.settings.labs.unload_idle_minutes)
         .unwrap_or(1);
-    controls::segmented(p, "unload-idle-minutes", &labels, selected, |ui, index| {
-        let minutes = UNLOAD_IDLE_MINUTES[index];
-        ui.update(|settings| settings.labs.unload_idle_minutes = minutes);
-    })
+    super::general::quiet_select(
+        ui,
+        p,
+        super::Menu::Pick("unload-idle-minutes"),
+        "unload-idle-minutes".to_owned(),
+        tr("Unload after"),
+        labels,
+        selected,
+        |ui, index| {
+            let minutes = UNLOAD_IDLE_MINUTES[index];
+            ui.update(|settings| settings.labs.unload_idle_minutes = minutes);
+        },
+        layer,
+    )
 }
 
 /// How long the microphone stays open after a dictation before it is

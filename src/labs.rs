@@ -12,8 +12,8 @@
 //! dictation shortcut,
 //! more dictation shortcuts with their own activation modes
 //! (macOS), Toggle's tap or hold (macOS, Linux), stopping an automatic meeting
-//! recording when its call ends (macOS), transcribing a saved WAV file from a
-//! terminal, and Terminal paste, shortcut sharing
+//! recording when its call ends (macOS), printing a shell completion script
+//! from a terminal, and Terminal paste, shortcut sharing
 //! on Windows, and a terminal-paste dictation shortcut on Windows and Linux,
 //! and applying While dictating only on speakers) is just its toggle.
 //!
@@ -111,7 +111,6 @@ impl Feature {
             | Self::ShareShortcut
             | Self::UnloadIdle
             | Self::KeepMicrophoneOpen
-            | Self::RestoreShortcutDefault
             | Self::KeepOnClipboard
             | Self::CopyOnly
             | Self::ReturnToApp
@@ -137,6 +136,7 @@ impl Feature {
             | Self::OutputFixes
             | Self::PickerActiveFirst
             | Self::ModelInPlace
+            | Self::KQuantModels
             | Self::PickerDownloaded
             | Self::SectionKeyAlone
             | Self::KeepRecordings
@@ -163,7 +163,6 @@ impl Feature {
             | Self::GnomeAnnotate
             | Self::CapsLockDictation
             | Self::OpenCodeInWsl
-            | Self::TranscribeFiles
             | Self::ApiProcessing
             | Self::ApiTimestamps
             | Self::ApiBrowserAccess
@@ -172,6 +171,7 @@ impl Feature {
             | Self::PrintStart
             | Self::VoicePrompt
             | Self::CopyCaptureZip
+            | Self::ShellCompletions
             | Self::MoreDictationShortcuts => Audience::Everyone,
         }
     }
@@ -191,7 +191,6 @@ impl Feature {
             | Self::PauseBrowser
             | Self::ShareShortcut => 20261030,
             Self::UnloadIdle
-            | Self::RestoreShortcutDefault
             | Self::KeepOnClipboard
             | Self::CopyOnly
             | Self::SpokenFormatting
@@ -238,8 +237,7 @@ impl Feature {
             | Self::TerminalPasteShortcut
             | Self::ReleaseNotesLink
             | Self::OpenCodeInWsl => 20261108,
-            Self::TranscribeFiles
-            | Self::ApiProcessing
+            Self::ApiProcessing
             | Self::Appearance
             | Self::DoubleTapModifiers
             | Self::ReturnToApp
@@ -255,6 +253,8 @@ impl Feature {
             | Self::VoicePrompt
             | Self::CopyCaptureZip
             | Self::ApiBrowserAccess => 20261112,
+            Self::KQuantModels => 20261113,
+            Self::ShellCompletions => 20261113,
         }
     }
 
@@ -306,6 +306,7 @@ impl Feature {
             | Self::SubtitleExport
             | Self::StopWhenCallEnds
             | Self::MovableMeetingCapsules
+            | Self::KQuantModels
             | Self::MeetingImport => cfg!(target_os = "macos"),
             Self::VoiceFilter => cfg!(any(target_os = "macos", target_os = "linux")),
             Self::TerminalPaste | Self::ShareShortcut | Self::OpenCodeInWsl => {
@@ -357,7 +358,6 @@ impl Feature {
             | Self::VocabularyBiasing
             | Self::UnloadIdle
             | Self::KeepMicrophoneOpen
-            | Self::RestoreShortcutDefault
             | Self::KeepOnClipboard
             | Self::SpokenFormatting
             | Self::SpokenSymbols
@@ -382,13 +382,13 @@ impl Feature {
             | Self::Appearance
             | Self::ReleaseNotesLink
             | Self::FillerWords
-            | Self::TranscribeFiles
             | Self::ApiProcessing
             | Self::ApiTimestamps
             | Self::ApiBrowserAccess
             | Self::VoicePrompt
             | Self::CopyCaptureZip
-            | Self::SpeakersOnly => true,
+            | Self::SpeakersOnly
+            | Self::ShellCompletions => true,
         }
     }
 
@@ -412,7 +412,6 @@ impl Feature {
             Self::ShareShortcut => "share-shortcut",
             Self::UnloadIdle => "unload-idle",
             Self::KeepMicrophoneOpen => "keep-microphone-open",
-            Self::RestoreShortcutDefault => "restore-shortcut-default",
             Self::KeepOnClipboard => "keep-on-clipboard",
             Self::CopyOnly => "copy-only",
             Self::ReturnToApp => "return-to-app",
@@ -438,6 +437,7 @@ impl Feature {
             Self::OutputFixes => "output-fixes",
             Self::PickerActiveFirst => "picker-active-first",
             Self::ModelInPlace => "model-in-place",
+            Self::KQuantModels => "k-quant-models",
             Self::PickerDownloaded => "picker-downloaded",
             Self::SectionKeyAlone => "section-key",
             Self::KeepRecordings => "keep-recordings",
@@ -464,7 +464,6 @@ impl Feature {
             Self::ExpireMeetingAudio => "expire-meeting-audio",
             Self::CapsLockDictation => "caps-lock-dictation",
             Self::OpenCodeInWsl => "opencode-in-wsl",
-            Self::TranscribeFiles => "transcribe-files",
             Self::ApiProcessing => "api-processing",
             Self::ApiTimestamps => "api-timestamps",
             Self::ApiBrowserAccess => "api-browser-access",
@@ -473,6 +472,7 @@ impl Feature {
             Self::PrintStart => "print-start",
             Self::VoicePrompt => "voice-prompt",
             Self::CopyCaptureZip => "copy-capture-zip",
+            Self::ShellCompletions => "shell-completions",
             Self::MoreDictationShortcuts => "more-dictation-shortcuts",
         }
     }
@@ -497,7 +497,6 @@ impl Feature {
             Self::ShareShortcut => "share_dictation_shortcut",
             Self::UnloadIdle => "labs.unload_idle",
             Self::KeepMicrophoneOpen => "labs.keep_microphone_open",
-            Self::RestoreShortcutDefault => "labs.restore_shortcut_default",
             Self::KeepOnClipboard => "labs.keep_on_clipboard",
             Self::CopyOnly => "labs.copy_only",
             Self::ReturnToApp => "labs.return_to_app",
@@ -523,6 +522,7 @@ impl Feature {
             Self::OutputFixes => "labs.output_fixes",
             Self::PickerActiveFirst => "labs.picker_active_first",
             Self::ModelInPlace => "labs.model_in_place",
+            Self::KQuantModels => "labs.k_quant_models",
             Self::PickerDownloaded => "labs.picker_downloaded",
             Self::SectionKeyAlone => "labs.section_key_alone",
             Self::KeepRecordings => "labs.keep_recordings",
@@ -549,7 +549,6 @@ impl Feature {
             Self::ExpireMeetingAudio => "labs.expire_meeting_audio",
             Self::CapsLockDictation => "labs.caps_lock_dictation",
             Self::OpenCodeInWsl => "labs.opencode_in_wsl",
-            Self::TranscribeFiles => "labs.transcribe_files",
             Self::ApiProcessing => "labs.api_processing",
             Self::ApiTimestamps => "labs.api_timestamps",
             Self::ApiBrowserAccess => "labs.api_browser_access",
@@ -558,6 +557,7 @@ impl Feature {
             Self::PrintStart => "labs.print_start",
             Self::VoicePrompt => "labs.voice_prompt",
             Self::CopyCaptureZip => "labs.copy_capture_zip",
+            Self::ShellCompletions => "labs.shell_completions",
             Self::MoreDictationShortcuts => "labs.more_dictation_shortcuts",
         }
     }
@@ -586,7 +586,6 @@ impl Feature {
             Self::ShareShortcut => settings.share_dictation_shortcut,
             Self::UnloadIdle => settings.labs.unload_idle,
             Self::KeepMicrophoneOpen => settings.labs.keep_microphone_open,
-            Self::RestoreShortcutDefault => settings.labs.restore_shortcut_default,
             Self::KeepOnClipboard => settings.labs.keep_on_clipboard,
             Self::CopyOnly => settings.labs.copy_only,
             Self::ReturnToApp => settings.labs.return_to_app,
@@ -612,6 +611,7 @@ impl Feature {
             Self::OutputFixes => settings.labs.output_fixes,
             Self::PickerActiveFirst => settings.labs.picker_active_first,
             Self::ModelInPlace => settings.labs.model_in_place,
+            Self::KQuantModels => settings.labs.k_quant_models,
             Self::PickerDownloaded => settings.labs.picker_downloaded,
             Self::SectionKeyAlone => settings.labs.section_key_alone,
             Self::KeepRecordings => settings.labs.keep_recordings,
@@ -638,7 +638,6 @@ impl Feature {
             Self::ExpireMeetingAudio => settings.labs.expire_meeting_audio,
             Self::CapsLockDictation => settings.labs.caps_lock_dictation,
             Self::OpenCodeInWsl => settings.labs.opencode_in_wsl,
-            Self::TranscribeFiles => settings.labs.transcribe_files,
             Self::ApiProcessing => settings.labs.api_processing,
             Self::ApiTimestamps => settings.labs.api_timestamps,
             Self::ApiBrowserAccess => settings.labs.api_browser_access,
@@ -647,6 +646,7 @@ impl Feature {
             Self::PrintStart => settings.labs.print_start,
             Self::VoicePrompt => settings.labs.voice_prompt,
             Self::CopyCaptureZip => settings.labs.copy_capture_zip,
+            Self::ShellCompletions => settings.labs.shell_completions,
             Self::MoreDictationShortcuts => settings.labs.more_dictation_shortcuts,
         }
     }
@@ -672,7 +672,6 @@ impl Feature {
             &mut labs.mouse_shortcuts,
             &mut labs.unload_idle,
             &mut labs.keep_microphone_open,
-            &mut labs.restore_shortcut_default,
             &mut labs.keep_on_clipboard,
             &mut labs.copy_only,
             &mut labs.return_to_app,
@@ -698,6 +697,7 @@ impl Feature {
             &mut labs.output_fixes,
             &mut labs.picker_active_first,
             &mut labs.model_in_place,
+            &mut labs.k_quant_models,
             &mut labs.picker_downloaded,
             &mut labs.section_key_alone,
             &mut labs.keep_recordings,
@@ -724,7 +724,6 @@ impl Feature {
             &mut labs.expire_meeting_audio,
             &mut labs.caps_lock_dictation,
             &mut labs.opencode_in_wsl,
-            &mut labs.transcribe_files,
             &mut labs.api_processing,
             &mut labs.api_timestamps,
             &mut labs.api_browser_access,
@@ -734,6 +733,7 @@ impl Feature {
             &mut labs.print_start,
             &mut labs.voice_prompt,
             &mut labs.copy_capture_zip,
+            &mut labs.shell_completions,
             &mut labs.more_dictation_shortcuts,
         ]
     }
@@ -762,7 +762,6 @@ impl Feature {
             Self::ShareShortcut => settings.share_dictation_shortcut = on,
             Self::UnloadIdle => settings.labs.unload_idle = on,
             Self::KeepMicrophoneOpen => settings.labs.keep_microphone_open = on,
-            Self::RestoreShortcutDefault => settings.labs.restore_shortcut_default = on,
             Self::KeepOnClipboard => settings.labs.keep_on_clipboard = on,
             Self::CopyOnly => settings.labs.copy_only = on,
             Self::ReturnToApp => settings.labs.return_to_app = on,
@@ -792,6 +791,7 @@ impl Feature {
             Self::OutputFixes => settings.labs.output_fixes = on,
             Self::PickerActiveFirst => settings.labs.picker_active_first = on,
             Self::ModelInPlace => settings.labs.model_in_place = on,
+            Self::KQuantModels => settings.labs.k_quant_models = on,
             Self::PickerDownloaded => settings.labs.picker_downloaded = on,
             Self::KeepRecordings => settings.labs.keep_recordings = on,
             Self::SettingsSearch => settings.labs.settings_search = on,
@@ -817,7 +817,6 @@ impl Feature {
             Self::ExpireMeetingAudio => settings.labs.expire_meeting_audio = on,
             Self::CapsLockDictation => settings.labs.caps_lock_dictation = on,
             Self::OpenCodeInWsl => settings.labs.opencode_in_wsl = on,
-            Self::TranscribeFiles => settings.labs.transcribe_files = on,
             Self::ApiProcessing => settings.labs.api_processing = on,
             Self::ApiTimestamps => settings.labs.api_timestamps = on,
             Self::ApiBrowserAccess => settings.labs.api_browser_access = on,
@@ -826,6 +825,7 @@ impl Feature {
             Self::PrintStart => settings.labs.print_start = on,
             Self::VoicePrompt => settings.labs.voice_prompt = on,
             Self::CopyCaptureZip => settings.labs.copy_capture_zip = on,
+            Self::ShellCompletions => settings.labs.shell_completions = on,
             Self::MoreDictationShortcuts => settings.labs.more_dictation_shortcuts = on,
             // Off, no shortcut keeps a key only the feature allows.
             Self::StandaloneSpecialKeys => {
@@ -969,6 +969,11 @@ static COPY_CAPTURE_ZIP: AtomicBool = AtomicBool::new(false);
 /// atomic, written by [`state`] and [`apply`].
 static API_BROWSER_ACCESS: AtomicBool = AtomicBool::new(false);
 
+/// Labs › Smaller model files' switch, set beside [`STATE`] like
+/// [`PRINT_START`]: the state word is full, so this lab has its own atomic,
+/// written by [`state`] and [`apply`].
+static K_QUANT_MODELS: AtomicBool = AtomicBool::new(false);
+
 /// The origins Labs › Browser access to the local API allows, set beside
 /// [`API_BROWSER_ACCESS`]: only normalized `scheme://host[:port]` origins,
 /// and empty while the lab is off.
@@ -1000,6 +1005,7 @@ fn state() -> u64 {
                 SCREEN_VOCABULARY.store(screen_vocabulary_enabled(&saved), Ordering::Release);
                 VOICE_PROMPT.store(voice_prompt_enabled(&saved), Ordering::Release);
                 COPY_CAPTURE_ZIP.store(copy_capture_zip_enabled(&saved), Ordering::Release);
+                K_QUANT_MODELS.store(k_quant_models_enabled(&saved), Ordering::Release);
                 store_api_browser_access(&saved);
                 store_voice_prompt_phrase(&saved.voice_prompt_phrase);
             }
@@ -1044,6 +1050,14 @@ fn copy_capture_zip_enabled(settings: &LabsSettings) -> bool {
     settings.copy_capture_zip
         && Feature::CopyCaptureZip.shipped()
         && Feature::CopyCaptureZip.managed().is_none()
+}
+
+/// Whether `settings` turn on Labs › Smaller model files in this build,
+/// before its managed lock; the state word has no bit for it.
+fn k_quant_models_enabled(settings: &LabsSettings) -> bool {
+    settings.k_quant_models
+        && Feature::KQuantModels.shipped()
+        && Feature::KQuantModels.managed().is_none()
 }
 
 /// Whether `settings` turn on Labs › Browser access to the local API in this
@@ -1106,6 +1120,7 @@ pub(crate) fn apply(settings: &LabsSettings) {
     SCREEN_VOCABULARY.store(screen_vocabulary_enabled(settings), Ordering::Release);
     VOICE_PROMPT.store(voice_prompt_enabled(settings), Ordering::Release);
     COPY_CAPTURE_ZIP.store(copy_capture_zip_enabled(settings), Ordering::Release);
+    K_QUANT_MODELS.store(k_quant_models_enabled(settings), Ordering::Release);
     store_api_browser_access(settings);
     store_voice_prompt_phrase(&settings.voice_prompt_phrase);
     // Labs › Pause from menu bar: turning it off resumes at once, without
@@ -2194,6 +2209,48 @@ mod tests {
     }
 
     #[test]
+    fn smaller_model_files_is_its_own_switch_and_macos_only() {
+        let mut labs = LabsSettings::default();
+        assert!(!k_quant_models_enabled(&labs));
+        labs.k_quant_models = true;
+        labs.unload_idle_minutes = 24 * 60;
+        assert!(k_quant_models_enabled(&labs));
+        // The state word has no bit for it: the other switches keep theirs.
+        let state = encode_where(&labs, |_| true);
+        assert_eq!(state & PARAKEET_ULTRA, 0);
+        assert_eq!((state >> MINUTES_SHIFT) & MINUTES_MASK, 24 * 60);
+        assert_eq!(
+            Feature::KQuantModels.on_this_os(),
+            cfg!(target_os = "macos")
+        );
+        assert_eq!(Feature::KQuantModels.added(), 20261113);
+        assert_eq!(Feature::KQuantModels.audience(), Audience::Everyone);
+        assert_eq!(Feature::KQuantModels.group(), Group::Models);
+        assert_eq!(Feature::KQuantModels.settings_key(), "labs.k_quant_models");
+        assert_eq!(Feature::KQuantModels.name(), "k-quant-models");
+    }
+
+    #[test]
+    fn shell_completions_is_its_own_switch_and_everywhere() {
+        let mut labs = LabsSettings::default();
+        assert!(!Feature::ShellCompletions.on(&AppSettings::default()));
+        labs.shell_completions = true;
+        assert!(Feature::ShellCompletions.on(&AppSettings {
+            labs,
+            ..AppSettings::default()
+        }));
+        assert!(Feature::ShellCompletions.on_this_os());
+        assert_eq!(Feature::ShellCompletions.added(), 20261113);
+        assert_eq!(Feature::ShellCompletions.audience(), Audience::Everyone);
+        assert_eq!(Feature::ShellCompletions.group(), Group::Output);
+        assert_eq!(
+            Feature::ShellCompletions.settings_key(),
+            "labs.shell_completions"
+        );
+        assert_eq!(Feature::ShellCompletions.name(), "shell-completions");
+    }
+
+    #[test]
     fn keeping_the_clipboard_is_everywhere_and_copy_only_is_macos_or_windows() {
         assert!(Feature::KeepOnClipboard.on_this_os());
         assert_eq!(
@@ -2228,7 +2285,7 @@ mod tests {
     #[test]
     fn retired_switches_are_read_and_ignored() {
         let settings: AppSettings = serde_json::from_str(
-            r#"{"labs": {"enabled": true, "collapsible_meeting_sections": true, "meeting_platform_icons": true, "live_text": true}}"#,
+            r#"{"labs": {"enabled": true, "collapsible_meeting_sections": true, "meeting_platform_icons": true, "transcribe_files": true, "restore_shortcut_default": true, "live_text": true}}"#,
         )
         .unwrap();
         assert!(settings.labs.live_text);
@@ -2237,5 +2294,7 @@ mod tests {
         assert!(json["labs"].get("enabled").is_none());
         assert!(json["labs"].get("collapsible_meeting_sections").is_none());
         assert!(json["labs"].get("meeting_platform_icons").is_none());
+        assert!(json["labs"].get("transcribe_files").is_none());
+        assert!(json["labs"].get("restore_shortcut_default").is_none());
     }
 }
