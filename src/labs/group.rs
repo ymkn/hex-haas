@@ -42,6 +42,19 @@ impl Group {
         }
     }
 
+    /// Its English header in Settings › Labs.
+    pub const fn title(self) -> &'static str {
+        match self {
+            Self::Dictation => "Dictation",
+            Self::Output => "Output",
+            Self::History => "History",
+            Self::Meetings => "Meetings",
+            Self::Annotate => "Annotate",
+            Self::Shortcuts => "Shortcuts",
+            Self::Models => "Models",
+        }
+    }
+
     pub fn from_id(id: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|group| group.id() == id)
     }
@@ -72,6 +85,7 @@ impl Feature {
             | Self::SpokenFormatting
             | Self::SpokenSymbols
             | Self::FillerWords
+            | Self::CleanUpWithAppleIntelligence
             | Self::KeepOnClipboard
             | Self::CopyOnly
             | Self::ReturnToApp
@@ -85,6 +99,8 @@ impl Feature {
             | Self::ApiBrowserAccess
             | Self::PrintStart
             | Self::ShellCompletions
+            | Self::YoloMode
+            | Self::CursorContext
             | Self::VoicePrompt => Group::Output,
             Self::KeepRecordings
             | Self::HistoryStats

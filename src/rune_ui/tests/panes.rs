@@ -412,6 +412,7 @@ fn contributed_options_are_labs_toggles_off_by_default() {
         "lab-print-start",
         "lab-spoken-formatting",
         "lab-filler-words",
+        "lab-clean-up",
         "lab-spoken-symbols",
         "lab-caps-lock-dictation",
     ] {
@@ -426,6 +427,9 @@ fn contributed_options_are_labs_toggles_off_by_default() {
     assert!(!rt.state.settings.labs.filler_words);
     tap(&mut rt, "lab-filler-words");
     assert!(rt.state.settings.labs.filler_words);
+    assert!(!rt.state.settings.labs.clean_up_with_apple_intelligence);
+    tap(&mut rt, "lab-clean-up");
+    assert!(rt.state.settings.labs.clean_up_with_apple_intelligence);
     assert!(rt.find("lab-share-shortcut").is_none(), "Windows only");
     assert!(!rt.state.settings.labs.mouse_shortcuts);
     tap(&mut rt, "lab-mouse-shortcuts");
@@ -457,6 +461,7 @@ fn contributed_options_are_labs_toggles_off_by_default() {
     assert!(rt.find("lab-copy-only").is_some(), "macOS and Windows");
     assert!(rt.find("lab-spoken-formatting").is_some(), "every OS");
     assert!(rt.find("lab-filler-words").is_some(), "every OS");
+    assert!(rt.find("lab-clean-up").is_none(), "macOS only");
     assert!(rt.find("lab-spoken-symbols").is_some(), "every OS");
     assert!(!rt.state.settings.labs.keep_on_clipboard);
     tap(&mut rt, "lab-keep-on-clipboard");
@@ -2091,6 +2096,7 @@ fn labs_lists_every_toggle_off_by_default() {
         ("lab-live-chapters", settings.labs.live_chapters),
         ("lab-vocabulary-biasing", settings.labs.vocabulary_biasing),
         ("lab-screen-vocabulary", settings.labs.screen_vocabulary),
+        ("lab-cursor-context", settings.labs.cursor_context),
         ("lab-return-to-app", settings.labs.return_to_app),
         ("lab-speakers-only", settings.labs.speakers_only),
         (
@@ -2113,6 +2119,8 @@ fn labs_lists_every_toggle_off_by_default() {
     assert!(rt.state.settings.labs.live_text);
     tap(&mut rt, "lab-vocabulary-biasing");
     assert!(rt.state.settings.labs.vocabulary_biasing);
+    tap(&mut rt, "lab-cursor-context");
+    assert!(rt.state.settings.labs.cursor_context);
     tap(&mut rt, "lab-meetings");
     assert!(rt.find("nav-meetings").is_none(), "hidden while off");
 
@@ -2123,6 +2131,7 @@ fn labs_lists_every_toggle_off_by_default() {
     open_labs(&mut rt);
     assert!(rt.find("lab-return-to-app").is_none(), "macOS only");
     assert!(rt.find("lab-screen-vocabulary").is_none(), "macOS only");
+    assert!(rt.find("lab-cursor-context").is_none(), "macOS only");
     assert!(
         rt.find("lab-second-dictation-shortcut").is_some(),
         "the second dictation shortcut runs on Windows too"
@@ -2144,6 +2153,10 @@ fn labs_lists_every_toggle_off_by_default() {
     assert!(
         rt.find("lab-screen-vocabulary").is_none(),
         "screen vocabulary is macOS only"
+    );
+    assert!(
+        rt.find("lab-cursor-context").is_none(),
+        "cursor context is macOS only"
     );
 }
 
@@ -2980,6 +2993,77 @@ fn live_typing_says_when_the_desktop_cannot_use_it() {
     refresh(&mut rt);
     tap(&mut rt, "lab-live-typing");
     assert!(rt.state.settings.labs.live_typing);
+}
+
+/// Labs › Clean up with Apple Intelligence says why Apple Intelligence can't
+/// run here, locks its switch while it is off, and still turns off once on.
+#[test]
+fn clean_up_says_why_apple_intelligence_cannot_run() {
+    use crate::rune_ui::platform::NotesAvailability;
+    // Tall enough that the Output group's cards sit inside the window, where
+    // a tap reaches their switches.
+    let mut rt = runtime("mac-labs", true, (980.0, 2400.0));
+    rt.state.platform.notes = NotesAvailability::NotEnabled;
+    refresh(&mut rt);
+    open_labs(&mut rt);
+    assert!(rt.find("lab-clean-up").is_some());
+    tap(&mut rt, "lab-clean-up");
+    assert!(
+        !rt.state.settings.labs.clean_up_with_apple_intelligence,
+        "the switch stays off where it can't work"
+    );
+    assert!(
+        texts(&rt)
+            .iter()
+            .any(|text| text.starts_with("Turn on Apple Intelligence in System Settings")),
+        "its card says why"
+    );
+
+    // Already on, it can still be turned off.
+    rt.state.settings.labs.clean_up_with_apple_intelligence = true;
+    refresh(&mut rt);
+    tap(&mut rt, "lab-clean-up");
+    assert!(!rt.state.settings.labs.clean_up_with_apple_intelligence);
+
+    // This Mac has Apple Intelligence: the switch turns on.
+    rt.state.platform.notes = NotesAvailability::Available;
+    refresh(&mut rt);
+    tap(&mut rt, "lab-clean-up");
+    assert!(rt.state.settings.labs.clean_up_with_apple_intelligence);
+    assert!(
+        !texts(&rt)
+            .iter()
+            .any(|text| text.starts_with("Turn on Apple Intelligence in System Settings")),
+        "no note while it can run"
+    );
+}
+
+/// An organization's lock keeps the cleanup card off, disabled, and saying
+/// so, instead of its Apple Intelligence note, whatever this Mac can run.
+#[test]
+fn a_managed_lock_holds_the_cleanup_lab_off() {
+    use crate::policy::{Lock, Policy};
+    let _locked = Policy::forced_for_test(Policy::default().with(Lock::Labs));
+    let mut rt = runtime("mac-labs", true, (980.0, 2400.0));
+    open_labs(&mut rt);
+    assert!(rt.find("lab-clean-up").is_some(), "the card still lists");
+    tap(&mut rt, "lab-clean-up");
+    assert!(
+        !rt.state.settings.labs.clean_up_with_apple_intelligence,
+        "a locked switch never turns on"
+    );
+    assert!(
+        texts(&rt)
+            .iter()
+            .any(|text| text == "Managed by your organization"),
+        "its row says why"
+    );
+    assert!(
+        !texts(&rt)
+            .iter()
+            .any(|text| text.starts_with("Turn on Apple Intelligence")),
+        "the Apple Intelligence note would replace the lock's words"
+    );
 }
 
 #[test]

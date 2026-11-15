@@ -35,19 +35,27 @@ user-requested features land in Labs, off by default, not on by default.**
 Labs has no master switch; Settings › Labs lists every lab this OS has as a
 card (name, description, toggle), each off by default, under one collapsible
 header per group (Dictation, Output, History, Meetings, Annotate, Shortcuts,
-Models; `labs::Feature::group`), plus Send feedback and Run setup again. Each feature has an audience: `Everyone` or `Dev` (dev, local, test, and
-dev-channel builds only; a stable build never lists, accepts, or runs it).
-A feature with its own pane joins the sidebar as a normal item while
-on and is hidden while off; a behaviour-only feature is just its toggle. Today:
-Meetings (beta), Voice Filter (Dev; locked on while its macOS driver is
-installed, and a stable build with the driver keeps its pane for Uninstall
-alone), Playground (Dev), Live text, Live chapters, Vocabulary biasing,
-Screen vocabulary (macOS), Switch
-model with keyboard language (#216), Mouse shortcuts (#209, macOS), Also
-pause the browser (#301, macOS), Share dictation shortcut (#176, Windows),
-Unload model when idle (#442), Smaller model files (macOS), Terminal paste
-(Windows), and Terminal paste
-shortcut (Windows, Linux). Externally contributed features land there too.
+Models; `labs::Feature::group`), plus Send feedback and Run setup again. Each
+feature has an audience: `Everyone` or `Dev` (dev, local, test, and
+dev-channel builds only; a stable build never lists, accepts, or runs it). A
+feature with its own pane joins the sidebar as a normal item while on and is
+hidden while off; a behaviour-only feature is just its toggle. Today: Meetings
+(beta), Voice Filter (Dev; locked on while its macOS driver is installed, and
+a stable build with the driver keeps its pane for Uninstall alone), Playground
+(Dev), Live text, Live chapters, Vocabulary biasing, Screen vocabulary
+(macOS), Rewrite reads nearby text (macOS), Switch model with keyboard
+language (#216), Mouse shortcuts (#209, macOS), Also pause the browser (#301,
+macOS), Share dictation shortcut (#176, Windows), Unload model when idle
+(#442), Smaller model files (macOS), Terminal paste (Windows), and Terminal
+paste shortcut (Windows, Linux). Externally contributed features land there
+too.
+Every `Everyone` lab also gets a page on Hex's website,
+`anoma.ly/hex/labs/<id>` (index at `/hex/labs`), built from
+`site/src/labs.json`, which `labs::web`'s test generates from the registry
+(`Feature::title`, `summary`, `group`, `oses`, `added`). Adding or changing a
+lab means running `HEX_UPDATE_LABS_JSON=1 scripts/check labs::web` and
+committing the JSON; the test fails until you do, and the site build turns it
+into the page and its social card.
 Annotate is a normal feature in every build, stable included, on macOS,
 Linux, and Windows; only developer tools (`dev_build::is_dev_build()` with
 `DEVELOPER_FEATURES_ENABLED`) stay gated to dev builds.
@@ -569,7 +577,8 @@ substitute for source inspection or a second roadmap.
   its own thread. Answers on a channel; cancel and a dialog that never opened
   read as nothing chosen.
 - `labs`: the Labs feature registry (`labs::Feature`: name, settings key,
-  description, audience, group), the runtime gates (`labs::live_text`, `live_chapters`,
+  description, the card's title and line, audience, group, OSes), the
+  website's `site/src/labs.json` (`labs::web`), the runtime gates (`labs::live_text`, `live_chapters`,
   `playground`, `vocabulary_biasing`, `mouse_shortcuts`), and
   `hex labs [on|off <feature>]`. `dev_build`: whether this is a dev, local, test,
   or dev-channel build.
@@ -768,13 +777,30 @@ CoreAudio formats, AppleScript details, or event serialization.
   Windows' hook only while its capture records, and X11 grabs it only for
   the recording. A shortcuts portal holds a key for as long as Hex runs, so
   on Wayland Hex binds nothing for it and Settings says to bind
-  `hex dictation cancel` in the desktop. `hex dictation cancel` discards
-  whatever records, in any mode. Hold mode has no cancel: Escape ends no
-  capture there, not even as a chord, except a Labs › Caps Lock dictation
-  capture, whose own machine always cancels on Escape. Every other intentional
-  dictation finishes and pastes; only short taps, chords, and silent captures
-  discard, and Hex itself ends a capture only when its input or microphone is
-  lost.
+  `hex dictation cancel` discards
+  whatever records, in any mode. Hold mode has no cancel shortcut, with one
+  exception on macOS: Escape pressed while the shortcut is still held, once
+  the hold threshold (300 ms) made the press Hex's, cancels that capture with
+  any modifiers down, and the session tap keeps that Escape from the app
+  (`DictationHotkey::takes_escape`). Before the threshold Escape is
+  Option-Escape and passes through; a hands-free (locked) Hold capture never
+  takes Escape, which may be meant for the app in front (#786). An Escape a
+  recording machine ignores logs `Escape ignored while recording` with why.
+  Escape is never a chord. A Labs › Caps Lock dictation capture's own machine
+  always cancels on Escape. Every other intentional dictation finishes and
+  pastes; only short taps, chords, and silent captures discard, and Hex
+  itself ends a capture only when its input or microphone is lost.
+- Return (and keypad Enter) pressed while a macOS modifier-only Hold shortcut
+  is held past the hold threshold is not a chord: the capture goes on, and
+  the key reaches the app. Any other key joining it still discards it at any
+  time, so another app's global Option-key shortcut (Spaceman's Option-1)
+  never leaves a dictation running.
+- Labs › YOLO mode on macOS: an Escape the listener sees after a sending
+  dictation's release (from its submission, so the 200 ms tail counts) and
+  before its Return skips the Return; the text still pastes and History
+  records a dictation, not a send. Return waits until
+  `yolo_mode::ESCAPE_WINDOW` (500 ms) after submission and `SETTLE` after the
+  paste, whichever is later. Windows and Linux press Return without the window.
 - A dictation discarded for silence (level under the silence threshold, or no
   speech the detector hears) is discarded quietly on every OS: no error tone,
   no note, nothing in Settings. The log keeps the measured level and peak

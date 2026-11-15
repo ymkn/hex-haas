@@ -74,6 +74,9 @@ pub struct LabsSettings {
     /// Names and terms shown in the focused window become temporary
     /// vocabulary for each dictation (macOS).
     pub screen_vocabulary: bool,
+    /// The mode's OpenCode rewrite reads the text around the cursor as
+    /// context (macOS); password fields are never read.
+    pub cursor_context: bool,
     /// Mouse buttons may be recorded as shortcuts (macOS, issue 209).
     pub mouse_shortcuts: bool,
     /// The engine unloads the speech model after `unload_idle_minutes` (5, 15 default, 30, 60) unused (issue 442).
@@ -98,6 +101,9 @@ pub struct LabsSettings {
     pub spoken_formatting: bool,
     /// Filler words such as "um" and "uh" are removed from dictations (issue 631).
     pub filler_words: bool,
+    /// One short on-device Apple Intelligence pass over each macOS dictation
+    /// fixes misheard words and spoken self-corrections (macOS).
+    pub clean_up_with_apple_intelligence: bool,
     /// `hex meetings show --srt|--vtt` exports a transcript as timed subtitles (macOS, issue 633).
     pub subtitle_export: bool,
     /// `second_dictation_hotkey` dictates like the dictation shortcut (issue 627).
@@ -214,6 +220,16 @@ pub struct LabsSettings {
     /// `hex completions <shell>` prints a completion script for bash, zsh,
     /// fish, elvish, or PowerShell, generated from Hex's own commands.
     pub shell_completions: bool,
+    /// A shortcut dictation held for at least
+    /// `yolo_mode_seconds` presses Return after its paste.
+    pub yolo_mode: bool,
+    /// One of [`YOLO_MODE_SECONDS`]; another value loads the
+    /// default.
+    #[serde(deserialize_with = "deserialize_yolo_mode_seconds")]
+    pub yolo_mode_seconds: u32,
+    /// The apps Labs › YOLO mode sends in, by the names
+    /// Modes match; empty means every app.
+    pub yolo_mode_apps: Vec<String>,
     /// The local API's `process=global` returns transcripts after Global
     /// mode's output processing.
     pub api_processing: bool,
@@ -259,7 +275,13 @@ pub const UNLOAD_IDLE_MINUTES: [u32; 4] = [5, 15, 30, 60];
 /// 30 s, 1, 3, 5, and 30 minutes.
 pub const KEEP_MICROPHONE_OPEN_SECONDS: [u32; 5] = [30, 60, 180, 300, 1_800];
 
+/// The holds Labs › YOLO mode offers, in seconds.
+pub const YOLO_MODE_SECONDS: [u32; 5] = [1, 2, 3, 5, 10];
+
 impl LabsSettings {
+    /// The default [`YOLO_MODE_SECONDS`] choice.
+    pub const DEFAULT_YOLO_MODE_SECONDS: u32 = 2;
+
     /// The default [`KEEP_MICROPHONE_OPEN_SECONDS`] choice.
     pub const DEFAULT_KEEP_MICROPHONE_OPEN_SECONDS: u32 = 60;
 
@@ -294,6 +316,26 @@ where
     }
 }
 
+/// A saved `yolo_mode_seconds` must name one of
+/// [`YOLO_MODE_SECONDS`]; another value fails to load, so the
+/// field returns to its default with the usual launch note.
+fn deserialize_yolo_mode_seconds<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let seconds = u32::deserialize(deserializer)?;
+    if YOLO_MODE_SECONDS.contains(&seconds) {
+        Ok(seconds)
+    } else {
+        Err(serde::de::Error::custom(format!(
+            "expected one of {}",
+            YOLO_MODE_SECONDS
+                .map(|seconds| seconds.to_string())
+                .join(", ")
+        )))
+    }
+}
+
 /// A saved `voice_prompt_phrase` must pass
 /// [`crate::dictation::voice_prompt::phrase_problem`]; another value fails to
 /// load, so the field returns to the default with the usual launch note.
@@ -319,6 +361,7 @@ impl Default for LabsSettings {
             playground: false,
             vocabulary_biasing: false,
             screen_vocabulary: false,
+            cursor_context: false,
             mouse_shortcuts: false,
             unload_idle: false,
             unload_idle_minutes: 15,
@@ -329,6 +372,7 @@ impl Default for LabsSettings {
             return_to_app: false,
             spoken_formatting: false,
             filler_words: false,
+            clean_up_with_apple_intelligence: false,
             subtitle_export: false,
             second_dictation_shortcut: false,
             more_dictation_shortcuts: false,
@@ -372,6 +416,9 @@ impl Default for LabsSettings {
             more_call_apps: false,
             opencode_in_wsl: false,
             shell_completions: false,
+            yolo_mode: false,
+            yolo_mode_seconds: Self::DEFAULT_YOLO_MODE_SECONDS,
+            yolo_mode_apps: Vec::new(),
             api_processing: false,
             api_timestamps: false,
             api_browser_access: false,

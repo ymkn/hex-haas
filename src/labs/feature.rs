@@ -27,6 +27,7 @@ pub enum Feature {
     ReturnToApp,
     SpokenFormatting,
     FillerWords,
+    CleanUpWithAppleIntelligence,
     SubtitleExport,
     SecondDictationShortcut,
     TerminalPasteShortcut,
@@ -84,10 +85,12 @@ pub enum Feature {
     VoicePrompt,
     CopyCaptureZip,
     ShellCompletions,
+    YoloMode,
+    CursorContext,
 }
 
 impl Feature {
-    pub const ALL: [Self; 79] = [
+    pub const ALL: [Self; 82] = [
         Self::Meetings,
         Self::VoiceFilter,
         Self::Playground,
@@ -110,6 +113,7 @@ impl Feature {
         Self::ReturnToApp,
         Self::SpokenFormatting,
         Self::FillerWords,
+        Self::CleanUpWithAppleIntelligence,
         Self::SubtitleExport,
         Self::SecondDictationShortcut,
         Self::TerminalPasteShortcut,
@@ -167,5 +171,7 @@ impl Feature {
         Self::VoicePrompt,
         Self::CopyCaptureZip,
         Self::ShellCompletions,
+        Self::YoloMode,
+        Self::CursorContext,
     ];
 }

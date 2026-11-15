@@ -19,7 +19,33 @@ is no master switch. **Labs** is always the last item in the sidebar (Up and
 Down reach it from the last pane; pressing it while it shows keeps it open) and
 lists every Labs feature this OS has as a card (name, one-line description, toggle)
 under its group's collapsible header, each **off by default**, plus Send
-feedback and Run setup again.
+feedback and Run setup again. A card's title and line are
+`labs::Feature::title` and `summary` (`src/labs/card.rs`), translated by the
+window, and its OSes `labs::Feature::oses`.
+
+**On the web.** Every `Everyone` lab (not Dev ones, nor Screenshots, Annotate
+15 s replay, or Copy captures as a zip, which only builds with the capture
+build option have) has a page at `anoma.ly/hex/labs/<id>` (`dev.anoma.ly` for
+the dev site), listed newest first at `/hex/labs`, with a 1200 × 630 social
+card. The pages come from `site/src/labs.json`, which only the registry
+writes:
+
+```ts
+Add or change a lab
+├── HEX_UPDATE_LABS_JSON=1 scripts/check labs::web -> rewrites site/src/labs.json from Feature::ALL
+├── commit it               -> labs::web's test fails while the JSON is stale
+└── push to dev (site/**)   -> the dev site's build writes labs/<id>.html, labs/<id>.png, labs.html, and the sitemap entries
+Page
+├── Open in Hex             -> hex://labs/<id> (Mac labs only: only the Mac app registers hex://)
+├── Get Hex                 -> the home page when the stable release's src/labs.rs names the lab,
+│                              else Get Hex Dev (/hex/download/dev, and dev links for its other OSes)
+└── hex labs on <id>        -> the same switch from a terminal, every OS
+```
+
+Checks: `labs::web` (Rust, the JSON and which labs it leaves out),
+`every_lab_card_string_has_every_language` (i18n), and `site/labs.test.ts`
+(`bun test`: links, meta, order). The site's build runs in the deploy only,
+not on pull requests; the live page is unverified until a deploy.
 
 ```ts
 Feature             Pane  Toggle (settings.json, hex settings)   On: what it does
@@ -36,6 +62,7 @@ Feature             Pane  Toggle (settings.json, hex settings)   On: what it doe
 ├── Live chapters   no    labs.live_chapters           (macOS)   chapters a meeting while it records, boundary pass after Stop
 ├── Vocabulary biasing no labs.vocabulary_biasing                Parakeet transcription biased toward the vocabulary (#452/#457)
 ├── Screen vocabulary no labs.screen_vocabulary         (macOS)   names and terms in the focused window become temporary vocabulary for each dictation; read locally through Accessibility, never saved, password fields skipped
+├── Rewrite reads nearby text no labs.cursor_context (macOS) the mode's OpenCode rewrite reads the focused text element's text around the caret as context for names, terms, and where the result lands; password fields skipped
 ├── Switch model with keyboard language  no  keyboard_model_switching.enabled  (macOS, Windows, X11)
 │                                        the input source picks its mapped model (#216); General shows the mappings while on
 ├── Switch model with app no  labs.app_model_switching       (macOS, Windows)
@@ -53,6 +80,7 @@ Feature             Pane  Toggle (settings.json, hex settings)   On: what it doe
 │                                        long after a capture, so the next dictation starts at once
 ├── Keep dictation on clipboard no labs.keep_on_clipboard (every OS) a pasted dictation stays on the clipboard; the previous one is not restored (#200)
 ├── Copy dictation only no labs.copy_only (macOS, Windows)    a dictation goes to the clipboard and is never pasted; Paste last dictation still pastes (#629)
+├── YOLO mode no labs.yolo_mode (every OS) a shortcut dictation held at least its chosen time (2 s default), in one of its chosen apps if any, presses Return after its paste unless Escape came after the release (macOS); History records it as Send
 ├── Return to app   no    labs.return_to_app           (macOS)   a dictation pastes into the app it started in, switching back to it first when another app came forward
 ├── Print-only CLI dictation no labs.print_start        (macOS)   hex dictation start --print answers with the transcript however the recording ends; never pasted or copied
 ├── Voice prompt    no    labs.voice_prompt + labs.voice_prompt_phrase ("rewrite this", every OS)
@@ -71,6 +99,13 @@ Feature             Pane  Toggle (settings.json, hex settings)   On: what it doe
 ├── Spoken formatting no labs.spoken_formatting      spoken "new line"/"line break", "new paragraph", "open/close quote", "quote … unquote" become line breaks and quotation marks; Spanish "nuevo párrafo", "nueva línea", "abre/cierra comillas", … too (#630, #1040)
 ├── Spoken symbols  no    labs.spoken_symbols          spoken "hashtag", "underscore", "comma", … become symbols joined to their words: "#release", "my_variable", "done, thanks"; Spanish "arroba", "guion bajo", "coma", … too (#678, #1040)
 ├── Remove filler words no labs.filler_words          English dictations lose um, umm, uh, uhh, erm, er, ah, with no model (#631)
+├── Clean up with Apple Intelligence no labs.clean_up_with_apple_intelligence (macOS)
+│                                        one short on-device pass after the corrections fixes clearly misheard words and
+│                                        resolves spoken self-corrections ("tuesday, no wait, wednesday" → "wednesday");
+│                                        a mode that rewrites with OpenCode keeps its model, numbers-only dictations are
+│                                        left alone, and an unavailable, late, refused, or over-reaching answer pastes the
+│                                        corrected text; its card says why Apple Intelligence can't run here, and the
+│                                        switch still turns off
 ├── Subtitle export no    labs.subtitle_export         (macOS)   hex meetings show --srt|--vtt writes a meeting as timed subtitles (#633)
 ├── Second dictation shortcut no labs.second_dictation_shortcut + second_dictation_hotkey
 │                                        another shortcut dictates like the main one (#627); General shows its recorder while on
@@ -311,7 +346,8 @@ Settings › Labs                          // labs.page, a store (labs/store.rs)
 │   // keep_microphone_open_shows_its_window_on_its_card_while_on (its control stays inside its card, its last choice reachable),
 │   // appearance_shows_its_theme_on_its_card_while_on; scenes mac-labs-settings, mac-labs-screenshots
 ├── Opened by a link (macOS) -> hex://labs opens this page; ?tab=on, ?category=<group id> and ?search=<text>
-│   set the store; hex://labs/<lab> also selects that lab's group chip (unless ?category names one). It never turns a lab on. An unknown
+│   set the store; hex://labs/<lab> also selects that lab's group chip (unless ?category names one), scrolls to its card,
+│   and gives the card a focus border for 1.5 s (Store::flash). It never turns a lab on. An unknown
 │   or absent name -> the page opens and process.log notes it. hex://settings/<pane>
 │   (general, output, history, meetings, voice-filter) opens a main pane; one Hex doesn't show -> General.
 │   Links over 2048 bytes are ignored; a test build's scheme is hex-test://
@@ -321,7 +357,7 @@ Settings › Labs                          // labs.page, a store (labs/store.rs)
 
 hex labs                                 // labs.cli; edits settings.json, no running Hex
 ├── (list) -> every feature this build has: name, on/off, audience, description, its hex settings key
-├── link <feature> -> macOS: prints hex://labs/<feature> (hex-test:// in a test build), which opens Labs on its group
+├── link <feature> -> macOS: prints hex://labs/<feature> (hex-test:// in a test build), which opens Labs on its group and card
 ├── on <feature> | off <feature> -> a running Hex saves and applies it (hex settings set); otherwise settings.json
 ├── off voice-filter with the driver installed -> refused: uninstall the driver (dev builds; stable has no voice-filter)
 └── hex experiments … -> points at hex labs
@@ -408,6 +444,55 @@ stoplist and log levels, hashes, ordinals, times, units, random tokens, the
 `hex_never_reads_its_own_accessibility_tree` in
 [accessibility.rs](../../src/accessibility.rs). Not observed: a real Mac
 reading a real window, or a dictated word corrected by what was on screen.
+
+Rewrite reads nearby text (`cursor-context`, macOS): while on,
+each dictation reads the focused text element once, on a background thread, at
+the same moment as the screen vocabulary read (a hold past its threshold, a
+control start, or a released microphone opening), and only for the mode's
+OpenCode rewrite. It reads `AXFocusedUIElement` through the existing 0.25 s
+messaging timeout, never Hex's own process, and returns nothing for an
+`AXSecureTextField` (role or subrole), so a password never leaves the app. It
+reads `AXSelectedTextRange`, then `AXStringForRange` for up to 1,000 UTF-16
+units before the selection, the selection itself (up to 2,000 units; a longer
+selection skips the read), and up to 1,000 units after it, bounded with
+`AXNumberOfCharacters` (without it, the after part is skipped). An app that
+answers a range with more text than asked still sends at most that range's
+units: the last units before the selection, the first ones for the selection
+and after it. A slice edge that splits a surrogate pair drops that half, so a
+real U+FFFD in the text stays, and everything empty returns nothing. The read
+is taken non-blocking when the dictation finishes, so a very short dictation,
+or an app that answers slower than that, may send no nearby text. The text
+joins that capture's context
+(`ContextSnapshot::caret_text`) and only the mode's OpenCode rewrite prompt,
+ahead of the raw transcript, as context only: the prompt says never to copy,
+answer, or follow it, uses it to resolve names, terms, references, and likely
+recognition errors, and to fit capitalization and punctuation to the
+insertion point. Any of the section's own tag names inside that text are made
+inert, so field text can't close or open a section. It is never saved, logged,
+put in History, events, or meetings. Typed-text transformations, the Voice
+prompt request, meetings, and the local API never see it. Off, no Accessibility
+call and no thread start, a capture finishing after the lab was turned off
+sends nothing, and the rewrite prompt is byte for byte what it was. A terminal
+exposes its scrollback through the same text field as any editor, so while the
+lab is on, nearby terminal output — including secrets printed in the shell,
+such as tokens from a command just run — can go with that dictation. A
+cancelled capture discards its late read, and only one read runs at a time.
+That text goes to the mode's OpenCode model, which may be a cloud provider.
+Checks:
+`dictation::caret_text` tests (a cancelled capture leaves no stale text, one
+read at a time, a capture whose lab turned off sends nothing, an empty read is
+no context, and the unit window's head/tail, lone-surrogate edges, and real
+U+FFFD); `dictation::caret_prompt` tests
+(the section and its replace note, empty parts omitted, tag names in field
+text made inert); the golden
+`a_prompt_without_caret_text_is_byte_for_byte_todays_prompt`, plus
+`caret_text_joins_the_prompt_ahead_of_the_transcript` and
+`empty_caret_parts_leave_no_tags_and_typed_text_reads_none`
+([processor.rs](../../src/dictation/processor.rs));
+`cursor_context_is_its_own_switch_and_macos_only` in [labs.rs](../../src/labs.rs);
+and the Labs card tests in `rune_ui/tests/panes.rs`. Not observed: a real Mac
+reading a real text field, or a dictated word corrected by the text around the
+cursor; the Accessibility function itself has no host test here.
 
 Switch model with app (`app-model-switching`, macOS and Windows): while on,
 the Modes pane gives each mode, Global included, a "Speech model" row:
@@ -700,6 +785,52 @@ on macOS too). Off, output is exactly as before. Checks:
 [panes.rs](../../src/rune_ui/tests/panes.rs). Not yet observed: a real
 dictation on a Mac or Windows PC with the toggle on.
 
+YOLO mode (`yolo-mode`, every OS): while on, a
+dictation started by a dictation shortcut (hold, double-tap lock, Toggle, a
+second or extra shortcut, Caps Lock dictation on macOS) whose shortcut was
+held at least `labs.yolo_mode_seconds` (1, 2, 3, 5, or 10 s,
+2 s by default; the card's Longer than picker) pastes as usual,
+then presses Return once, 100 ms later (`yolo_mode::SETTLE`), so a chat
+message sends itself. The hold is `DictationClip::held_ms`: the audio from
+the press to the release, without the pre-roll before it or the release
+tail after. Shorter dictations paste as usual. The card's Only in row
+(`labs.yolo_mode_apps`, empty by default: every app) limits it to
+chosen apps, picked with the Modes pane's application picker
+(`modes::PickerTarget::YoloMode`; a popover over the cards below its +,
+closed by a pick, a click outside, or Escape) and matched as a Mode's
+applications are (`ContextSnapshot::application_is`) against the frontmost
+app captured with the dictation; with apps chosen, a dictation whose app is
+unknown (Wayland without foreign-toplevel) never sends. It never applies to Dictate
+without processing, `hex dictation` or local API captures, printing stops,
+Copy dictation only, Live typing's input-method commits, meetings, Annotate
+captures, or Paste last dictation. Each OS decides as the output commits
+(`yolo_mode::sends` reads the lab then): macOS `parakeet::finish_output`
+picks `PasteMode::Send` (⌘V, and the continuation ends), then
+`send_unless_escaped` waits until `yolo_mode::ESCAPE_WINDOW` (500 ms) after
+the job's submission (release plus the 200 ms tail) and `SETTLE` after the
+paste, whichever is later, and presses a bare Return (`PasteMode::Return`,
+`keyboard::post_return`) only if the listener saw no Escape since submission
+(`yolo_mode::SendGate`, a count `note_escape` bumps). An Escape after the
+release leaves the text pasted and unsent, and its History entry is a
+dictation. Pastes usually land 0.25–0.5 s after submission and Return went
+100 ms after them, so the window adds at most about 0.25 s; the log has `YOLO mode pressed Return` with
+`after_submit_ms`, or `YOLO mode pasted without Return`. Windows
+`process_dictation_job` follows its paste with
+`WindowsPaster::press_return` (VK_RETURN through `SendInput`); Linux
+`DictationOutput::deliver` follows it with `LinuxPaster::press_return`
+(`Chord::Return`: XTest on X11, `wtype -k Return` or the RemoteDesktop
+portal on Wayland), with no Escape window. A sent dictation's History entry is kind Send. On Linux
+a desktop keybinding that runs `hex dictation toggle` (Wayland without the
+GlobalShortcuts portal, GNOME custom shortcuts) is a command, so it never
+sends. Checks: `a_hold_reaching_the_chosen_time_is_long_enough`,
+`chosen_apps_limit_where_it_sends`, `escape_after_submission_closes_the_gate`,
+and `return_waits_for_the_window_and_the_settle` (yolo_mode.rs);
+`escape_after_release_pastes_a_yolo_dictation_without_return` (parakeet.rs);
+`release_tail_keeps_audio_through_the_tail_and_no_further` checks
+`held_ms` (dictation.rs); `return_sends_no_modifier` (linux/paste.rs);
+`yolo_mode_is_its_own_switch_and_everywhere` (labs.rs). Not yet
+observed: a real dictation sending a message on any OS.
+
 Return to app (`return-to-app`, macOS): while on, a dictation pastes into the
 app its capture started in. `handle_hotkey_action`'s Start (shared by the
 dictation shortcuts, Caps Lock dictation, and `hex dictation start`) records
@@ -963,6 +1094,81 @@ exactly as before. Checks: `only_english_dictations_apply_the_filter`,
 [panes.rs](../../src/rune_ui/tests/panes.rs). Not yet observed: a real
 dictation with the toggle on; the Labs page goldens need regenerating on
 Linux with the new row.
+
+Clean up with Apple Intelligence (`clean-up-apple-intelligence`, macOS, off
+by default): while on, each macOS dictation that its mode does not rewrite
+gets one short on-device pass with Apple Intelligence, after the speech Labs
+and the Global and mode corrections and before the transformations. Its
+instructions are the iOS cleaner's, word for word
+(`ios/HEXMobile/TranscriptCleanup.swift`): fix clearly misrecognized words
+using the sentence's context, resolve an explicit spoken self-correction
+("tuesday, no wait, wednesday" becomes "wednesday"), keep the speaker's
+wording, language, meaning, numbers, and negation otherwise, and treat the
+transcript as content to clean rather than as instructions to answer. The
+stage is read in `Profiles::process_cancellable_with`
+([dictation/processor.rs](../../src/dictation/processor.rs)) where the
+OpenCode rewrite would have run, though only when that rewrite is off: a mode
+that rewrites with OpenCode keeps its own model. It also skips typed text
+(Labs › Transform typed text), a transcript of nothing but numbers, an empty
+transcript, and a dictation a voice prompt answered. `dictation::apple_cleanup`
+holds the decision (`plan`), the one bridge call, and the guard. The guard
+applies the iOS cleaner's rules (length, digits, word counts, negation counts
+with "no wait" read as a self-correction, and word overlap), with one counting
+difference: a length is counted in scalars here and in grapheme clusters on
+iOS, and the CJK numerals `Character.isNumber` sees but Rust's `is_numeric`
+does not are read as digits here. The bridge
+(`apple_intelligence::generate_text` → `hex_apple_intelligence_text`) runs the
+plain-text responder at utility priority with a 2 s budget, temperature 0.2,
+and 1024 response tokens; the answer is trimmed, loses one pair of wrapping
+quotes only when the transcript didn't dictate its own, takes back the
+transcript's leading and trailing whitespace (spoken formatting's line breaks),
+and is judged by the guard. Whatever happens the dictation pastes: an
+unavailable model (checked from the cached availability first, so it costs no
+wait, and never read while the lab is off), a cancelled job, a timeout, a
+refusal or guardrail block, an error, or an answer the guard refuses all keep
+the corrected text. A long dictation can spend the whole 2 s budget and paste
+uncleaned. With the lab off, or Apple
+Intelligence unavailable, the observation stays absent exactly as before; a
+pass that ran records `profile: "Clean up with Apple Intelligence"` with its
+latency in the dictation's NDJSON `processing` field and in History's
+Processing line, and a pass that fell back records the reason as `fallback`
+("fell back: …" in History). The card shows the same reason Summaries shows
+when this Mac can't run Apple Intelligence, and only locks the switch while it
+is off, so it can always be turned back off again (an organization's Labs lock
+keeps the managed row and its words instead). Dictate without processing
+never reaches this stage on macOS: its captures skip the processor entirely.
+The local API's `POST /transcriptions` with `process=global` (Labs › Process
+API transcripts) runs the same shared pipeline on this Mac
+(`local_api::processing::profiles_processor`), so a processed API transcript
+gets this pass too while the lab is on; its cancellation flag stops the stage
+before the bridge call, the same flag the pipeline's other stages read.
+Checks: `misheard_words_and_spoken_self_corrections_are_accepted`,
+`punctuation_and_case_changes_are_accepted`, `digit_changes_are_rejected`,
+`a_lost_negation_is_rejected`, `an_added_negation_is_rejected`,
+`runaway_length_is_rejected`, `an_empty_answer_or_transcript_is_rejected`,
+`an_answer_with_little_overlap_is_rejected`,
+`only_a_dictation_with_words_to_clean_is_cleaned`,
+`a_stage_that_cannot_run_changes_nothing`,
+`a_cancelled_stage_starts_nothing`,
+`quotes_go_only_when_the_transcript_did_not_dictate_them`,
+`the_transcripts_own_whitespace_comes_back`,
+`cjk_numerals_count_as_digits`, and
+`words_keep_their_apostrophes` in
+[dictation/apple_cleanup.rs](../../src/dictation/apple_cleanup.rs);
+`a_plain_text_answer_reads_its_text` in
+[apple_intelligence.rs](../../src/apple_intelligence.rs);
+`typed_text_never_reaches_the_dictation_cleanup` and
+`a_numbers_only_dictation_skips_the_cleanup` in
+[processor.rs](../../src/dictation/processor.rs);
+`clean_up_is_its_own_atomic_and_macos_only` in [labs.rs](../../src/labs.rs);
+and `contributed_options_are_labs_toggles_off_by_default`,
+`clean_up_says_why_apple_intelligence_cannot_run`, and
+`a_managed_lock_holds_the_cleanup_lab_off` in
+[panes.rs](../../src/rune_ui/tests/panes.rs). Not yet observed: a real
+dictation on a Mac with the lab on and Apple Intelligence available, and any
+real-Mac run of the new Swift bridge — this host and CI compile it, but no one
+has dictated through it yet. The Labs page goldens were regenerated on Linux
+with the new row.
 
 Subtitle export (`subtitle-export`, issue 633, macOS like Meetings; its row
 shows wherever Meetings does): while on, `hex meetings show <id> --srt` or

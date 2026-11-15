@@ -44,7 +44,15 @@ light or dark instead of following the OS, while the HUD and other overlays
 keep following it; its Screen vocabulary
 toggle (off by default, macOS) uses names and terms visible in the focused
 window as temporary vocabulary for each dictation, read locally through
-Accessibility and never saved ([vocabulary.md](vocabulary.md)).
+Accessibility and never saved ([vocabulary.md](vocabulary.md)). Its Rewrite
+reads nearby text toggle (off by default, macOS) hands the mode's OpenCode
+rewrite the text around the caret as context for names, terms, and where the
+result lands; the text goes to the configured provider, which may be a cloud
+service, password fields are never read, and off leaves the prompt byte for
+byte unchanged. Its Clean up with Apple Intelligence toggle (off by default,
+macOS) gives each dictation its mode does not rewrite one short on-device pass
+that fixes clearly misheard words and spoken self-corrections, pasting the
+corrected text whenever Apple Intelligence is unavailable, slow, or refuses.
 General › Advanced › Interface language offers Português (Brasil), and Hex
 uses it for any Portuguese system language (#867); it also offers Français,
 used for any French system language (#892), and Русский, used for any
@@ -289,7 +297,10 @@ Launch Hex, setup incomplete              // setup.tour; every build and OS, ful
 │       second Reopen Hex in the top banner); Hex is ready keeps the banner.
 │       Check: `a_shortcut_that_did_not_start_shows_only_reopen`
 └── Hex is ready -> where Hex lives (menu bar, system tray, or app launcher)
-    ├── macOS: "Open Hex when your Mac starts?" + Launch at login
+    ├── macOS: "Open Hex when your Mac starts?" + Launch at login, napping in your menu bar
+    ├── Windows: "Open Hex when your computer starts?" + Launch at login, napping in your system tray
+    ├── Linux: "Open Hex when your computer starts?" + Launch at login, napping in the background
+    │   Check: `the_login_ask_speaks_each_platforms_wording` (all three)
     ├── Try again -> back to the practice game
     └── Start using Hex -> records completion once setup is ready; closes onboarding
 Run setup again (Labs) or `hex onboarding reset` -> the same story from the start,
@@ -821,6 +832,10 @@ General > Shortcut mode -> Hold or double-tap (default), Hold, Tap, Double-tap
      more modifiers) it says so, unless Labs > Double-tap on a lone modifier
      is on (macOS)
 
+Dictate without processing (Output pane; unbound)   // dictation.md
+  -> records and pastes as heard, skipping Output; History kind Raw
+  -> a shortcut on the dictation chord is cleared when settings load or save
+
 Labs > Second dictation shortcut (off)   // labs.md; issue 627
   -> General shows "Second dictation shortcut" under Shortcut (unbound, clearable)
   -> it dictates like the shortcut: Hold/Toggle, double-tap lock, release
@@ -875,8 +890,10 @@ Completed output                         // output
 ├── Paste Last Dictation                  // menu or Option-Shift-V / saved binding
 │   ├── Last completed dictation
 │   ├── A failed paste still keeps its text (every OS, unless cancelled; dictation.md)
-│   └── macOS menu item shows the saved binding (⌥⇧V by default); unbound,
-│       modifier-only, or a mouse button -> no shortcut shown
+│   ├── macOS menu item shows the saved binding (⌥⇧V by default); unbound,
+│   │   modifier-only, or a mouse button -> no shortcut shown
+│   └── A saved binding on the dictation chord is cleared (logged) when
+│       settings load or save
 └── History
     ├── Inspect / search / copy (row hover or the card) / Delete… (asks once)
     ├── Retention ("Kept 7 days ▾" menu) -> Seven days by default, always hard-capped
@@ -941,7 +958,7 @@ Sidebar                                  // settings.nav
 ├── General, Output, History, then each feature that is on: Captures
 │   (Labs › Screenshots, macOS), Meetings and Voice Filter (Labs toggles),
 │   Annotate, Playground (Labs, an item)
-└── Labs -> a store of unfinished features, each off by default: search, categories, cards with their own settings inline; hex://labs/<feature> opens its group (labs.md)
+└── Labs -> a store of unfinished features, each off by default: search, categories, cards with their own settings inline; hex://labs/<feature> opens its group and scrolls to its card (labs.md)
     // Command-1…9 follow the panes' order (labs::order)
 
 General                                  // settings
@@ -1340,8 +1357,11 @@ were not run against a live model.
 Built-in text transformations run natively. Custom transformations come from
 `~/.config/hex/hex.config.ts` and run in Hex's embedded script engine, each
 under its own `timeout` (1 s by default, 30 s when the config uses host APIs,
-60 s cap). OpenCode rewriting sends documented
-context to the configured provider; speech transcription stays local.
+60 s cap). OpenCode rewriting sends documented context to the configured
+provider; speech transcription stays local. With Labs › Rewrite reads nearby
+text on (macOS), that context also includes the focused text element's text
+around the caret, read through Accessibility and never saved; password fields
+are skipped, and off leaves the prompt unchanged.
 
 ```ts
 Discover custom transformations           // personal_commands::host_needed; every OS

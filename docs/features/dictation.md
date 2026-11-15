@@ -2,11 +2,13 @@
 
 Hold the configured shortcut, speak, and release. Hex transcribes locally and
 inserts the result at the current focus. New captures do not cancel accepted
-work. Only Toggle mode has a cancel: its cancel shortcut, Escape by default,
-discards the recording (#786, #1022); every other intentional dictation
-finishes and pastes. The exception is a Labs › Caps Lock dictation capture on
-macOS: it is hands-free in every shortcut mode, so its own Escape binding
-cancels it even in Hold.
+work. Toggle mode has a cancel: its cancel shortcut, Escape by default,
+discards the recording (#786, #1022). In Hold mode on macOS, Escape pressed
+while the shortcut is still held past the hold threshold cancels it; a
+hands-free capture never takes Escape. Every other intentional dictation
+finishes and pastes. The other exception is a Labs › Caps Lock dictation
+capture on macOS: it is hands-free in every shortcut mode, so its own Escape
+binding cancels it even in Hold.
 
 This map covers the macOS release path. Linux shares the basic journey, not
 every timing, input, or recovery guarantee; see the
@@ -372,6 +374,8 @@ Output > Without processing > Dictate without processing   // raw.shortcut
 │       ├── Windows: a key chord (the hook's raw trigger)
 │       └── Linux: an X11 grab, or a portal entry "Dictate without processing",
 │           only while bound
+├── Sharing the dictation shortcut -> cleared (logged) when settings load or
+│   save: one press never starts both captures
 ├── Hold / double-tap lock / toggle -> as the dictation shortcut
 │   ├── The shortcut that started a capture owns it: the other one neither
 │   │   finishes it nor counts toward its double tap
@@ -388,6 +392,12 @@ Checks: `raw_dictation_owns_the_capture_it_starts` (Linux reducer),
 `every_command_round_trips` and the `check_flags` cases in `control.rs`.
 Proof limits: no physical shortcut run on any OS; the macOS machine pairing
 was not compiled or run here (Linux check, Windows cross-clippy only).
+
+On macOS a raw capture never reaches the processing worker at all
+(`parakeet::run_inference_worker` queues only Paste, Copy only, and Print; the
+raw targets go straight to output), so it also skips Labs › Clean up with
+Apple Intelligence ([labs.md](labs.md)); elsewhere that stage is macOS-only,
+so it never runs on the shared pipeline either.
 
 ### Windows Haas-ja backend (this fork)
 
@@ -505,6 +515,25 @@ text is read through `wl-paste`, which may briefly take focus. Proof limits: no
 shortcut press against a real target application was run; the flow is covered
 by unit tests only.
 
+### Rewrite With Nearby Text (Labs, macOS)
+
+While Labs › Rewrite reads nearby text is on (`labs.cursor_context`, off by
+default), each dictation reads the focused text element's text around the
+caret once, on a background thread, as its capture becomes real, and the
+mode's OpenCode rewrite carries it ahead of the raw transcript as context for
+names, terms, references, and where the result lands. Up to 1,000 UTF-16 units
+before the selection, the selection itself (a selection over 2,000 units skips
+the read), and up to 1,000 after it join that capture's context
+(`ContextSnapshot::caret_text`); empty parts are omitted. The read uses
+`AXFocusedUIElement` through the 0.25 s messaging timeout and never reads Hex
+or an `AXSecureTextField`, so a password field returns nothing. Output's
+typed-text path, the Voice prompt request, meetings, the local API, History,
+logs, and events never see it, and the text is never saved. Off, no
+Accessibility read or thread starts, and the rewrite prompt is byte for byte
+what it was. A cancelled capture discards a late read. See [labs.md](labs.md)
+for the prompt wording, bounds, and checks. Not observed: a real Mac reading a
+real text field, or a rewritten word corrected by the text around the cursor.
+
 ### Terminal Paste Shortcut (Labs, Windows and Linux)
 
 A third optional dictation shortcut for typing into a terminal while the main
@@ -598,6 +627,10 @@ paste). Windows cross-compiles only; its paste is
 [windows/dictation.rs](../../src/windows/dictation.rs)'s own `WindowsPaster`.
 Issue [#1437](https://github.com/anomalyco/hex/issues/1437).
 
+Paste last dictation's own shortcut has no runtime filter beside dictation's,
+so one saved on the dictation shortcut's chord is cleared (logged) when
+settings load or save.
+
 ### Copy Recent Dictation (Labs, macOS)
 
 Paste Last Dictation reaches only the newest dictation. With Labs › Copy
@@ -628,6 +661,28 @@ Paste job -> Carries it through inference and processing        // dictate.retur
 │   settle 50 ms, then paste
 └── Gone or not confirmed -> Nothing pasted; the job fails and its text
     becomes Paste last dictation's unless the job was cancelled
+```
+
+Details and checks in [labs.md](labs.md).
+
+### YOLO Mode (Labs, every OS)
+
+With Labs › YOLO mode on (`labs.yolo_mode`, off by
+default), a long shortcut dictation sends itself:
+
+```ts
+Dictation shortcut released (hold, lock, or Toggle)
+  -> Held = press to release, without pre-roll or release tail
+Paste job, as the output commits                     // dictate.yolo-mode
+├── Held >= the chosen time (1-10 s, default 2 s), and the frontmost app is one
+│   of Only in's apps (none chosen = every app) -> Paste as usual
+│   -> Wait until 500 ms after submission and 100 ms after the paste (macOS)
+│   ├── No Escape since submission -> Press Return; History records Send
+│   └── Escape after the release (macOS) -> No Return; History records Dictation
+└── Shorter, or another app -> Paste as usual
+Never: Dictate without processing, `hex dictation`, the local API,
+printing stops, Copy dictation only, Live typing, meetings, captures,
+Paste last dictation
 ```
 
 Details and checks in [labs.md](labs.md).
@@ -714,6 +769,11 @@ Ordinary hold                            // lock activation is mapped below
   │       (Spaceman's Option-1) -> Seen at HID -> Discard, no double-tap lock
   ├── Modifier-only hold + any key, at any time -> Discard  // dictate.held-chord
   │   (key reaches the app; locked and toggle captures keep recording)
+  │   └── Return or keypad Enter past 300 ms -> Nothing: the capture goes on,
+  │       Return reaches the app                          // dictate.held-return
+  ├── Escape while held past 300 ms -> Cancel, cancel tone; the tap keeps
+  │   Escape from the app                                 // dictate.held-escape
+  │   └── Before 300 ms -> Nothing: Option-Escape reaches the app, logged
   └── Modifier-only hold past 300 ms -> One unassigned key press  // dictate.chord-breaker
       -> Other apps' modifier-tap hotkeys see a chord, not a tap
 
@@ -752,6 +812,25 @@ Command-Tab was silently ignored; the press now resynchronizes itself
 listen-only session and HID taps on Kit's Studio: Spaceman's Option-1/2/3
 reached HID but never the session. The installed fix has no physical-keyboard
 run yet.
+
+**Fixed November 13, 2026 (t1561):** the held-chord rule above also threw
+away a dictation when Return was pressed during it (the log showed `cause="hid-key"
+key_code=36`, 0.8 s and 21.7 s into holds), and Escape never cancelled a Hold
+capture because Hold mode had no cancel at all since #795, so nothing was even
+logged. Return and keypad Enter past the hold threshold now leave the capture
+running; inside 300 ms they are still Option-Return, a chord. Escape while the
+shortcut is still held past 300 ms cancels (`dictate.held-escape`) and the
+session tap keeps it from the app; a hands-free Hold capture still never takes
+Escape (#786), and any Escape a recording machine ignores logs `Escape
+ignored while recording` with its reason (`before the hold threshold`, `a
+hands-free capture in Hold mode has no cancel`, or the cancel shortcut being
+another key). Checks: `return_after_the_hold_threshold_keeps_a_held_capture`,
+`escape_cancels_a_held_capture_after_the_hold_threshold`, and
+`escape_ends_a_held_capture_only_after_the_hold_threshold` in
+[suppression/tests.rs](../../src/suppression/tests.rs), and
+`escape_cancels_a_locked_extra_that_records` in
+[recognition.rs](../../src/recognition.rs) (constructed events; no
+physical-keyboard run).
 
 **Fixed October 30, 2026 (issue 485):** on GNOME Wayland, releasing Ctrl
 before Space (or both at once) can leave the GlobalShortcuts portal without a
@@ -1179,7 +1258,7 @@ Shortcut mode = Double-tap                           // dictate.double-tap-only
   Same two qualifying complete taps -> LOCKED         // same lock, not a third mode
 
 LOCKED -> Speak hands-free -> Fresh shortcut press -> Finish
-       -> Escape -> Nothing: it reaches the app (#786)
+       -> Escape -> Nothing: it reaches the app (#786); logged as ignored
        -> Missed key release -> Neutral keyboard repairs tracking -> Still LOCKED
 ```
 
@@ -1227,7 +1306,8 @@ Release that will transcribe                          // dictate.stop-tone
      ├── Clip later near-silent or without speech -> Tone already played;
      │   discard quietly, nothing pasted, no error tone or note; the log has
      │   the measured level and peak against the thresholds
-     └── Escape after the release -> Nothing; the clip still transcribes
+     └── Escape after the release -> The clip still transcribes and pastes;
+         a YOLO send skips its Return (macOS)
   -> macOS: the audio owner announces it before draining the tail; HUD
      Transcribing and submission still follow the tail
   -> Paused media resumes without delaying the tone
@@ -1917,7 +1997,8 @@ Settings › General, Shortcut mode = Tap (Toggle)     // dictate.toggle-cancel
      ├── Recorder -> any chord the OS's rules allow (Escape ends the recorder)
      ├── Restore -> back to Escape
      └── Wayland -> no recorder: bind `hex dictation cancel` in the desktop
-  Hold modes -> no row, no cancel
+  Hold modes -> no row, no cancel shortcut; on macOS Escape cancels a capture
+  still held past 300 ms (dictate.held-escape), never a hands-free one
 Toggled recording (held or locked) -> Cancel shortcut
   -> Recording discarded: nothing transcribed, pasted, or kept in History
   -> Cancel tone; the HUD shows it cancelled
@@ -1932,7 +2013,10 @@ Programmatic dictation (local API) -> Its owner cancels through /cancel
 Until #786, Escape cancelled the active capture in every mode, then the newest
 unfinished job, and an accidental Escape wiped a 5-minute dictation. #795
 removed cancel; the people who asked for it back use Toggle, so it returned
-there only, and never reaches past the recording. Hex takes the key only while
+there only, and never reaches past the recording. Since November 13 (t1561)
+Escape also cancels a macOS Hold capture whose shortcut is still held past the
+hold threshold: a held key can't be the hands-free loss #786 was about, and
+the session tap keeps that Escape from the app. Hex takes the cancel key only while
 a toggled recording runs: macOS's session tap suppresses it only while the
 listener arms it, Windows' hook only while its capture records, and X11
 grabs it only for the recording. A shortcuts portal would hold the key from
@@ -2373,6 +2457,33 @@ Hidden while the HUD shows; macOS keeps it. The GPU device itself frees only
 once Rune's parked device also expires, and on Wayland layer-shell Rune keeps
 its own device regardless. The memory drop is not yet measured on a real
 Windows machine (#1431).
+
+On Windows the HUD paces its own frames: Rune's overlays there have no display
+link and don't wait for a swap-chain slot
+(`Dx12UseFrameLatencyWaitableObject::DontWait`; only a window runs Rune's slot
+wait), so a moving HUD would draw, submit and present as fast as the loop
+turns. `HudCompositor::animating` says the HUD is not display-paced, and `poll`
+(`rune_hud/windows_pacing.rs`) asks Rune for its next frame `HUD_FRAME` later,
+a fixed ~60 Hz timer rather than the display's refresh. It asks only while the
+HUD moves and either a frame has drawn since the last poll or one drew within
+`RESHOW_AFTER` (250 ms); a frame drawn since the last poll keeps the timer
+going after a stall, since Rune polls before the frame's render. A show that
+draws nothing therefore stops the timer instead of turning the loop with Hex
+idle. A meter no longer forces a frame of its own: a recording sends one with
+each audio chunk, about 100 a second, and while the timer is armed it takes
+the timer's next frame (`meter_update`), since the view reads no loudness.
+When the timer is not armed, the meter's update draws one frame, and the frame
+it draws lets the poll after it arm the timer again. This works around a
+suspected and unmeasured cause on Windows: frames presented faster than the
+GPU retires them keep their staging chunks and D3D12 allocators alive, and a
+hide that waits on the present queue stalls the window. Checked by
+`rune_hud::tests`
+(`an_armed_timer_draws_for_meters_and_a_stopped_one_lets_a_meter_draw`,
+`the_timer_arms_from_a_start_and_stops_when_frames_stop`, and
+`a_frame_drawn_since_the_last_poll_keeps_the_timer_armed`) on every OS, and by
+Linux and macOS CI. Pull-request Windows CI only compiles; the Windows tests
+run in the dispatched Check Windows workflow. No real-Windows memory
+measurement yet.
 
 Each chunk's meter removes the chunk's mean before measuring RMS and peak, so
 a microphone's DC offset (a Ryzen built-in digital microphone, #841) never

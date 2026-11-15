@@ -54,6 +54,9 @@ impl Feature {
             Self::FillerWords => {
                 "Remove filler words such as um and uh from dictations, without an AI model"
             }
+            Self::CleanUpWithAppleIntelligence => {
+                "Fix clearly misheard words and spoken self-corrections in each dictation, on this Mac with Apple Intelligence"
+            }
             Self::SubtitleExport => {
                 "Export meeting transcripts as SRT or VTT subtitles with hex meetings show"
             }
@@ -217,9 +220,13 @@ impl Feature {
             Self::VoicePrompt => {
                 "Say \"rewrite this\" in a dictation, then an instruction; Hex applies it with the mode's OpenCode model"
             }
+            Self::CursorContext => {
+                "The mode's OpenCode rewrite uses the text around the cursor to spell names and terms right and fit where it pastes. That text goes to the mode's model, which may be a cloud provider; password fields are never read"
+            }
             Self::ShellCompletions => {
                 "Print a completion script for bash, zsh, fish, elvish, or PowerShell with hex completions <shell>"
             }
+            Self::YoloMode => "Send dictations automatically",
         }
     }
 }

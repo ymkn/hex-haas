@@ -122,6 +122,10 @@ struct InferenceJob {
     language: String,
     /// The clip, kept for History while Labs › Keep recordings is on.
     recording: Option<crate::history::Recording>,
+    /// See [`JobTimings::held_ms`].
+    held_ms: Option<u64>,
+    /// See [`JobTimings::send_gate`].
+    send_gate: crate::dictation::yolo_mode::SendGate,
 }
 
 struct ProcessorJob {
@@ -144,6 +148,13 @@ struct JobTimings {
     audio_ms: u64,
     prepare_ms: u128,
     inference_ms: u128,
+    /// How long a shortcut-started dictation's shortcut was held, press to
+    /// release; `None` for every other capture. Labs › YOLO mode
+    /// reads it as the paste commits.
+    held_ms: Option<u64>,
+    /// Labs › YOLO mode: whether Escape came after submission, which skips
+    /// the Return.
+    send_gate: crate::dictation::yolo_mode::SendGate,
 }
 
 struct CompletedTranscript {
@@ -246,6 +257,9 @@ struct WorkerState {
     /// Labs › Return to app: the app in front when the capture started,
     /// which its output returns to (macOS).
     return_to: Option<i32>,
+    /// Whether the dictation shortcut, rather than `hex dictation`, started
+    /// the capture now recording (Labs › YOLO mode).
+    started_by_shortcut: bool,
 }
 
 impl WorkerState {
@@ -276,6 +290,7 @@ impl DictationWorker {
             jobs: BTreeSet::new(),
             pending_pastes: 0,
             return_to: None,
+            started_by_shortcut: false,
         }));
 
         let (_, selection) = crate::app_settings::transcription_selection();
@@ -366,6 +381,14 @@ impl DictationWorker {
         state.return_to = return_to;
     }
 
+    /// Records who started the capture now recording: a dictation shortcut,
+    /// or a `hex dictation` command. Only a shortcut's paste may send
+    /// (Labs › YOLO mode).
+    pub fn set_started_by_shortcut(&self, by_shortcut: bool) {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state.started_by_shortcut = by_shortcut;
+    }
+
     /// Hands the clip to the engine at once, so its live stream finishes
     /// before any later capture begins one; the job then waits in order.
     pub fn transcribe(
@@ -421,6 +444,11 @@ impl DictationWorker {
         let language = selection.language.clone();
         let submitted_at = Instant::now();
         let audio_ms = clip.duration_ms();
+        // Labs › YOLO mode: only a shortcut dictation's processed
+        // paste may send, judged on how long its shortcut was held.
+        let held_ms = (matches!(target, TranscriptionTarget::Paste) && state.started_by_shortcut)
+            .then(|| clip.held_ms());
+        let send_gate = crate::dictation::yolo_mode::SendGate::open();
         // Labs › Screen vocabulary: this capture's terms belong to its
         // whole-clip run and no other job. Only a model that reads the terms
         // gives up its live stream, whose vocabulary is fixed when it starts
@@ -461,6 +489,8 @@ impl DictationWorker {
             return_to,
             language,
             recording,
+            held_ms,
+            send_gate,
         })
         .map(|()| {
             state.next_sequence += 1;
@@ -832,6 +862,8 @@ fn run_inference_worker(
             audio_ms,
             prepare_ms: job.prepare_ms,
             inference_ms: inference_started.elapsed().as_millis(),
+            held_ms: job.held_ms,
+            send_gate: job.send_gate,
         };
         let target = job.target;
         match result {
@@ -1016,6 +1048,7 @@ fn finish_output(
                 .and_then(|result| result.processing.clone());
             let result = result.and_then(|mut completed| {
                 let paste_started = Instant::now();
+                let mut sent = false;
                 if !completed.nothing && !completed.text.trim().is_empty() {
                     match target {
                         TranscriptionTarget::Paste
@@ -1035,6 +1068,15 @@ fn finish_output(
                                 )
                             {
                                 PasteMode::CopyOnly
+                            } else if completed.timings.held_ms.is_some_and(|held_ms| {
+                                crate::dictation::yolo_mode::sends(
+                                    held_ms,
+                                    completed.application.as_deref(),
+                                )
+                            }) {
+                                // Labs › YOLO mode, read as the
+                                // output commits.
+                                PasteMode::Send
                             } else {
                                 PasteMode::Continue
                             };
@@ -1043,7 +1085,7 @@ fn finish_output(
                             // nothing is pasted; the text stays for Paste
                             // last dictation, and History keeps only pasted
                             // output, as on any failed paste.
-                            if matches!(mode, PasteMode::Continue)
+                            if matches!(mode, PasteMode::Continue | PasteMode::Send)
                                 && let Err(error) =
                                     crate::paste::return_to_app::bring_to_front(completed.return_to)
                             {
@@ -1058,15 +1100,22 @@ fn finish_output(
                             // clipboard while Hex saved it) keeps the text
                             // for Paste last dictation, as above, so the
                             // dictation isn't lost.
-                            paste(&completed.text, mode).inspect_err(|_| {
+                            if let Err(error) = paste(&completed.text, mode) {
                                 *last_transcript = Some(completed.text.clone());
-                            })
+                                return Err(error.to_string());
+                            }
+                            if matches!(mode, PasteMode::Send) {
+                                sent = send_unless_escaped(
+                                    completed.timings.send_gate,
+                                    Instant::now(),
+                                    paste,
+                                );
+                            }
                         }
                         TranscriptionTarget::Service
                         | TranscriptionTarget::Print
-                        | TranscriptionTarget::RawPrint => Ok(()),
+                        | TranscriptionTarget::RawPrint => {}
                     }
-                    .map_err(|error| error.to_string())?;
                     if matches!(
                         target,
                         TranscriptionTarget::Paste
@@ -1077,7 +1126,7 @@ fn finish_output(
                         *last_transcript = Some(completed.text.clone());
                     }
                     if let Some(history) = history {
-                        record_history(history, target, &mut completed);
+                        record_history(history, target, sent, &mut completed);
                     }
                 }
                 tracing::info!(
@@ -1128,14 +1177,43 @@ fn finish_output(
     }
 }
 
+/// Labs › YOLO mode, after a `Send` paste landed at `pasted_at`: presses
+/// Return unless Escape came after the release. Returns whether it sent; the
+/// text stays pasted either way.
+fn send_unless_escaped(
+    gate: crate::dictation::yolo_mode::SendGate,
+    pasted_at: Instant,
+    paste: &mut impl FnMut(&str, PasteMode) -> Result<()>,
+) -> bool {
+    if !gate.wait(pasted_at) {
+        tracing::info!("YOLO mode pasted without Return: Escape after the release");
+        return false;
+    }
+    match paste("", PasteMode::Return) {
+        Ok(()) => {
+            tracing::info!(
+                after_submit_ms = gate.submitted_at().elapsed().as_millis(),
+                "YOLO mode pressed Return"
+            );
+            true
+        }
+        Err(error) => {
+            tracing::warn!(%error, "YOLO mode could not press Return");
+            false
+        }
+    }
+}
+
 /// Record one successfully pasted result. History failures must never fail
 /// the paste that already happened.
 fn record_history(
     history: &History,
     target: TranscriptionTarget,
+    sent: bool,
     completed: &mut CompletedTranscript,
 ) {
     let kind = match target {
+        TranscriptionTarget::Paste if sent => HistoryKind::Send,
         TranscriptionTarget::Paste | TranscriptionTarget::CopyOnlyPaste => HistoryKind::Dictation,
         TranscriptionTarget::RawPaste | TranscriptionTarget::RawCopyOnlyPaste => HistoryKind::Raw,
         TranscriptionTarget::Print | TranscriptionTarget::RawPrint => HistoryKind::Printed,
@@ -1424,6 +1502,8 @@ mod tests {
                 audio_ms: 1000,
                 prepare_ms: 0,
                 inference_ms: 0,
+                held_ms: None,
+                send_gate: crate::dictation::yolo_mode::SendGate::open(),
             },
             recording: None,
         }
@@ -1547,6 +1627,8 @@ mod tests {
                         audio_ms: 2_000,
                         prepare_ms: 0,
                         inference_ms: 0,
+                        held_ms: None,
+                        send_gate: crate::dictation::yolo_mode::SendGate::open(),
                     },
                     processing: None,
                     recording: None,
@@ -1603,6 +1685,8 @@ mod tests {
                             audio_ms: 4_000,
                             prepare_ms: 0,
                             inference_ms: 0,
+                            held_ms: None,
+                            send_gate: crate::dictation::yolo_mode::SendGate::open(),
                         },
                         processing: None,
                         recording: None,
@@ -1637,6 +1721,75 @@ mod tests {
             assert_eq!(entries[0].application.as_deref(), Some("Call"));
             let _ = std::fs::remove_dir_all(&directory);
         }
+    }
+
+    /// Labs › YOLO mode: Escape after the release keeps the paste and skips
+    /// the Return, so History records a dictation rather than a send.
+    #[test]
+    fn escape_after_release_pastes_a_yolo_dictation_without_return() {
+        use crate::dictation::yolo_mode::{ESCAPE_WINDOW, SendGate};
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static ESCAPES: AtomicU64 = AtomicU64::new(0);
+        let submitted = Instant::now() - ESCAPE_WINDOW;
+        let presses = std::cell::RefCell::new(Vec::new());
+        let mut paste = |text: &str, mode| {
+            presses
+                .borrow_mut()
+                .push((text.to_owned(), matches!(mode, PasteMode::Return)));
+            Ok(())
+        };
+
+        let gate = SendGate::on(&ESCAPES, submitted);
+        ESCAPES.fetch_add(1, Ordering::AcqRel);
+        assert!(!send_unless_escaped(gate, submitted, &mut paste));
+        assert!(presses.borrow().is_empty(), "no Return after an Escape");
+
+        let gate = SendGate::on(&ESCAPES, submitted);
+        assert!(send_unless_escaped(gate, submitted, &mut paste));
+        assert_eq!(*presses.borrow(), [(String::new(), true)]);
+
+        let failing = SendGate::on(&ESCAPES, submitted);
+        assert!(!send_unless_escaped(failing, submitted, &mut |_, _| Err(
+            eyre!("Return failed")
+        )));
+
+        let directory =
+            std::env::temp_dir().join(format!("hex-parakeet-yolo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        let history = History::new(crate::history::HistoryStore::open(
+            directory.join("history.json"),
+            crate::history::HistoryRetention::Week,
+            crate::history::now_ms(),
+        ));
+        for sent in [false, true] {
+            let mut completed = CompletedTranscript {
+                text: "a long message".into(),
+                nothing: false,
+                raw: "a long message".into(),
+                application: None,
+                return_to: None,
+                timings: JobTimings {
+                    total_started: Instant::now(),
+                    queue_ms: 0,
+                    audio_ms: 3_000,
+                    prepare_ms: 0,
+                    inference_ms: 0,
+                    held_ms: Some(3_000),
+                    send_gate: SendGate::open(),
+                },
+                processing: None,
+                recording: None,
+            };
+            record_history(&history, TranscriptionTarget::Paste, sent, &mut completed);
+        }
+        let kinds: Vec<_> = history
+            .recent(2)
+            .into_iter()
+            .map(|entry| entry.kind)
+            .collect();
+        assert!(kinds.contains(&HistoryKind::Dictation) && kinds.contains(&HistoryKind::Send));
+        let _ = std::fs::remove_dir_all(&directory);
     }
 
     #[test]
@@ -1681,6 +1834,7 @@ mod tests {
                 jobs: BTreeSet::from([DictationJobId(0)]),
                 pending_pastes: 0,
                 return_to: None,
+                started_by_shortcut: false,
             })),
             inference_worker: None,
             processor_workers: Vec::new(),
