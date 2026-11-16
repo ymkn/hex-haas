@@ -46,9 +46,9 @@ a stable build with the driver keeps its pane for Uninstall alone), Playground
 (macOS), Rewrite reads nearby text (macOS), Switch model with keyboard
 language (#216), Mouse shortcuts (#209, macOS), Also pause the browser (#301,
 macOS), Share dictation shortcut (#176, Windows), Unload model when idle
-(#442), Smaller model files (macOS), Terminal paste (Windows), and Terminal
-paste shortcut (Windows, Linux). Externally contributed features land there
-too.
+(#442), Smaller model files (macOS), Terminal paste (Windows), Terminal
+paste shortcut (Windows, Linux), and Microphone key alone (#181, macOS).
+Externally contributed features land there too.
 Every `Everyone` lab also gets a page on Hex's website,
 `anoma.ly/hex/labs/<id>` (index at `/hex/labs`), built from
 `site/src/labs.json`, which `labs::web`'s test generates from the registry
@@ -1050,6 +1050,12 @@ CoreAudio formats, AppleScript details, or event serialization.
   follows its entry's retention, entry cap, Delete, and Clear all, under its
   own 512 MiB cap (oldest audio dropped first, text kept). Turning it off
   stops saving; existing audio stays until it expires or History is cleared.
+  Labs › Copy dictation audio (`copy-dictation-audio`, off by default) only
+  puts a kept file on the clipboard as a file (History's Copy audio, and the
+  menu bar's or tray's Copy last dictation audio): it never records, keeps,
+  or deletes audio itself, and both it and Keep recordings must be on for
+  either to show. The copy runs off the UI thread, since another app can
+  hold the clipboard.
 - Retained dictation history records only successful pasted output: raw and
   final text plus bounded metadata, never full browser URLs or window titles,
   and no audio unless Labs › Keep recordings is on. Entries name their speech
@@ -1371,7 +1377,9 @@ CoreAudio formats, AppleScript details, or event serialization.
   new version directory and switch `current`/`current-version` atomically at
   staging; macOS unpacks beside the bundle and swaps it in with
   `renamex_np(RENAME_SWAP)` at restart or quit, and the new version removes
-  the old bundle at launch.
+  the old bundle at launch. Staging a newer release removes the unpacked
+  folder of the one it replaces, so a Hex that runs for days keeps one
+  `.Hex-update-<version>` folder, never one per build.
 - The Wayland beta requires compatible clipboard protocols, and layer-shell or
   XWayland for the HUD. Copy and paste need `wl-copy` from `wl-clipboard`,
   which direct installs don't bring; while it's missing Hex warns in Settings

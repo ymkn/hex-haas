@@ -121,6 +121,32 @@ recording is refused and Settings shows "Add a modifier", as before;
 goes back to its default when settings load or the toggle turns off. While
 bound, the key is Hex's in every app. Details and checks in [labs.md](labs.md).
 
+macOS with Labs › Microphone key alone on (`labs.microphone_key`, off by
+default; issue 181): the microphone (dictation) key in a laptop keyboard's top
+row may be a shortcut with no modifier. Every press reports virtual key code
+176 with SecondaryFn always set (observed flags `0x800100`), so the key typed
+nothing and the recorder refused it as "Unsupported key". The recorder now takes
+it alone and shows `Mic`, and `hex settings set dictation_hotkey mic` (or
+`microphone`) saves it. macOS matches its own symbolic hot keys, its Dictation
+shortcut among them, before the app and before the annotated-session key tap,
+so Hex takes this one key at a **session** tap
+(`suppression::dictation_key`) while its lab is on. That tap consumes the press
+and its release only while a shortcut is being recorded or one of Hex's
+shortcuts matches the key, so Hex sees the key and the app does not. Anything
+else (the lab off, Hex paused from the menu bar, or no shortcut on the key)
+passes through untouched, so macOS keeps the key. Whether macOS's own Dictation
+still opens on a press Hex takes is unobserved on hardware: if it does, change
+its shortcut in System Settings › Keyboard › Dictation. The microphone key is
+refused for the Screenshots shortcuts, whose keys are read after this tap. The
+key joins F1–F20, the arrows, and the navigation keys, whose always-set
+SecondaryFn the matcher already ignores (`key_reports_function_flag` in
+`app_settings/hotkeys.rs`); Fn is never stripped globally, so it stays
+significant for every other key. Off, any shortcut on the key is refused as
+"Unsupported key", as before, `hex settings` refuses it pointing at
+`hex labs on microphone-key`, and any saved shortcut on the microphone key,
+with or without a modifier, goes back to its default when settings load or the
+toggle turns off. Details and checks in [labs.md](labs.md).
+
 Checks: `mouse_buttons_record_with_or_without_modifiers`,
 `mouse_bindings_persist_and_conflict_only_with_the_same_trigger`,
 `mouse_hold_and_release_use_the_dictation_state_machine`,
@@ -533,6 +559,16 @@ Accessibility read or thread starts, and the rewrite prompt is byte for byte
 what it was. A cancelled capture discards a late read. See [labs.md](labs.md)
 for the prompt wording, bounds, and checks. Not observed: a real Mac reading a
 real text field, or a rewritten word corrected by the text around the cursor.
+
+### OpenCode Rewrite Models
+
+A dictation's OpenCode rewrite or voice prompt with no chosen model walks Hex's
+ranked fast models: the list is cached per service, any one failing drops the
+cache (the next request reads OpenCode's catalog again), and when every ranked
+model fails OpenCode's own default model answers, so a list read while OpenCode
+was still loading no longer fails every request until a restart (#1123). Check:
+`stale_ranked_models_fall_back_to_the_default_model` in
+[dictation/processor.rs](../../src/dictation/processor.rs).
 
 ### Terminal Paste Shortcut (Labs, Windows and Linux)
 
@@ -2458,11 +2494,15 @@ once Rune's parked device also expires, and on Wayland layer-shell Rune keeps
 its own device regardless. The memory drop is not yet measured on a real
 Windows machine (#1431).
 
-On Windows the HUD paces its own frames: Rune's overlays there have no display
-link and don't wait for a swap-chain slot
-(`Dx12UseFrameLatencyWaitableObject::DontWait`; only a window runs Rune's slot
-wait), so a moving HUD would draw, submit and present as fast as the loop
-turns. `HudCompositor::animating` says the HUD is not display-paced, and `poll`
+On Windows every overlay, the HUD included, waits for room in its swap chain
+before it presents, as a window does: Rune #985 defers the frame until the
+chain has room, then draws it, which bounds the frames in flight.
+Before it, a moving HUD drew, submitted and presented as fast as the loop
+turned, and the swap chain's queue of presented but unretired frames grew,
+with whatever each queued frame held: memory grew by about 100 MB/s to 5+ GB
+on an NVIDIA card (#1796). Hex still caps the HUD's frame rate on top of that
+wait:
+`HudCompositor::animating` says the HUD is not display-paced, and `poll`
 (`rune_hud/windows_pacing.rs`) asks Rune for its next frame `HUD_FRAME` later,
 a fixed ~60 Hz timer rather than the display's refresh. It asks only while the
 HUD moves and either a frame has drawn since the last poll or one drew within
@@ -2473,17 +2513,15 @@ idle. A meter no longer forces a frame of its own: a recording sends one with
 each audio chunk, about 100 a second, and while the timer is armed it takes
 the timer's next frame (`meter_update`), since the view reads no loudness.
 When the timer is not armed, the meter's update draws one frame, and the frame
-it draws lets the poll after it arm the timer again. This works around a
-suspected and unmeasured cause on Windows: frames presented faster than the
-GPU retires them keep their staging chunks and D3D12 allocators alive, and a
-hide that waits on the present queue stalls the window. Checked by
+it draws lets the poll after it arm the timer again. Checked by
 `rune_hud::tests`
 (`an_armed_timer_draws_for_meters_and_a_stopped_one_lets_a_meter_draw`,
 `the_timer_arms_from_a_start_and_stops_when_frames_stop`, and
 `a_frame_drawn_since_the_last_poll_keeps_the_timer_armed`) on every OS, and by
 Linux and macOS CI. Pull-request Windows CI only compiles; the Windows tests
-run in the dispatched Check Windows workflow. No real-Windows memory
-measurement yet.
+run in the dispatched Check Windows workflow. The growth was measured on an
+NVIDIA card; a memory sample with #985 on a real Windows machine is still the
+fix's confirmation.
 
 Each chunk's meter removes the chunk's mean before measuring RMS and peak, so
 a microphone's DC offset (a Ryzen built-in digital microphone, #841) never

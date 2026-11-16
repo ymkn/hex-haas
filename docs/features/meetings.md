@@ -55,8 +55,11 @@ Labs > Meetings switch (macOS)                       // meetings.opt-in; off by 
 │   │       └── OpenCode -> "Sends the transcript to your OpenCode model";
 │   │           Model nests under it: a searchable picker of the running
 │   │           OpenCode's models (refreshed each time it opens; no Refresh),
-│   │           "Hex picks a fast model" first (clears meetings.opencode_model
-│   │           -> the ranked fast models); a pick is used alone, no fallback.
+│   │           "OpenCode's default model" first (clears
+│   │           meetings.opencode_model, so every title and summary is one
+│   │           request that names no model: OpenCode's own default answers,
+│   │           and the transcript never reaches another provider); a pick is
+│   │           used alone, no fallback.
 │   │           OpenCode missing or failing -> a notice with Check again /
 │   │           Retry, the saved model kept and shown by its ID (#1107, #1301)
 │   │       // checks: summaries_are_one_choice_with_opencode_s_model_under_it,
@@ -66,6 +69,7 @@ Labs > Meetings switch (macOS)                       // meetings.opt-in; off by 
 │   ├── Advanced -> Show recording indicator (on by default; corner-snapping
 │   │   capsule) and the System Audio Recording row once allowed
 │   ├── Calendar -> Connect calendar; reminders before meetings // meetings.calendar
+│   │   └── Labs › Upcoming meetings in menu bar -> the same meetings in the status menu // labs.calendar_menu
 │   └── Detected calls -> Ask / Always record / Never offer per provider // meetings.policy
 │       ├── Slack huddles, Zoom, Google Meet, Microsoft Teams, FaceTime, WhatsApp,
 │       │   Gather, Discord (always listed)
@@ -140,15 +144,18 @@ System audio                                      // meetings.system-audio
 │   hardware sink it forwards into: the default first among them, each once,
 │   and a name that would change pw-record's property string (a quote, brace,
 │   backslash, or whitespace) is skipped. When no listed sink is a device,
-│   only the default is captured. A capture that ends is dropped while the
-│   others keep recording; the source fails only when none is left (naming
-│   the last one's exit) or when no monitor delivered audio for 3 s. A route
-│   check every 2 s re-reads the sink list and reopens the source when the set
-│   changed, keeping the open captures when the sound server can't be read or
-│   lists nothing (a changed default alone does not reopen); a fallback
-│   capture reopens into one per output once sinks can be read. When that read
-│   fails or lists nothing, one untargeted pw-record follows the default
-│   output as before. No pw-record -> recording refuses with "Install
+│   only the default is captured. A capture that ends while its sink is still
+│   listed is started again on the next 2 s check, backing off 500 ms up to
+│   5 s while it keeps ending (one that ran a second starts the wait over),
+│   and retried until Stop; the other outputs keep recording untouched. The
+│   source fails only when no capture is left (naming the last one's exit) or
+│   when no monitor delivered audio for 3 s. That same check re-reads the
+│   sink list and reopens the source when the set changed, keeping the open
+│   captures when the sound server can't be read or lists nothing (a changed
+│   default alone does not reopen); a fallback capture reopens into one per
+│   output once sinks can be read. When that read fails or lists nothing, one
+│   untargeted pw-record follows the default output as before. No pw-record
+│   -> recording refuses with "Install
 │   PipeWire's pw-record"; --raw only where its help lists it (PipeWire
 │   1.3.81+), since 1.2 and older reject it and already pipe raw audio on -
 │   // checks: every_hardware_output_is_captured_with_the_default_first,
@@ -157,8 +164,11 @@ System audio                                      // meetings.system-audio
 │   // a_sink_listed_twice_is_captured_once, nothing_listed_captures_nothing
 │   // (audio/output_route.rs); a_capture_targets_its_own_sink_and_the_
 │   // fallback_keeps_the_default,
-│   // a_sink_name_that_would_change_the_property_string_is_skipped, and
-│   // a_reordered_sink_list_is_not_a_change (meeting/linux.rs); the mix by
+│   // a_sink_name_that_would_change_the_property_string_is_skipped,
+│   // a_reordered_sink_list_is_not_a_change,
+│   // an_exited_monitor_is_restarted_while_its_sink_keeps_its_name, and
+│   // a_monitor_that_ends_right_after_each_restart_keeps_backing_off
+│   // (meeting/linux.rs); the mix by
 │   // audio_on_any_output_reaches_the_system_track (meeting/capture.rs, now
 │   // run on every platform); NOT verified by hand: no multi-sink capture has
 │   // been recorded on a real PipeWire session, and whether target.object
@@ -528,7 +538,9 @@ Checks: `a_slow_loop_still_offers_an_unknown_browser_call_after_about_20_seconds
 `a_call_switched_to_while_the_browser_stays_on_the_microphone_is_not_snoozed`,
 `only_an_automatic_browser_call_with_a_code_keeps_reading_its_page`,
 `keep_recording_disarms_the_call_switch_stop_too`,
-`keep_recording_keeps_the_code_that_was_counting` and
+`keep_recording_keeps_the_code_that_was_counting`,
+`the_page_naming_the_recorded_call_again_withdraws_a_pending_stop`,
+`the_call_coming_back_withdraws_a_pending_absence_stop_once` and
 `a_snoozed_or_non_browser_application_is_not_queried` (meeting/watcher.rs),
 `the_meeting_tab_query_reads_only_the_active_tab` (dictation/context.rs),
 `a_browser_voice_note_is_not_offered_but_a_sustained_browser_call_is`,
@@ -544,6 +556,7 @@ Checks: `a_slow_loop_still_offers_an_unknown_browser_call_after_about_20_seconds
 `never_offer_saves_the_choice_and_dismisses`,
 `a_browser_on_an_unknown_page_cannot_be_set_to_always_record`,
 `an_offer_names_the_call_without_asking_about_consent`,
+`a_withdrawn_stop_brings_back_the_recording_capsule_and_closes_its_notice`,
 `an_automatic_recording_says_so_at_first`); and
 `meetings_settings_save_and_ask_for_system_audio` (Linux pane tests). The
 controller loop that turns `Detection::Record` into a recording has no
@@ -692,6 +705,68 @@ Record path. Sources: [calendar.rs](../../src/calendar.rs),
 [macos_host.rs](../../src/rune_ui/macos_host.rs), and
 [platform_settings.rs](../../src/rune_ui/platform_settings.rs).
 
+### Upcoming meetings in the menu bar
+
+```ts
+Labs › Upcoming meetings in menu bar          // labs.calendar_menu (macOS, off by default)
+├── Prerequisites: Meetings on, a calendar connected with full access
+├── The status menu starts with an Upcoming section
+│   ├── "Upcoming" (disabled header)
+│   ├── Up to 5 rows, soonest first: "10:30–11:00  Design sync",
+│   │   "Now · " in progress, "Tomorrow " or the short weekday on a later day
+│   │   ├── With a call link -> the menu's own join path:
+│   │   │   opens it, records the occurrence so no reminder pops (closes a
+│   │   │   showing one), records nothing
+│   │   │   (an Always-record provider may still record once the call starts)
+│   │   └── Without one -> informational, disabled
+│   ├── "No upcoming meetings" (disabled) when none are left
+│   └── separator
+└── Off, Meetings off, or not connected -> no section; the menu is as before
+```
+
+The rows are the reminder poll's own filtered list — the same `is_meeting`
+rule and excluded calendars, one bounded EventKit read each minute or on a
+store change, on the controller thread. The controller publishes that list
+(`calendar_menu::publish` in [calendar_menu.rs](../../src/calendar_menu.rs))
+and the status item only formats it on the main thread
+(`status_item::update_calendar_menu`), so EventKit is never read there. While
+the lab is on, a connected calendar is also read with Reminders switched off,
+since the section does not depend on them; that menu-only read never becomes
+the controller's titling and reminder list, so a detected call is not named
+from the calendar while reminders are off. Turning the lab on, or turning
+reminders back on after a menu-only read, reads at once. With no calendar
+connected nothing is read for the menu, and with the lab off the poll is
+unchanged. Times are the computer's local wall-clock times, and a meeting that
+has ended is left out on the next 500 ms refresh. The snapshot keeps at most
+32 meetings and hides when it is more than 10 minutes old, when Meetings are
+off, or when no calendar is connected; a failed read (no access) clears it,
+and clearing an already empty snapshot takes no write lock.
+
+Checks: `an_in_progress_meeting_reads_now`,
+`meetings_on_later_days_read_tomorrow_or_their_weekday`,
+`ended_meetings_are_left_out`, `at_most_five_meetings_show_soonest_first`,
+`an_empty_section_has_no_rows`, `a_stale_snapshot_never_shows`,
+`publishing_keeps_at_most_32_and_none_clears`,
+`the_section_hides_until_visible_and_fresh`,
+`the_menu_read_wants_a_connected_calendar`, and
+`a_local_date_parses_the_iso_date_part` in
+[calendar_menu.rs](../../src/calendar_menu.rs);
+`joining_elsewhere_before_the_lead_time_never_reminds` and
+`joining_elsewhere_while_showing_withdraws_it_for_good` in
+[calendar.rs](../../src/calendar.rs);
+`joining_from_the_menu_withdraws_its_reminder_and_starts_nothing`,
+`only_reminders_keep_the_titling_and_reminder_list`, and
+`a_menu_only_read_and_a_new_lab_both_force_an_immediate_read` in
+[meeting/watcher.rs](../../src/meeting/watcher.rs);
+`calendar_menu_is_its_own_switch_and_macos_only` in
+[labs.rs](../../src/labs.rs); and
+`the_menu_reads_upcoming_then_meetings_then_actions_then_the_app` in
+[macos_rune/status_item.rs](../../src/macos_rune/status_item.rs) (macOS only).
+Not yet observed: the section in a real Mac's menu bar, a real EventKit read
+reaching it, a click opening a real Zoom or Meet link, and the menu with
+calendar access denied. The rows render only in macOS builds, so no golden
+changes.
+
 ### Record
 
 ```ts
@@ -715,6 +790,9 @@ Record (offer, menu bar "Record Meeting", Meetings pane, or voice command)
      ├── Windows: each capsule's window is only as wide as the drawn pill,
      │   so the area around it stays clickable (not verified on a real
      │   Windows machine)
+     ├── Windows: Rune waits for a swap-chain slot before each frame (Rune
+     │   #985), so the pill's and panel's frames in flight stay bounded
+     │   through a long recording (#1833; not measured on Windows)
      ├── In the saved recording_indicator_corner
      ├── Follows the setting mid-recording: turning it off hides the pill and
      │   on shows it, keeping the recording's start time, within a second
@@ -784,7 +862,9 @@ Labs › Stop when the call ends (macOS, off by default; #835) // meetings.auto-
      while muted; its output stays open until hang-up)
   -> Both off for about 3 s -> capsule says "Hex stops recording in 30 s
      unless you keep recording."
-     ├── App back on the microphone or output within 30 s -> nothing stops
+     ├── App back on the microphone or output within 30 s -> its stop is
+     │   dropped; once no other automatic stop counts the notice is withdrawn
+     │   and the recording capsule returns (CallEndedWithdrawn)
      ├── Keep recording -> nothing stops for this absence; leaving again re-arms
      ├── Stop & transcribe -> stops now
      └── 30 s pass -> Stop & Transcribe, as the menu bar's; logged
@@ -801,6 +881,9 @@ Labs › Stop when the call ends (macOS, off by default; #835) // meetings.auto-
      │   logged "the page named a different call; the recording stops after
      │   its grace unless kept" and "meeting recording stopped automatically
      │   after its page named another call"
+     ├── That page naming the recorded code again within the 30 s drops this
+     │   stop; with no other automatic stop counting the notice is withdrawn,
+     │   once, and the recording capsule returns (CallEndedWithdrawn)
      ├── That grace puts roughly the next call's first half-minute in the
      │   previous recording; the next one starts once this one finishes
      │   transcribing
@@ -1558,8 +1641,9 @@ Final publication complete                               // meetings.notes
      ├── Heading -> final title, only while it still reads Hex's last title
      ├── <!-- hex:notes --> ## Summary (one paragraph) above ## Transcript
      │   └── Footer names the writer: "Written on this Mac by Apple
-     │       Intelligence", "Written by <provider/model> through OpenCode", or,
-     │       for older notes without written_by, no writer at all (#1125;
+     │       Intelligence", "Written by <provider/model> through OpenCode",
+     │       "Written by OpenCode's default model", or, for older notes
+     │       without written_by, no writer at all (#1125;
      │       check: the_notes_footer_names_the_writer_that_wrote_them)
      ├── Labs › Separate notes file on (off by default) -> <base>.notes.md
      │   beside the transcript: title, date, duration, app, a relative
@@ -1570,11 +1654,11 @@ Final publication complete                               // meetings.notes
      ├── Text outside the block is preserved; changed mid-write -> not written
      └── Missing file -> manifest only
   -> Failure / timeout -> notes_error; Markdown untouched; recording stays Complete
-  -> OpenCode without a chosen model: the ranked models are cached per service;
-     any one failing drops the cache (the next call reads OpenCode's catalog
-     again), and all failing asks OpenCode's own default model, so a list read
-     while OpenCode was still loading no longer fails every call until a
-     restart (#1123; check: stale_ranked_models_fall_back_to_the_default_model)
+  -> OpenCode without a chosen model: every generation asks OpenCode's own
+     default model, with no model field, so the transcript never reaches
+     another provider; the ranked fast models stay for dictation rewrites and
+     voice prompts. With a chosen model, a failure is the notes error
+     (check: a_meeting_generation_posts_one_request_naming_no_model)
 
 Unavailable (not eligible / Apple Intelligence off / model not ready / macOS < 26)
   -> Settings row says why; nothing runs
