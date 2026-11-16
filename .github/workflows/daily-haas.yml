@@ -5,6 +5,12 @@
 #     `haas` untouched, and fails the sync job so the blockage is visible:
 #     the conflict report goes to the run summary and, best-effort, to a
 #     tracking issue, so the notification survives either channel failing.
+#   - A clean merge that changes files under `.github/workflows/` cannot
+#     be pushed with GITHUB_TOKEN (GitHub refuses token pushes that create
+#     or update workflow files), so it takes the same visible path as a
+#     conflict: no push, a report under the same tracking label, and a
+#     failed sync job. A manual merge with a workflow-scoped token lands
+#     it; the next daily then resumes as usual.
 #   - When upstream moved, the fork moved since the last daily, or a manual
 #     dispatch forces it, the three Windows variants are rebuilt through
 #     release-haas.yml and published to the rolling `haas-daily`
@@ -55,16 +61,26 @@ jobs:
           git fetch --no-tags upstream dev
           upstream_short=$(git rev-parse --short upstream/dev)
           echo "upstream_short=$upstream_short" >> "$GITHUB_OUTPUT"
+          echo 'workflow_blocked=false' >> "$GITHUB_OUTPUT"
           if git merge-base --is-ancestor upstream/dev HEAD; then
             echo 'Upstream dev has no commits past the last merge.'
             echo 'changed=false' >> "$GITHUB_OUTPUT"
             echo 'conflict=false' >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          before_merge=$(git rev-parse HEAD)
           if git merge --no-ff upstream/dev -m "Merge official Hex dev ($upstream_short) into the Haas fork (daily sync)"; then
-            git push origin HEAD:haas
-            echo 'changed=true' >> "$GITHUB_OUTPUT"
-            echo 'conflict=false' >> "$GITHUB_OUTPUT"
+            git diff --name-only "$before_merge" HEAD -- .github/workflows/ | sort > workflow-files.txt
+            if [ -s workflow-files.txt ]; then
+              echo 'The merge changes workflow files, which GITHUB_TOKEN cannot push; leaving haas unchanged for a manual merge.'
+              echo 'changed=false' >> "$GITHUB_OUTPUT"
+              echo 'conflict=false' >> "$GITHUB_OUTPUT"
+              echo 'workflow_blocked=true' >> "$GITHUB_OUTPUT"
+            else
+              git push origin HEAD:haas
+              echo 'changed=true' >> "$GITHUB_OUTPUT"
+              echo 'conflict=false' >> "$GITHUB_OUTPUT"
+            fi
           else
             git diff --name-only --diff-filter=U | sort > conflict-files.txt
             git merge --abort || true
@@ -108,6 +124,40 @@ jobs:
               echo '::warning::Could not list existing conflict issues; skipping the Issue report to avoid filing a duplicate. The report is in the run summary.'
             fi
           } || echo '::warning::Could not file the conflict report as an Issue (Issues may be disabled); the report is in the run summary.'
+      - name: Report a workflow-blocked sync on the tracking issue
+        if: steps.merge.outputs.workflow_blocked == 'true'
+        env:
+          GH_TOKEN: <redacted>
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          {
+            echo "上流 \`anomalyco/hex\` の dev（${{ steps.merge.outputs.upstream_short }}）のマージ自体は成功したが、ワークフローファイルの変更を含むため GITHUB_TOKEN では push できない。haas は変更していない。"
+            echo
+            echo '変更されるワークフローファイル:'
+            echo '```'
+            cat workflow-files.txt
+            echo '```'
+            echo
+            echo "workflow スコープのあるトークンで手動マージすれば反映できる。反映したらこの Issue を閉じてよい（次に同じことが起きれば再作成される）。"
+            echo
+            echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          } > issue-body.md
+          # Same reporting discipline as the conflict path: the run
+          # summary always gets the report; the Issue is best-effort.
+          cat issue-body.md >> "$GITHUB_STEP_SUMMARY" || echo '::warning::Could not write the workflow-blocked report to the run summary.'
+          {
+            gh label create haas-sync-conflict --color B60205 --description 'Daily upstream sync needs a manual merge' --force
+            if existing=$(gh issue list --label haas-sync-conflict --state open --json number --jq '.[0].number // empty'); then
+              if [ -n "$existing" ]; then
+                gh issue comment "$existing" --body-file issue-body.md
+              else
+                gh issue create --title '上流 dev の同期がワークフローファイルの変更で止まっている' --label haas-sync-conflict --body-file issue-body.md
+              fi
+            else
+              echo '::warning::Could not list existing sync issues; skipping the Issue report to avoid filing a duplicate. The report is in the run summary.'
+            fi
+          } || echo '::warning::Could not file the workflow-blocked report as an Issue (Issues may be disabled); the report is in the run summary.'
       - name: Decide whether to build
         id: decide
         run: |
@@ -115,6 +165,8 @@ jobs:
           echo "build_id=$(TZ=Asia/Tokyo date +'%Y%m%d-%H%M')" >> "$GITHUB_OUTPUT"
           proceed=false
           if [ '${{ steps.merge.outputs.conflict }}' = 'true' ]; then
+            proceed=false
+          elif [ '${{ steps.merge.outputs.workflow_blocked }}' = 'true' ]; then
             proceed=false
           elif [ '${{ steps.merge.outputs.changed }}' = 'true' ]; then
             proceed=true
@@ -134,6 +186,13 @@ jobs:
           echo 'Upstream sync is blocked by a merge conflict; haas was left unchanged.'
           echo 'Conflicting files:'
           cat conflict-files.txt
+          exit 1
+      - name: Fail the sync job when workflow files block the push
+        if: steps.merge.outputs.workflow_blocked == 'true'
+        run: |
+          echo 'Upstream sync merged cleanly but changes workflow files, which GITHUB_TOKEN cannot push; haas was left unchanged.'
+          echo 'Workflow files in the merge:'
+          cat workflow-files.txt
           exit 1
 
   build:
