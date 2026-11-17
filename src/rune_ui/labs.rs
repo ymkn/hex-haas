@@ -10,6 +10,7 @@ mod browser_access;
 mod group;
 #[cfg(all(target_os = "macos", hex_capture))]
 pub(super) mod screenshots;
+mod stop_phrase;
 mod store;
 mod voice_prompt;
 mod yolo_mode;
@@ -21,7 +22,6 @@ use super::controls::{self, Paint};
 use super::icons::{
     BOOK, CAMERA, CLOCK, FOLDER, GLOBE, KEYBOARD, MOUSE, PANEL, SPARKLES, TERMINAL, TIMER, WAVE,
 };
-use super::list_detail::SEARCH_ICON;
 use super::sidebar::{NAV_ROW_GAP, NAV_ROW_HEIGHT, VOICE_FILTER_ICON};
 use super::{Pane, Ui};
 use crate::desktop::i18n::{tr, tr_fill, tr_named};
@@ -214,6 +214,11 @@ pub(super) struct Store {
     pub(super) phrase: TextEdit,
     /// Whether `phrase` started from the saved phrase.
     pub(super) phrase_synced: bool,
+    /// Labs › Stop phrase's phrase while it's on: a draft, so invalid words
+    /// stay in its field instead of replacing the saved phrase.
+    pub(super) stop_phrase: TextEdit,
+    /// Whether `stop_phrase` started from the saved phrase.
+    pub(super) stop_phrase_synced: bool,
     /// Labs › Browser access to the local API's origins while it's on: a
     /// draft, saved as the comma-separated field shows it.
     pub(super) origins: TextEdit,
@@ -263,6 +268,40 @@ impl Store {
         }
         let draft = self.phrase.text.trim();
         !draft.is_empty() && draft != settings.labs.voice_prompt_phrase
+    }
+
+    /// Starts Stop phrase's field at `saved` when Labs opens or its lab turns
+    /// on.
+    pub(super) fn sync_stop_phrase(&mut self, saved: &str) {
+        self.stop_phrase = TextEdit::new(saved.to_owned());
+        self.stop_phrase_synced = true;
+    }
+
+    /// Adopts a phrase another writer saved, unless the field holds an
+    /// unsaved draft.
+    pub(super) fn rebase_stop_phrase(&mut self, before: &str, after: &str) {
+        if !self.stop_phrase_synced || self.stop_phrase.text.trim() == before {
+            self.sync_stop_phrase(after);
+        }
+    }
+
+    /// The phrase Stop phrase's `settings` should hold: the draft when it
+    /// passes validation. An invalid draft never replaces the saved phrase.
+    pub(super) fn project_stop_phrase(&self, settings: &mut crate::app_settings::AppSettings) {
+        let draft = self.stop_phrase.text.trim();
+        if crate::dictation::voice_prompt::phrase_problem(draft).is_none() {
+            settings.labs.stop_phrase_text = draft.to_owned();
+        }
+    }
+
+    /// Whether Stop phrase's field holds typing the saved settings don't
+    /// have. A lab that's off has no draft to keep.
+    pub(super) fn stop_phrase_dirty(&self, settings: &crate::app_settings::AppSettings) -> bool {
+        if !settings.labs.stop_phrase {
+            return false;
+        }
+        let draft = self.stop_phrase.text.trim();
+        !draft.is_empty() && draft != settings.labs.stop_phrase_text
     }
 
     /// Starts the origins field at the saved origins, normalized.
@@ -378,6 +417,8 @@ fn open(ui: &mut Ui, tx: &mut Tx) {
     ui.lab_store
         .sync_phrase(&ui.settings.labs.voice_prompt_phrase);
     ui.lab_store
+        .sync_stop_phrase(&ui.settings.labs.stop_phrase_text);
+    ui.lab_store
         .sync_origins(&ui.settings.labs.api_browser_origins);
     tx.settle();
 }
@@ -411,6 +452,37 @@ fn shown(ui: &Ui) -> Vec<Row> {
         .into_iter()
         .filter(|row| row.lab.audience().reaches(crate::dev_build::is_dev_build()))
         .collect()
+}
+
+pub(super) fn offered(ui: &Ui, feature: Feature) -> bool {
+    feature.audience() == crate::labs::Audience::Everyone
+        && shown(ui)
+            .iter()
+            .any(|row| row.lab.id() == feature.name() && !row.locked)
+}
+
+/// Search only the cards the current store can reveal. This also covers
+/// Annotate's build-specific card without inventing a second feature gate.
+fn find_cards(ui: &Ui) -> impl Iterator<Item = Row> {
+    shown(ui).into_iter().filter(|row| !row.locked)
+}
+
+pub(super) fn search_entries(
+    ui: &Ui,
+) -> impl Iterator<Item = (Lab, &'static str, &'static str, &'static str)> {
+    find_cards(ui).map(|row| (row.lab, row.title, row.about, group::name(row.group)))
+}
+
+pub(super) fn reveal_card(ui: &mut Ui, lab: Lab, tx: &mut Tx) {
+    reveal(
+        ui,
+        &LabsLink {
+            lab: Some(lab.id().into()),
+            ..Default::default()
+        },
+        tx,
+    );
+    tx.focus(row_key(lab), true);
 }
 
 fn rows(ui: &Ui) -> Vec<Row> {
@@ -467,6 +539,7 @@ fn rows(ui: &Ui) -> Vec<Row> {
         ..live_text
     });
     rows.push(row(Feature::FailureNotices, None));
+    rows.push(row(Feature::StopPhrase, None));
     if caps.os == super::platform::Os::Linux && ui.platform.wayland {
         let live_typing = row(Feature::LiveTyping, Some(&KEYBOARD));
         // An organization's lock and its note already say why the switch is
@@ -486,25 +559,10 @@ fn rows(ui: &Ui) -> Vec<Row> {
             });
         }
     }
-    rows.push(row(Feature::SettingsSearch, Some(SEARCH_ICON)));
     rows.push(row(Feature::Appearance, Some(&PANEL)));
     rows.push(row(Feature::ReleaseNotesLink, None));
     if caps.meetings {
         rows.push(row(Feature::LiveChapters, None));
-        rows.push(row(Feature::SubtitleExport, None));
-        // macOS's meeting controller reads the call app's audio output, so
-        // Linux renders of macOS scenes leave it out.
-        if cfg!(target_os = "macos") {
-            rows.push(row(Feature::StopWhenCallEnds, Some(&TIMER)));
-            // Only macOS's capsules know the screen to snap a drag against.
-            rows.push(row(Feature::MovableMeetingCapsules, None));
-        }
-        rows.push(row(Feature::MeetingNotesVocabulary, Some(&BOOK)));
-        rows.push(row(Feature::MeetingDescriptiveFilenames, None));
-        rows.push(row(Feature::MeetingNotesFile, None));
-        rows.push(row(Feature::MeetingFinishedEvent, Some(&GLOBE)));
-        rows.push(row(Feature::FollowLiveTranscript, None));
-        rows.push(row(Feature::MoreCallApps, Some(&GLOBE)));
         // macOS's status item lists them, from the meeting controller's own
         // calendar read.
         if cfg!(target_os = "macos") {
@@ -513,7 +571,6 @@ fn rows(ui: &Ui) -> Vec<Row> {
         if Feature::MeetingImport.on_this_os() {
             rows.push(row(Feature::MeetingImport, None));
         }
-        rows.push(row(Feature::ExpireMeetingAudio, Some(&CLOCK)));
     }
     rows.push(row(Feature::VocabularyBiasing, Some(&BOOK)));
     // macOS reads the focused window through Accessibility as a capture
@@ -547,6 +604,8 @@ fn rows(ui: &Ui) -> Vec<Row> {
     // macOS's shortcut machine takes a shortcut without a key.
     if caps.os == super::platform::Os::Macos {
         rows.push(row(Feature::DoubleTapModifiers, Some(&KEYBOARD)));
+        // A held Option long enough keeps recording through a joining key.
+        rows.push(row(Feature::HoldThroughKeys, Some(&KEYBOARD)));
     }
     if caps.os == super::platform::Os::Macos {
         rows.push(row(Feature::MouseShortcuts, Some(&MOUSE)));
@@ -679,6 +738,9 @@ fn rows(ui: &Ui) -> Vec<Row> {
     if caps.os == super::platform::Os::Windows {
         rows.push(row(Feature::TerminalPaste, Some(&TERMINAL)));
         rows.push(row(Feature::OpenCodeInWsl, Some(&TERMINAL)));
+        // Windows's keyboard hook holds a modifier-only shortcut through a
+        // joining key.
+        rows.push(row(Feature::HoldThroughKeys, Some(&KEYBOARD)));
     }
     // Another shortcut dictates exactly like the main one, on every OS (#627).
     rows.push(row(Feature::SecondDictationShortcut, Some(&KEYBOARD)));
@@ -799,7 +861,6 @@ fn row_key(lab: Lab) -> &'static str {
         Feature::SpokenFormatting => "lab-spoken-formatting",
         Feature::FillerWords => "lab-filler-words",
         Feature::CleanUpWithAppleIntelligence => "lab-clean-up",
-        Feature::SubtitleExport => "lab-subtitle-export",
         Feature::SecondDictationShortcut => "lab-second-dictation-shortcut",
         Feature::MoreDictationShortcuts => "lab-more-dictation-shortcuts",
         Feature::TerminalPasteShortcut => "lab-terminal-paste-shortcut",
@@ -815,7 +876,6 @@ fn row_key(lab: Lab) -> &'static str {
         Feature::HistoryStats => "lab-history-stats",
         Feature::RecentDictations => "lab-recent-dictations",
         Feature::SkipPauses => "lab-skip-pauses",
-        Feature::StopWhenCallEnds => "lab-stop-when-call-ends",
         Feature::OutputFixes => "lab-output-fixes",
         Feature::PickerActiveFirst => "lab-picker-active-first",
         Feature::ModelInPlace => "lab-model-in-place",
@@ -826,7 +886,6 @@ fn row_key(lab: Lab) -> &'static str {
         Feature::KeepRecordings => "lab-keep-recordings",
         Feature::CopyDictationAudio => "lab-copy-dictation-audio",
         Feature::HistoryMultiSelect => "lab-history-multi-select",
-        Feature::SettingsSearch => "lab-settings-search",
         Feature::Appearance => "lab-appearance",
         Feature::ReleaseNotesLink => "lab-release-notes-link",
         Feature::HideMenuBarIcon => "lab-hide-menu-bar-icon",
@@ -834,23 +893,15 @@ fn row_key(lab: Lab) -> &'static str {
         Feature::CalendarMenu => "lab-calendar-menu",
         Feature::QuitClosesWindow => "lab-quit-closes-window",
         Feature::CapsLockDictation => "lab-caps-lock-dictation",
-        Feature::MovableMeetingCapsules => "lab-movable-meeting-capsules",
         Feature::GnomeClipboardRestore => "lab-gnome-clipboard-restore",
         Feature::TypedText => "lab-typed-text",
-        Feature::MeetingNotesVocabulary => "lab-meeting-notes-vocabulary",
         Feature::NotchIndicator => "lab-notch-indicator",
-        Feature::MeetingFinishedEvent => "lab-meeting-finished-event",
         Feature::GnomeMeetingCapsules => "lab-gnome-meeting-capsules",
         Feature::GnomeAnnotate => "lab-gnome-annotate",
         Feature::Screenshots => "lab-screenshots",
-        Feature::FollowLiveTranscript => "lab-follow-live-transcript",
-        Feature::MoreCallApps => "lab-more-call-apps",
         Feature::AnnotateReplay => "lab-annotate-replay",
         Feature::CopyCaptureZip => "lab-copy-capture-zip",
         Feature::MeetingImport => "lab-meeting-import",
-        Feature::MeetingDescriptiveFilenames => "lab-meeting-descriptive-filenames",
-        Feature::MeetingNotesFile => "lab-meeting-notes-file",
-        Feature::ExpireMeetingAudio => "lab-expire-meeting-audio",
         Feature::OpenCodeInWsl => "lab-opencode-in-wsl",
         Feature::ShellCompletions => "lab-shell-completions",
         Feature::YoloMode => "lab-yolo-mode",
@@ -862,6 +913,8 @@ fn row_key(lab: Lab) -> &'static str {
         Feature::PrintStart => "lab-print-start",
         Feature::VoicePrompt => "lab-voice-prompt",
         Feature::CursorContext => "lab-cursor-context",
+        Feature::StopPhrase => "lab-stop-phrase",
+        Feature::HoldThroughKeys => "lab-hold-through-keys",
     }
 }
 
@@ -897,9 +950,8 @@ fn flip(ui: &mut Ui, lab: Lab) {
         Feature::AppModelSwitching => ui.open = None,
         // The card's duration menu closes when its lab does.
         Feature::KeepMicrophoneOpen => ui.open = None,
-        // Its menu and application picker close with it.
+        // Its application picker closes with it.
         Feature::YoloMode => {
-            ui.open = None;
             if ui.modes.picker_target == super::modes::PickerTarget::YoloMode {
                 ui.modes.application_picker_open = false;
             }
@@ -909,6 +961,12 @@ fn flip(ui: &mut Ui, lab: Lab) {
         Feature::VoicePrompt => {
             let saved = ui.settings.labs.voice_prompt_phrase.clone();
             ui.lab_store.sync_phrase(&saved);
+        }
+        // Its phrase field starts at the saved phrase, and an invalid draft
+        // leaves with its lab.
+        Feature::StopPhrase => {
+            let saved = ui.settings.labs.stop_phrase_text.clone();
+            ui.lab_store.sync_stop_phrase(&saved);
         }
         // Its origins field starts at (and shows) the saved origins.
         Feature::ApiBrowserAccess => {
@@ -990,6 +1048,7 @@ fn extras(ui: &Ui, p: Paint, entry: &Row, layer: &mut Vec<El>) -> Option<El> {
                 .child(appearance_theme(ui, p)),
         ),
         Lab::Feature(Feature::VoicePrompt) => Some(voice_prompt::body(ui, p)),
+        Lab::Feature(Feature::StopPhrase) => Some(stop_phrase::body(ui, p)),
         Lab::Feature(Feature::ApiBrowserAccess) => Some(browser_access::body(ui, p)),
         #[cfg(all(target_os = "macos", hex_capture))]
         Lab::Feature(Feature::Screenshots) => Some(screenshots::body(

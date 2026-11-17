@@ -497,14 +497,16 @@ impl Hud {
         }
         // Rune can take the HUD away without telling Hex: it drops an overlay
         // whose layer surface the compositor closed (a monitor unplugged, or a
-        // KVM switching away and back, #1663), and `show_fading` gives up when
-        // the window or surface it has to make fails (#1793). Ask Rune for the
-        // HUD at each capture's start instead of trusting `shown`: it is Hex's
-        // record of a request, not of Rune's state. A cloaked `ShowWindow` is
-        // why: Rune still counts the overlay shown then, so it ignores a show
-        // and only the first-frame recovery hide gets it back. Rune's show is a
+        // KVM switching away and back, #1663), hides one whose surface won't
+        // reconfigure or whose GPU device was lost, and `show_fading` gives up
+        // when the window or surface it has to make fails (#1793). Ask Rune
+        // for the HUD at each capture's start instead of trusting `shown`: it
+        // is Hex's record of a request, not of Rune's state. A cloaked
+        // `ShowWindow` is why: Rune still counts the overlay shown then, so it
+        // ignores a show and only the first-frame recovery hide gets it back.
+        // The start's ask also brings back an overlay Rune hid itself,
+        // re-applying the panel's Space behavior as it shows. Rune's show is a
         // no-op while the overlay is visible, and it cancels an exit fade.
-        #[cfg(any(target_os = "linux", target_os = "windows"))]
         if starts {
             self.shown.store(false, Ordering::Release);
         }
@@ -588,6 +590,10 @@ impl Hud {
                 let plate_start = TOP_OFFSET + (WINDOW.1 - PLATE_HEIGHT) / 2.0;
                 set_live_text(Spot::Edge(ScreenEdge::Top, plate_start));
             }
+            // A start clears `shown` before `show`, so `hide` alone can think
+            // the overlay is already gone and leave Rune's panel up. Rune's
+            // hide on a hidden overlay is harmless (`overlay/presence.rs`).
+            overlay.hide();
             self.hide();
             return;
         }
@@ -922,9 +928,8 @@ const DOT_UNIFORM_BINDING: &str = "@group(0) @binding(0) var<uniform> u: DotUnif
 impl DotUniforms {
     fn new(frame: &DotFrame, layout: Layout, target: Target) -> Self {
         let pose = &frame.pose;
-        // An island is black in either appearance and draws no plate.
-        let dark = target.dark || layout.island.is_some();
-        let mut colors = dot_scope::palette(dark, pose, frame.tuning.saturation);
+        // The HUD is always a dark surface, including inside a light preview.
+        let mut colors = dot_scope::palette(true, pose, frame.tuning.saturation);
         if layout.island.is_some() {
             for color in [&mut colors.plate, &mut colors.rim, &mut colors.shadow] {
                 color[3] = 0.0;
@@ -950,7 +955,7 @@ impl DotUniforms {
             grid: pose.grid,
             live: pose.live,
             cool: pose.cool,
-            dark: if dark { 1.0 } else { 0.0 },
+            dark: 1.0,
             base: rgba(colors.base),
             core: rgba(colors.core),
             plate: colors.plate,
@@ -981,14 +986,21 @@ impl DotUniforms {
 fn island_shape(island: Island, pose: &dot_scope::Pose) -> [f32; 4] {
     let [notch_width, notch_height] = island.notch;
     if island.ears {
-        // The notch's height throughout, widening to the island's width.
+        // Grows from the housing's height to the menu bar's, widening to the
+        // island's width; folded back, it is the notch itself again.
         let half_width = notch_width / 2.0;
         let grow = pose.reveal;
+        let bar = if island.bar > 0.0 {
+            island.bar
+        } else {
+            notch_height
+        };
+        let height = notch_height + (bar - notch_height) * grow.min(1.0);
         return [
             half_width + (island.width / 2.0 - half_width) * grow,
-            notch_height,
+            height,
             island.top,
-            (NOTCH_RADIUS + (EARS_RADIUS - NOTCH_RADIUS) * grow.min(1.0)).min(notch_height / 2.0),
+            (NOTCH_RADIUS + (EARS_RADIUS - NOTCH_RADIUS) * grow.min(1.0)).min(height / 2.0),
         ];
     }
     let pad = ISLAND_PAD as f32;
@@ -1041,17 +1053,15 @@ pub(crate) struct Target {
     pub(crate) clip: [u32; 4],
     /// Device pixels per point.
     pub(crate) scale: f32,
-    pub(crate) dark: bool,
 }
 
 impl Target {
     /// All of a target `size` device pixels big.
-    fn whole(size: (u32, u32), scale: f32, dark: bool) -> Self {
+    fn whole(size: (u32, u32), scale: f32) -> Self {
         Self {
             viewport: [0.0, 0.0, size.0 as f32, size.1 as f32],
             clip: [0, 0, size.0, size.1],
             scale,
-            dark,
         }
     }
 }
@@ -1184,7 +1194,7 @@ impl Compositor<Hud> for HudCompositor {
     /// clears the target.
     fn render(&mut self, f: &mut Frame<'_, Hud>) {
         let reduce = f.rt.reduced_motion;
-        let target = Target::whole(f.size, f.rt.env.scale, f.rt.env.system_dark);
+        let target = Target::whole(f.size, f.rt.env.scale);
         let hud = &mut f.rt.state;
         hud.reduce = reduce;
         let now = Instant::now();
@@ -1258,6 +1268,21 @@ impl Painter {
         format: wgpu::TextureFormat,
         linear: bool,
     ) -> Painter {
+        Self::pipeline(device, format, linear, false)
+    }
+
+    /// A field drawn directly in an existing surface. The dot geometry and
+    /// colour response are the HUD's; nothing paints between the dots.
+    pub(crate) fn dots_only(device: &wgpu::Device, format: wgpu::TextureFormat) -> Painter {
+        Self::pipeline(device, format, format.is_srgb(), true)
+    }
+
+    fn pipeline(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        linear: bool,
+        dots_only: bool,
+    ) -> Painter {
         let immediates = device.features().contains(wgpu::Features::IMMEDIATES)
             && device.limits().max_immediate_size >= DOT_UNIFORM_BYTES;
         let source = include_str!("rune_hud.wgsl");
@@ -1319,7 +1344,10 @@ impl Painter {
             immediate_size: if immediates { DOT_UNIFORM_BYTES } else { 0 },
         });
         // Display values; a linear target decodes them.
-        let constants = [("linear_target", f64::from(u8::from(linear)))];
+        let constants = [
+            ("linear_target", f64::from(linear)),
+            ("dots_only", f64::from(dots_only)),
+        ];
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("dot_scope_fragment"),
             layout: Some(&pipeline_layout),
@@ -1375,7 +1403,7 @@ impl Painter {
     }
 
     /// Clears `view` and draws Dot scope into it.
-    fn draw(
+    pub(crate) fn draw(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,

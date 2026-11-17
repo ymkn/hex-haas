@@ -184,6 +184,12 @@ pub fn get(settings: &AppSettings, name: &str) -> Result<Vec<SettingValue>, Cont
 }
 
 fn unknown(name: &str) -> ControlError {
+    if name == "labs.settings_search" {
+        return ControlError::new(
+            "unknown-setting",
+            "Settings search no longer needs a lab. Use Cmd+K (Ctrl+K off macOS) in the Hex window.",
+        );
+    }
     if let Some((_, replacement)) = RETIRED.iter().find(|(retired, _)| *retired == name) {
         return ControlError::new(
             "unknown-setting",
@@ -943,6 +949,45 @@ mod tests {
     }
 
     #[test]
+    fn a_stop_phrase_needs_two_words_and_six_letters() {
+        let change = apply(&AppSettings::default(), "labs.stop_phrase", "on", &rules()).unwrap();
+        assert!(change.settings.labs.stop_phrase);
+        assert_eq!(
+            change.settings.labs.stop_phrase_text,
+            crate::dictation::stop_phrase::DEFAULT_PHRASE
+        );
+        let change = apply(
+            &change.settings,
+            "labs.stop_phrase_text",
+            "  that's all ",
+            &rules(),
+        )
+        .unwrap();
+        assert_eq!(
+            change.settings.labs.stop_phrase_text, "that's all",
+            "a saved phrase is trimmed"
+        );
+        for (raw, reason) in [
+            ("stop", "two words"),
+            ("a b c", "six letters"),
+            ("", "two words"),
+        ] {
+            let error =
+                apply(&change.settings, "labs.stop_phrase_text", raw, &rules()).unwrap_err();
+            assert_eq!(error.code, "invalid-value", "{raw}");
+            assert!(error.message.contains(reason), "{raw}: {}", error.message);
+        }
+        assert_eq!(
+            change.settings.labs.stop_phrase_text, "that's all",
+            "a refused draft leaves the saved phrase"
+        );
+        assert_eq!(
+            get(&change.settings, "labs.stop_phrase_text").unwrap()[0].value,
+            Value::String("that's all".into())
+        );
+    }
+
+    #[test]
     fn settings_name_real_capabilities_and_keys() {
         let capabilities = crate::rune_ui::capabilities();
         for (prefix, capability) in NEEDS {
@@ -1375,8 +1420,8 @@ mod tests {
         assert_eq!(change.settings.sound_effect_volume, 0.25);
     }
 
-    /// The Labs card and the key's help are constants, so they can't be
-    /// formatted from the grace; this keeps them saying it.
+    /// The key's help is a constant, so it can't be formatted from the
+    /// grace; this keeps it saying it.
     #[test]
     fn stop_when_call_ends_copy_names_the_grace() {
         let grace = format!(
@@ -1384,11 +1429,9 @@ mod tests {
             crate::meeting::detection::AUTO_STOP_GRACE.as_secs()
         );
         let key = keys()
-            .find(|key| key.key == "labs.stop_when_call_ends")
+            .find(|key| key.key == "meetings.stop_when_call_ends")
             .unwrap();
         assert!(key.about.contains(&grace), "{}", key.about);
-        let card = crate::labs::Feature::StopWhenCallEnds.description();
-        assert!(card.contains(&grace), "{card}");
     }
 
     #[test]
@@ -1414,10 +1457,6 @@ mod tests {
         assert_eq!(
             choices("labs.keep_microphone_open_seconds"),
             crate::app_settings::KEEP_MICROPHONE_OPEN_SECONDS
-        );
-        assert_eq!(
-            choices("labs.yolo_mode_seconds"),
-            crate::app_settings::YOLO_MODE_SECONDS
         );
     }
 

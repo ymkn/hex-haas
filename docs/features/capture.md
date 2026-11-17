@@ -8,13 +8,15 @@ display with ScreenCaptureKit, on Linux the screen-cast portal and
 PipeWire (`capture.linux`), on Windows Windows.Graphics.Capture
 (`capture.windows`), (or a cabled iPhone through `scrawl-helper`'s
 mirror) and narration from Hex's microphone, takes ink and clicks (Shift on
-macOS and Windows, or the Annotate key held or the pen), transcribes the narration with word timestamps on
-Hex's loaded model, writes a Scrawl bundle into Scrawl's captures folder,
-copies it to the clipboard, and sends it to an OpenCode session with Scrawl's
-router (`crates/router`), run in Hex's process. Settings › Annotate (under
-Labs in the sidebar) holds its settings. Scrawl's capsule (switch
-chips, the on-screen picker, route chips) and its ink and laser overlay are
-Rune overlays.
+macOS and Windows, or the Annotate key held or the pen), transcribes the
+narration with word timestamps on Hex's loaded model (a model that gives
+none, GigaAM v3 say, has its text spread over the recording as estimated
+times), writes a Scrawl bundle into Scrawl's captures folder, copies it to
+the clipboard, and sends it to an OpenCode session with Scrawl's router
+(`crates/router`), run in Hex's process. Settings › Annotate (under Labs in
+the sidebar) holds its settings. Scrawl's capsule (switch chips, the
+on-screen picker, route chips) and its ink and laser overlay are Rune
+overlays.
 
 ```ts
 Turn it on                               // capture.gate
@@ -362,7 +364,8 @@ The capsule                              // capture.capsule (rune_ui/capture_cap
 ├── Follows `capture_host::watch()`: Recording from the instant `recording` is
 │   Some (the bundle's t0; timer, meter, ✓ finish, ✕ cancel) -> Processing ->
 │   done (the lead alone, no word), Failed, or Cancelled, then leaves on its
-│   own; a written capture whose transcript has no words reads "no speech"
+│   own; a written capture whose transcript has no words at all (none timed,
+│   none in its text) reads "no speech"
 ├── Tones (`capture_capsule::tone`, at the dictation volume; zero is
 │   silent), from the chosen sound set: start and stop are the set's start
 │   and stop, a send going its done (Annotate's own sent sound when the set
@@ -790,14 +793,37 @@ hex capture stop                         // capture.stop
 │   written beside it; only the steps that read the movie wait for it, and it
 │   starts where its first frame was shown (video_offset_ms)
 └── In the background, on one capture-finish thread, one capture at a time:
-    ├── 16 kHz audio with its start offset and gaps -> SealedCapture::finish
-    ├── Words: 30 s chunks, each a foreground job on the dictation engine's model,
-    │   after queued dictation, before meeting chunks; waits while dictation records
-    │   or transcribes; never interrupts a live stream
+    ├── 16 kHz audio streamed to audio.wav.partial as it records, and renamed to
+    │   audio.wav only once this build writes the capture's unfinished.json: a
+    │   streamed capture's audio.wav never exists without a journal, so one
+    │   still recording or waiting its turn never looks recoverable (a crash
+    │   there leaves the partial, which retention cleans up like any other
+    │   media). Leading start offset and gaps are written as silence, so WAV
+    │   time stays capture time
+    ├── Words: on the Parakeet and GGUF paths, audio.wav read in 30 s pieces
+    │   (iPhone and replay narration are decoded in memory), each a foreground
+    │   job on the dictation engine's model, after queued dictation, before
+    │   meeting chunks; waits while dictation records or transcribes; never
+    │   interrupts a live stream. Apple reads the file itself
     ├── Word times moved earlier by the model's measured lag (Parakeet Unified
     │   English: starts −280 ms, −520 ms after a ≥ 250 ms pause; ends −195 ms);
     │   other models and Apple keep their own times
-    ├── Past 20 min -> audio kept to 20 min, the rest one gap
+    ├── A model that gives no word times (GigaAM v3) has each 30 s piece's
+    │   text spread over that piece's own audio (a clip held in memory, over
+    │   the whole of it) as estimated times, so keyframes and the editor have
+    │   somewhere to put it; a bundle already on disk without them counts and
+    │   spreads its own text
+    │   (`scrawl_capture::transcribe::word_count`, the Captures pane's
+    │   `words_for_editor`)
+    ├── Past 8 h -> audio.wav stops growing and the rest is one gap; a disk
+    │   guard, never a memory bound (iPhone and replay narration are decoded in
+    │   memory and so are not covered by it), and scrawl.json's
+    │   audioStoppedAtMs makes summary.md say "Audio stopped at 8:00:00; the
+    │   rest of this capture has no audio" (a failed audio write says where too)
+    ├── Cancel or a failed screen source -> the partial audio is closed and
+    │   removed with the bundle; a crash leaves it, and retention trashes it
+    │   like any other media (a movie and a partial are never a bundle recover
+    │   rebuilds)
     ├── recording.mp4, capture.json, audio.wav, frames/, scrawl.json,
     │   summary.md; then every file 0600 and folder 0700
     ├── Keyframes decoded from recording.mp4 by scrawl-helper (beside `hex`: in
@@ -974,8 +1000,10 @@ Where it goes                            // capture.route; capture.routing's aut
 
 hex capture list|show|send|route         // capture.cli; docs/cli.md
 ├── list [--limit N] -> the newest bundles in the captures folder: mode, words,
-│   where it went
-├── show <capture> -> one capture's words, files, and send
+│   where it went; words count a model's own word times, else the words in the
+│   transcript's text
+├── show <capture> -> one capture's words, files, and send; a capture whose
+│   audio stopped early (the 8 h disk guard, or a failed write) says where
 ├── send <capture> [--to <session>] [--always] -> needs a listening Hex
 │   ├── The last routed capture -> as the capsule's pick (no --to: the Rule's
 │   │   session, a Guess's first suggestion, or the recorded destination), so
@@ -988,7 +1016,8 @@ hex capture list|show|send|route         // capture.cli; docs/cli.md
 
 hex capture cancel -> engine cancelled, sink closed, bundle removed
 hex capture status -> recording (bundle, elapsed), bundles still writing, last outcome
-                      (words, audio gaps, or why it has no transcript)
+                      (words, audio gaps, or why it has no transcript, and where
+                      its audio stopped if it did)
 Hex quits mid-capture -> cancelled, bundle removed; captures still writing stop
 transcribing between chunks and keep their audio (shutdown waits ≤ 2 s)
 
@@ -1061,7 +1090,9 @@ Checks:
 - Words, in parakeet.rs: `chunked_word_transcription_keeps_word_times_across_chunks`
   and `word_transcription_is_a_foreground_request_on_the_shared_engine`;
   `foreground_work_waits_for_an_open_stream_instead_of_interrupting_it` in
-  [transcription/engine.rs](../../src/transcription/engine.rs).
+  [transcription/engine.rs](../../src/transcription/engine.rs);
+  `a_transcript_without_word_times_counts_the_words_it_says` in
+  [transcribe.rs](../../crates/capture/src/transcribe.rs).
 - Host, in capture_host.rs (a fake engine that writes through Scrawl's real
   `finalize_capture_bundle_with_flags`, without a screen):
   `controls_are_idempotent_and_stop_writes_a_scrawl_bundle`,
@@ -1070,12 +1101,32 @@ Checks:
   `scrawls_engine_claims_nothing_machine_wide`,
   `the_timeline_resamples_pads_gaps_and_ends_at_the_stop`,
   `a_pending_gap_and_a_stalled_tail_come_back_from_the_closed_sink`,
-  `padding_past_the_length_limit_stays_bounded`,
+  `a_gap_is_digital_silence_where_it_happened`,
+  `a_capture_longer_than_twenty_minutes_keeps_all_of_its_audio`,
+  `past_the_guard_the_file_stops_and_the_rest_is_one_gap`,
+  `the_guard_records_where_the_audio_stopped`,
+  `a_write_failure_stops_the_audio_where_the_file_stopped`,
+  `a_mid_capture_write_failure_stops_where_the_file_stopped`,
   `captures_finish_one_at_a_time_and_starts_wait_for_room`,
   `a_capture_queued_behind_a_slow_finish_has_already_stopped`,
   `a_failed_start_raced_by_stop_never_wedges_later_starts`,
   `the_engine_config_comes_from_hex`, and
   `shutdown_cancels_the_recording_capture_and_waits_for_its_cleanup`.
+  In capture_host/wav_file.rs: `a_finished_file_reads_back_and_can_be_trimmed`,
+  `a_keep_past_the_written_samples_keeps_them_all`, and
+  `the_file_is_owner_only`.
+  In capture_host/words.rs: `pieces_past_the_first_window_keep_their_place_on_the_clock`,
+  `an_untimed_piece_spreads_over_its_own_audio_only`, and
+  `a_model_without_word_times_spreads_its_text_over_the_clip`;
+  `an_untimed_capture_gets_its_words_spread_over_its_length` in
+  [rune_ui/captures.rs](../../src/rune_ui/captures.rs).
+- The audio-stopped notice: `summary_says_where_a_captures_audio_stopped` in
+  [sketch.rs](../../crates/capture/src/sketch.rs);
+  `lengths_read_as_clocks_at_an_hour` and
+  `old_bundles_load_without_app_context_and_new_ones_round_trip` (which proves
+  `audioStoppedAtMs` is absent until it happens) in
+  [model.rs](../../crates/router/src/model.rs);
+  `the_guard_records_where_the_audio_stopped` above.
 - Shortcut and input, in capture_host.rs: `the_host_is_absent_while_captures_are_off`,
   `the_shortcut_starts_and_a_later_press_stops`,
   `input_reaches_only_the_capture_that_is_recording`, `tap_flags_become_modifiers`,
@@ -1096,9 +1147,23 @@ Checks:
   capture.rs `a_shift_click_is_part_of_the_drawing`.
 - iPhone: `an_iphone_capture_narrates_with_hex_audio_and_finishes_when_its_mirror_ends`
   and `a_mirror_ending_never_stops_a_screen_capture` in capture_host.rs;
-  `since_moves_audio_and_gaps_onto_a_later_clock` in
+  `since_moves_audio_and_gaps_onto_a_later_clock`,
+  `audio_streamed_to_disk_counts_its_samples_and_can_be_read_back` (reading a
+  streamed recording consumes its partial), and
+  `a_streamed_recording_whose_file_is_gone_has_no_samples` in
   [audio.rs](../../crates/capture/src/audio.rs). The mirror, its
   `--no-microphone`, and the camera prompt have not run in Hex.
+- Streaming and recovery, in [recover.rs](../../crates/capture/src/recover.rs):
+  `a_capture_that_has_not_been_journaled_is_never_owed_a_rebuild` (and the
+  live case
+  of `recover_picks_up_old_video_and_audio_without_a_journal_but_never_a_live_capture`);
+  `a_streamed_audio_takes_its_final_name_only_when_its_build_settles_it` in
+  [pipeline.rs](../../crates/capture/src/pipeline.rs);
+  `a_journaled_capture_adopts_its_streamed_audio` in
+  [recover.rs](../../crates/capture/src/recover.rs) (a crash between the
+  journal and `audio.wav`);
+  `a_crashed_capture_with_only_partial_audio_is_cleaned_up` in
+  [retention.rs](../../crates/capture/src/retention.rs).
 - Routing, in [routing.rs](../../src/capture_host/routing.rs):
   `only_a_saved_rule_sends_on_its_own`,
   `a_rule_sends_and_lists_the_rest`,
@@ -1116,7 +1181,8 @@ Checks:
   `an_app_rules_folder_is_read_with_the_sessions`, and
   `a_look_past_its_deadline_skips_what_it_hadnt_begun`
   in [look.rs](../../crates/router/src/routing/look.rs); the CLI's
-  `a_capture_on_disk_summarizes_its_mode_words_and_send` in
+  `a_capture_on_disk_summarizes_its_mode_words_and_send` and
+  `a_capture_without_word_times_counts_the_words_it_says` in
   [library.rs](../../src/capture_host/library.rs), the protocol round trips in
   control.rs, and `control_commands_parse` in main.rs.
 - Switching, in capture_host.rs:

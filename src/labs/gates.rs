@@ -152,12 +152,6 @@ pub fn clean_up() -> bool {
     CLEAN_UP.load(Ordering::Acquire) && Feature::CleanUpWithAppleIntelligence.on_this_os()
 }
 
-/// `hex meetings show --srt|--vtt` may export subtitles (read when the
-/// command starts).
-pub fn subtitle_export() -> bool {
-    on(SUBTITLE_EXPORT)
-}
-
 /// A pasted dictation gets one leading space when the character before the
 /// cursor asks for one (macOS; read as each paste commits).
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -186,6 +180,15 @@ pub fn tap_or_hold() -> bool {
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn double_tap_modifiers() -> bool {
     on(DOUBLE_TAP_MODIFIERS) && Feature::DoubleTapModifiers.on_this_os()
+}
+
+/// A key or click joining a held modifier-only shortcut a second or more
+/// after it went down is left to the app in front, so the release still
+/// finishes the dictation (macOS and Windows; read by each OS's shortcut
+/// machine as the key or click arrives).
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
+pub fn hold_through_keys() -> bool {
+    on(HOLD_THROUGH_KEYS) && Feature::HoldThroughKeys.on_this_os()
 }
 
 /// Parakeet Ultra joins the catalog (read wherever a model is listed,
@@ -222,20 +225,6 @@ pub fn skip_pauses() -> bool {
     on(SKIP_PAUSES) && Feature::SkipPauses.on_this_os()
 }
 
-/// A meeting recording Hex started on its own stops once its call app has
-/// left the microphone and gone quiet for a grace period (macOS; read on
-/// each pass of the meeting controller).
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub fn stop_when_call_ends() -> bool {
-    on(STOP_WHEN_CALL_ENDS) && Feature::StopWhenCallEnds.on_this_os()
-}
-
-/// Calls in more apps and on more websites are named and offered (read by
-/// call detection and the window's Detected calls list).
-pub fn more_call_apps() -> bool {
-    on(MORE_CALL_APPS) && Feature::MoreCallApps.on_this_os()
-}
-
 /// A dictation saved to History keeps its 16 kHz audio, and History offers
 /// Transcribe again for it (read as each capture is handed to the engine;
 /// the History pane reads the saved setting).
@@ -255,20 +244,6 @@ pub fn hide_menu_bar_icon() -> bool {
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn quit_closes_window() -> bool {
     on(QUIT_CLOSES_WINDOW) && Feature::QuitClosesWindow.on_this_os()
-}
-
-/// The meeting panel capsules (Meeting transcript ready, Recording
-/// automatically, offers, reminders) show in the saved capsule corner and
-/// can be dragged to another (macOS; read each time one shows).
-pub fn movable_meeting_capsules() -> bool {
-    on(MOVABLE_MEETING_CAPSULES) && Feature::MovableMeetingCapsules.on_this_os()
-}
-
-/// Final meeting notes (title and summary) put the vocabulary ahead of the
-/// transcript (every OS with meetings; read at each generation, so
-/// Regenerate summary uses the current list).
-pub fn meeting_notes_vocabulary() -> bool {
-    on(MEETING_NOTES_VOCABULARY) && Feature::MeetingNotesVocabulary.on_this_os()
 }
 
 /// At either visible indicator position, the HUD grows out of the notch on
@@ -309,13 +284,6 @@ pub fn gnome_annotate() -> bool {
     on(GNOME_ANNOTATE) && Feature::GnomeAnnotate.on_this_os()
 }
 
-/// The local API's `GET /meetings/events` serves, and a meeting's final
-/// publication sends, its id (every OS with meetings; read where the route
-/// starts, on each pass of its stream, and at each publication).
-pub fn meeting_finished_event() -> bool {
-    on(MEETING_FINISHED_EVENT) && Feature::MeetingFinishedEvent.on_this_os()
-}
-
 /// The screenshot shortcut takes an area or a window (macOS; read by the
 /// session tap on each key press, so nothing runs while it is off).
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -336,20 +304,6 @@ pub fn annotate_replay() -> bool {
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn meeting_import() -> bool {
     on(MEETING_IMPORT) && Feature::MeetingImport.on_this_os()
-}
-
-/// Notes or a user rename rename an exported meeting's Markdown to the
-/// meeting's title, keeping its date and time (read when notes are applied
-/// and when a meeting is renamed).
-pub fn meeting_descriptive_filenames() -> bool {
-    on(MEETING_DESCRIPTIVE_FILENAMES) && Feature::MeetingDescriptiveFilenames.on_this_os()
-}
-
-/// A meeting's transcript exports as `<stem>.transcript.md` and its notes
-/// are written to `<stem>.notes.md` beside it, linking back to the transcript
-/// (read at final export and when notes are written).
-pub fn meeting_notes_file() -> bool {
-    on(MEETING_NOTES_FILE) && Feature::MeetingNotesFile.on_this_os()
 }
 
 /// "While dictating" applies only while the default output is speakers
@@ -428,6 +382,27 @@ pub fn voice_prompt_phrase() -> String {
         .clone()
 }
 
+/// Labs › Stop phrase: a spoken phrase at the end of a hands-free dictation
+/// finishes it as if the shortcut were pressed again (read as each hands-free
+/// capture starts). The partials it matches are produced while this or Live
+/// text is on; the HUD's live-text line still needs [`live_text`].
+pub fn stop_phrase() -> bool {
+    // The state word has no bit for it: its own atomic, written by
+    // `labs::apply`, and loaded here first in a process that never applied.
+    let _ = state();
+    STOP_PHRASE.load(Ordering::Acquire) && Feature::StopPhrase.on_this_os()
+}
+
+/// The phrase that finishes a hands-free dictation (read where each OS's
+/// listener matches it, and once more when it fires so its job strips exactly
+/// the words it heard).
+pub fn stop_phrase_text() -> String {
+    STOP_PHRASE_TEXT
+        .read()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone()
+}
+
 /// Whether the Caps Lock light blinks slowly while recording instead of
 /// staying solid (macOS; read by the light model for each pattern).
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -476,39 +451,19 @@ pub fn api_browser_origins() -> Vec<String> {
 /// Q5_K, or Q4_K weights (macOS, where Metal has their kernels; read where an
 /// import's header is checked and where a saved selection loads).
 pub fn k_quant_models() -> bool {
-    // The state word is full, so the switch has its own atomic, loaded here
+    // The switch has its own atomic, loaded here
     // first in a process that never applied its settings.
     let _ = state();
     K_QUANT_MODELS.load(Ordering::Acquire) && Feature::KQuantModels.on_this_os()
 }
 
-/// Labs › YOLO mode: how long a shortcut dictation must be held
-/// for Return to follow its paste, or `None` while the lab is off (read as
-/// each dictation's output is committed).
-pub fn yolo_mode() -> Option<std::time::Duration> {
-    // The state word is full, so the lab has its own atomic, loaded here
-    // first in a process that never applied its settings.
-    let _ = state();
-    let seconds = YOLO_MODE_SECONDS.load(Ordering::Acquire);
-    (seconds > 0 && Feature::YoloMode.on_this_os())
-        .then(|| std::time::Duration::from_secs(u64::from(seconds)))
-}
-
-/// The apps Labs › YOLO mode sends in; empty means
-/// every app.
-pub fn yolo_mode_apps() -> Vec<String> {
+/// The apps YOLO mode sends in (empty: everywhere), or None while off.
+pub fn yolo_mode_apps() -> Option<Vec<String>> {
     let _ = state();
     YOLO_MODE_APPS
         .read()
         .unwrap_or_else(|error| error.into_inner())
         .clone()
-}
-
-/// Finished meetings may drop their WAV tracks on `meetings.audio_retention`
-/// (read by the meeting controller's expiry pass and the window's Settings
-/// row).
-pub fn expire_meeting_audio() -> bool {
-    on(EXPIRE_MEETING_AUDIO) && Feature::ExpireMeetingAudio.on_this_os()
 }
 
 /// How long the speech model may sit unused before the engine unloads it,

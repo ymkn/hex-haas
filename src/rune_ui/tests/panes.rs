@@ -540,31 +540,57 @@ fn on_this_mac_without_apple_intelligence_stays_chosen_with_the_fix() {
     assert!(rt.find("meeting-summary-model").is_none());
 }
 
-/// The separate Keep audio row follows its Labs toggle and saves the window.
+/// Keep audio sits beside Keep meetings once Meetings is on and saves its
+/// window.
 #[test]
-fn keep_audio_shows_with_its_lab_and_saves_its_window() {
+fn keep_audio_shows_with_meetings_and_saves_its_window() {
     use crate::app_settings::MeetingRetention;
     let mut rt = runtime("portal", true, TALL_SIZE);
-    rt.state.settings.meetings.enabled = true;
     rt.state.pane = Pane::Meetings;
     rt.state.meetings.view = super::super::meetings::View::Settings;
     refresh(&mut rt);
     assert!(
         rt.find("meeting-audio-retention").is_none(),
-        "hidden while the lab is off"
+        "hidden while Meetings is off"
     );
 
-    rt.state.settings.labs.expire_meeting_audio = true;
+    rt.state.settings.meetings.enabled = true;
     refresh(&mut rt);
     assert!(rt.find("meeting-audio-retention").is_some());
     assert_eq!(
         a11y_value(&rt, "meeting-audio-retention-control-trigger").as_deref(),
-        Some("Follow Keep meetings")
+        Some("Same as meetings")
     );
     pick(&mut rt, "meeting-audio-retention", 2);
     assert_eq!(
         rt.state.settings.meetings.audio_retention,
         Some(MeetingRetention::Week)
+    );
+}
+
+/// Export's two switches and Detected calls' Stop when the call ends save
+/// their meeting settings; the Stop row names the grace it waits.
+#[test]
+fn meeting_export_and_stop_when_call_ends_save_their_settings() {
+    let mut rt = runtime("mac-settings", true, (980.0, 3200.0));
+    rt.state.settings.meetings.enabled = true;
+    rt.state.pane = Pane::Meetings;
+    rt.state.meetings.view = super::super::meetings::View::Settings;
+    refresh(&mut rt);
+    tap(&mut rt, "meeting-descriptive-filenames");
+    assert!(rt.state.settings.meetings.export.descriptive_filenames);
+    tap(&mut rt, "meeting-notes-file");
+    assert!(rt.state.settings.meetings.export.notes_file);
+    tap(&mut rt, "meeting-stop-when-call-ends");
+    assert!(rt.state.settings.meetings.stop_when_call_ends);
+    let grace = format!(
+        " {} s ",
+        crate::meeting::detection::AUTO_STOP_GRACE.as_secs()
+    );
+    assert!(
+        super::super::platform_settings::STOP_WHEN_CALL_ENDS_CAPTION.contains(&grace),
+        "{}",
+        super::super::platform_settings::STOP_WHEN_CALL_ENDS_CAPTION
     );
 }
 
@@ -1300,7 +1326,7 @@ fn release_notes_link_shows_only_with_its_lab() {
     rt.state.settings.labs.release_notes_link = true;
     refresh(&mut rt);
     assert!(rt.find("release-notes").is_some());
-    assert!(texts(&rt).iter().any(|text| text == "Release notes"));
+    assert!(rt.find("nav-whats-new").is_some());
 
     for (kind, name) in [(BuildKind::Local, "local"), (BuildKind::Test, "test")] {
         rt.state.build_preview = Some(kind);
@@ -1327,7 +1353,7 @@ fn a_staged_dev_build_lists_its_first_changes_under_the_update() {
     }
     refresh(&mut rt);
     let shown = texts(&rt);
-    assert!(shown.iter().any(|text| text == "What's new"));
+    assert!(shown.iter().any(|text| text == "Release notes"));
     assert!(shown.iter().any(|text| text == "· Three"));
     assert!(!shown.iter().any(|text| text == "· Four"), "three at most");
     assert!(rt.find("sidebar-update-control/dot").is_some());
@@ -1371,9 +1397,13 @@ fn meetings_settings_save_and_ask_for_system_audio() {
         policy(&rt, "us.zoom.xos"),
         Some(MeetingPolicy::AlwaysRecord)
     );
-    pick(&mut rt, "call8-policy", 0);
+    let chosen = format!(
+        "call{}",
+        crate::app_settings::known_meeting_providers().count()
+    );
+    pick(&mut rt, &format!("{chosen}-policy"), 0);
     assert_eq!(policy(&rt, "example.com"), Some(MeetingPolicy::Ask));
-    assert!(rt.find("call8").is_some());
+    assert!(rt.find(&chosen).is_some());
     tap(&mut rt, "meetings-enabled");
     assert!(!rt.state.settings.meetings.enabled);
     assert!(rt.find("meeting-folder").is_none());
@@ -1897,8 +1927,10 @@ fn platform_goldens() {
 #[test]
 fn voice_filter_saves_the_mode_and_applies_the_tuning_live() {
     use crate::audio::voice_filter::VoiceFilterMode;
-    let mut rt = runtime("mac-voice-filter", true, PANE_SIZE);
-    tap(&mut rt, "fun-mode/segment1");
+    let mut rt = runtime("mac-voice-filter", true, (980.0, 1300.0));
+    assert!(rt.find("fun-slider-strength").is_none());
+    open_advanced(&mut rt, Pane::VoiceFilter);
+    tap(&mut rt, "muted/apply");
     assert_eq!(
         rt.state.settings.experimental.hex_microphone_mode,
         VoiceFilterMode::Muted
@@ -1911,7 +1943,7 @@ fn voice_filter_saves_the_mode_and_applies_the_tuning_live() {
         rt.find("fun-comfort-noise").is_some(),
         "Muted offers comfort noise"
     );
-    tap(&mut rt, "fun-mode/segment3");
+    tap(&mut rt, "normal/apply");
     assert!(
         rt.find("fun-slider-strength").is_none(),
         "Normal has no sliders"
@@ -1919,8 +1951,54 @@ fn voice_filter_saves_the_mode_and_applies_the_tuning_live() {
 }
 
 #[test]
-fn voice_filter_sliders_set_the_filter_from_the_pointer() {
+fn preview_each_effect_before_install_without_applying_it() {
+    use crate::audio::{hex_microphone::DemoPlaybackTrack, voice_filter::VoiceFilterMode};
+    let mut rt = runtime("mac-voice-filter-driver-missing", false, PANE_SIZE);
+    let tuning = rt.state.platform.tuning.clone();
+    let saves = saved(&rt);
+    assert!(asked(&rt).is_empty());
+    for mode in VoiceFilterMode::ALL {
+        tap(&mut rt, &format!("{}/play", mode.id()));
+    }
+    let expected: Vec<_> = VoiceFilterMode::ALL
+        .into_iter()
+        .map(|mode| {
+            PlatformRequest::HexMicrophoneDemo(platform::DemoRequest::Play(
+                DemoPlaybackTrack::Effect(mode),
+            ))
+        })
+        .collect();
+    assert_eq!(asked(&rt), expected);
+    assert_eq!(rt.state.platform.tuning, tuning);
+    assert_eq!(saved(&rt), saves);
+}
+
+#[test]
+fn voice_filter_setup_distinguishes_an_available_input_from_a_call() {
     let mut rt = runtime("mac-voice-filter", true, PANE_SIZE);
+    rt.state
+        .platform
+        .hex_microphone
+        .as_mut()
+        .unwrap()
+        .mic_in_use = false;
+    refresh(&mut rt);
+    assert!(
+        texts(&rt)
+            .iter()
+            .any(|s| s.contains("Select Hex Microphone"))
+    );
+    assert!(!texts(&rt).iter().any(|s| s.contains("Slack")));
+    let linux = runtime("voice-filter-unavailable", true, PANE_SIZE);
+    assert!(texts(&linux).iter().any(|s| s.contains("pw-cat")));
+    assert!(linux.find("install").is_none());
+    assert!(linux.find("robot/play").is_some());
+}
+
+#[test]
+fn voice_filter_sliders_set_the_filter_from_the_pointer() {
+    let mut rt = runtime("mac-voice-filter", true, (980.0, 1300.0));
+    open_advanced(&mut rt, Pane::VoiceFilter);
     let before = rt.state.platform.tuning.muffled_wall_hz;
     let (x, y) = rt.find("fun-slider-wall/track").unwrap();
     rt.pointer_down(x + 140.0, y);
@@ -1961,14 +2039,16 @@ fn try_it_records_and_plays_through_the_host() {
     use platform::DemoRequest;
     let mut rt = runtime("mac-voice-filter", true, PANE_SIZE);
     tap(&mut rt, "fun-demo-record");
-    tap(&mut rt, "fun-play-call-hears");
+    tap(&mut rt, "robot/play");
     tap(&mut rt, "fun-demo-source/segment1");
     assert_eq!(
         asked(&rt),
         [
             PlatformRequest::HexMicrophoneDemo(DemoRequest::Record),
             PlatformRequest::HexMicrophoneDemo(DemoRequest::Play(
-                crate::audio::hex_microphone::DemoPlaybackTrack::CallHears
+                crate::audio::hex_microphone::DemoPlaybackTrack::Effect(
+                    crate::audio::voice_filter::VoiceFilterMode::Robot
+                )
             )),
             PlatformRequest::HexMicrophoneDemo(DemoRequest::SelectSource(
                 crate::audio::hex_microphone::DemoSourceKind::Recording
@@ -1976,7 +2056,7 @@ fn try_it_records_and_plays_through_the_host() {
         ]
     );
     let mut rt = runtime("mac-voice-filter-muted", true, PANE_SIZE);
-    tap(&mut rt, "fun-play-call-hears");
+    tap(&mut rt, "robot/play");
     assert_eq!(
         asked(&rt),
         [PlatformRequest::HexMicrophoneDemo(
@@ -2303,6 +2383,60 @@ fn voice_prompt_shows_its_phrase_on_its_card_while_on() {
 }
 
 #[test]
+fn stop_phrase_shows_its_phrase_on_its_card_while_on() {
+    use crate::labs::Feature;
+    let mut rt = runtime("mac-labs", true, (980.0, 4000.0));
+    rt.update(|ui, _| ui.lab_store.group = Some(Feature::StopPhrase.group()));
+    settle(&mut rt);
+    assert!(rt.find("stop-phrase-text").is_none(), "hidden while off");
+    tap(&mut rt, "lab-stop-phrase");
+    assert!(rt.state.settings.labs.stop_phrase);
+    assert!(rt.find("stop-phrase-text").is_some());
+    assert_eq!(
+        rt.state.lab_store.stop_phrase.text,
+        crate::dictation::stop_phrase::DEFAULT_PHRASE,
+        "the field starts at the saved phrase"
+    );
+
+    // A draft that fails validation stays in the field, says why, and leaves
+    // both saved phrases alone.
+    let voice_prompt = rt.state.settings.labs.voice_prompt_phrase.clone();
+    rt.update(|ui, _| ui.lab_store.stop_phrase = rune::TextEdit::new("stop".to_string()));
+    rt.state.flush_drafts();
+    assert_eq!(
+        rt.state.settings.labs.stop_phrase_text,
+        crate::dictation::stop_phrase::DEFAULT_PHRASE
+    );
+    assert_eq!(
+        rt.state.settings.labs.voice_prompt_phrase, voice_prompt,
+        "Voice prompt's phrase is its own"
+    );
+    refresh(&mut rt);
+    assert!(rt.find("stop-phrase-text-error").is_some());
+
+    // A valid draft saves.
+    rt.update(|ui, _| {
+        ui.lab_store.stop_phrase = rune::TextEdit::new("that's all".to_string());
+    });
+    rt.state.flush_drafts();
+    assert_eq!(rt.state.settings.labs.stop_phrase_text, "that's all");
+    refresh(&mut rt);
+    assert!(rt.find("stop-phrase-text-error").is_none());
+
+    // A phrase saved elsewhere updates the field.
+    let mut external = rt.state.settings.clone();
+    external.labs.stop_phrase_text = "end dictation".to_string();
+    assert!(rt.state.adopt(external));
+    refresh(&mut rt);
+    assert_eq!(rt.state.lab_store.stop_phrase.text, "end dictation");
+
+    // The field leaves with its lab.
+    tap(&mut rt, "lab-stop-phrase");
+    assert!(!rt.state.settings.labs.stop_phrase);
+    assert!(rt.find("stop-phrase-text").is_none());
+}
+
+#[test]
 fn browser_access_shows_its_origins_on_its_card_while_on() {
     use crate::labs::Feature;
     let mut rt = runtime("mac-labs", true, (980.0, 4000.0));
@@ -2404,19 +2538,19 @@ fn a_labs_card_shows_its_description_and_its_switch_turns_it_on() {
     use crate::labs::Feature;
     let mut rt = runtime("mac-labs", true, (980.0, 2000.0));
     unfold_labs(&mut rt);
-    let feature = Feature::SubtitleExport;
-    assert!(rt.find("lab-card-subtitle-export").is_some());
-    tap(&mut rt, "lab-card-subtitle-export");
+    let feature = Feature::ReturnToApp;
+    assert!(rt.find("lab-card-return-to-app").is_some());
+    tap(&mut rt, "lab-card-return-to-app");
     assert!(
         !feature.on(&rt.state.settings),
         "pressing a card flips nothing"
     );
-    tap(&mut rt, "lab-subtitle-export");
+    tap(&mut rt, "lab-return-to-app");
     assert!(
         feature.on(&rt.state.settings),
         "the card's switch turns it on"
     );
-    tap(&mut rt, "lab-subtitle-export");
+    tap(&mut rt, "lab-return-to-app");
     assert!(!feature.on(&rt.state.settings), "and off");
 }
 
@@ -3008,6 +3142,8 @@ fn experiment_goldens() {
         check_golden("mac-voice-filter", dark, PANE_SIZE);
         check_golden("mac-hud-lab", dark, PANE_SIZE);
     }
+    check_golden("voice-filter-unavailable", true, PANE_SIZE);
+    check_golden("voice-filter", false, PANE_SIZE);
     check_golden("mac-voice-filter-muted", true, PANE_SIZE);
     check_golden("mac-voice-filter-driver-missing", false, PANE_SIZE);
     check_golden("mac-activity", false, PANE_SIZE);

@@ -283,7 +283,9 @@ same queue (`unsupported` outside macOS 27+, `feature-off` while
 `labs.annotate_replay` is off); `capture status`
 lists bundles still writing and the last outcome (`last`: `bundle`, `stage`
 of `done`, `failed`, or `cancelled`, and for a written bundle `words`, `gaps`,
-and `missing_transcript`, why it has no words). A start or replay while two captures
+`missing_transcript` (why it has no words), and `audio_stopped_at_ms` when Hex
+had to stop keeping its audio, a streamed capture past its 8 h disk guard or a
+failed audio write). A start or replay while two captures
 are still writing is refused with `busy`. Every action is idempotent.
 
 `<capture>` is a bundle name (`1792933491953.scrawl`, the extension
@@ -599,10 +601,10 @@ support this lab.
   ago than that to the Trash at launch and hourly, Meetings on or off, and
   `hex meetings` and `hex mcp` no longer list them.
 - `meetings.audio_retention` is `day`, `week`, `month`, `forever`, or `none`
-  (the default). With Labs › Expire meeting audio separately on, a finished
-  meeting's WAVs move to the Trash on that window while its transcript,
-  notes, summary, and Markdown stay; `none` follows `meetings.retention`.
-  With the lab off it does nothing.
+  (the default; Meetings › Settings › After a meeting › Keep audio). A
+  finished meeting's WAVs move to the Trash on that window while its
+  transcript, notes, summary, and Markdown stay; `none` follows
+  `meetings.retention`.
 - `transcription.model` and `transcription.language` are read-only here: use
   `hex model use`. `transcription_recents` and `meetings.calendar.connected`
   are read-only (connecting a calendar asks macOS for access from Settings).

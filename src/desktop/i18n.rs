@@ -9,6 +9,7 @@ use std::sync::OnceLock;
 #[cfg(not(test))]
 use std::sync::atomic::{AtomicU8, Ordering};
 
+mod clock;
 mod failures;
 mod french;
 mod labs;
@@ -19,6 +20,8 @@ mod portuguese;
 mod russian;
 mod text_language;
 mod traditional_chinese;
+
+pub(crate) use clock::{clock_time, twelve_hour_clock};
 
 /// A persisted interface-language code (`None` follows the system) and its
 /// native name.
@@ -364,6 +367,16 @@ pub(super) fn all_translations() -> impl Iterator<Item = &'static (&'static str,
 /// Columns: Polish, Chinese (Simplified), Japanese, German, Spanish, Ukrainian.
 #[rustfmt::skip]
 const TRANSLATIONS: &[(&str, [&str; 6])] = &[
+    ("Find a setting or lab", ["Znajdź ustawienie lub funkcję Labs", "查找设置或实验功能", "設定や Labs の機能を検索", "Einstellung oder Labs-Funktion suchen", "Buscar un ajuste o una función de Labs", "Знайти налаштування або функцію Labs"]),
+    ("No matching settings or labs", ["Brak pasujących ustawień lub funkcji Labs", "没有匹配的设置或实验功能", "一致する設定や Labs の機能はありません", "Keine passenden Einstellungen oder Labs-Funktionen", "No hay ajustes ni funciones de Labs que coincidan", "Немає відповідних налаштувань або функцій Labs"]),
+    ("The keys you press to dictate", ["Klawisze naciskane podczas dyktowania", "用于听写的按键", "音声入力に使うキー", "Die Tasten zum Diktieren", "Las teclas que pulsas para dictar", "Клавіші для диктування"]),
+    ("How the dictation shortcut starts and stops recording", ["Jak skrót dyktowania rozpoczyna i kończy nagrywanie", "听写快捷键如何开始和停止录音", "音声入力のショートカットで録音を開始・停止する方法", "Wie das Diktierkürzel die Aufnahme startet und stoppt", "Cómo inicia y detiene la grabación el atajo de dictado", "Як скорочення для диктування починає та зупиняє запис"]),
+    ("Shortcut to paste your last dictation again", ["Skrót do ponownego wklejenia ostatniego dyktowania", "再次粘贴上一次听写内容的快捷键", "直前の音声入力をもう一度貼り付けるショートカット", "Tastenkürzel zum erneuten Einfügen des letzten Diktats", "Atajo para volver a pegar el último dictado", "Скорочення для повторного вставлення останнього диктування"]),
+    ("{} days ago", ["{} dni temu", "{} 天前", "{}日前", "vor {} Tagen", "hace {} días", "{} дн. тому"]),
+    ("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec", ["sty lut mar kwi maj cze lip sie wrz paź lis gru", "1月 2月 3月 4月 5月 6月 7月 8月 9月 10月 11月 12月", "1月 2月 3月 4月 5月 6月 7月 8月 9月 10月 11月 12月", "Jan. Feb. März Apr. Mai Juni Juli Aug. Sept. Okt. Nov. Dez.", "ene feb mar abr may jun jul ago sept oct nov dic", "січ. лют. бер. квіт. трав. черв. лип. серп. вер. жовт. лист. груд."]),
+    ("{month} {day}", ["{day} {month}", "{month}{day}日", "{month}{day}日", "{day}. {month}", "{day} {month}", "{day} {month}"]),
+    ("{month} {day}, {year}", ["{day} {month} {year}", "{year}年{month}{day}日", "{year}年{month}{day}日", "{day}. {month} {year}", "{day} {month} {year}", "{day} {month} {year}"]),
+    ("Preview the tones Hex plays when you dictate.", ["Odsłuchaj dźwięki, które Hex odtwarza podczas dyktowania.", "试听 Hex 在听写时播放的提示音。", "音声入力時に Hex が鳴らす音を試聴できます。", "Höre dir die Töne an, die Hex beim Diktieren abspielt.", "Escucha los tonos que reproduce Hex al dictar.", "Прослухайте звуки, які Hex відтворює під час диктування."]),
     ("OpenCode's default model", ["Domyślny model OpenCode", "OpenCode 的默认模型", "OpenCode のデフォルトモデル", "OpenCode-Standardmodell", "Modelo predeterminado de OpenCode", "Стандартна модель OpenCode"]),
     ("Summary models show once Hex connects to OpenCode.", ["Modele podsumowań pojawią się, gdy Hex połączy się z OpenCode.", "Hex 连接到 OpenCode 后会显示摘要模型。", "Hex が OpenCode に接続すると要約モデルが表示されます。", "Modelle für Zusammenfassungen erscheinen, sobald Hex mit OpenCode verbunden ist.", "Los modelos de resumen aparecen cuando Hex se conecta a OpenCode.", "Моделі для підсумків з'являться, щойно Hex під'єднається до OpenCode."]),
     ("Start OpenCode to choose a summary model. Hex keeps the saved one.", ["Uruchom OpenCode, aby wybrać model podsumowań. Hex zachowuje zapisany.", "启动 OpenCode 以选择摘要模型。Hex 会保留已保存的模型。", "要約モデルを選ぶには OpenCode を起動してください。保存済みのモデルはそのまま残ります。", "Starte OpenCode, um ein Modell für Zusammenfassungen zu wählen. Hex behält das gespeicherte.", "Inicia OpenCode para elegir un modelo de resumen. Hex conserva el guardado.", "Запустіть OpenCode, щоб вибрати модель для підсумків. Hex зберігає збережену."]),
@@ -383,18 +396,12 @@ const TRANSLATIONS: &[(&str, [&str; 6])] = &[
     ("Hide Hex's icon from the menu bar. Shortcuts keep working; open Hex again from Finder or Spotlight for Settings", ["Ukrywa ikonę Hex na pasku menu. Skróty nadal działają; otwórz Hex ponownie z Findera lub Spotlight, aby przejść do Ustawień", "从菜单栏隐藏 Hex 的图标。快捷键仍然有效；从访达或聚焦搜索再次打开 Hex 即可进入设置", "メニューバーから Hex のアイコンを隠します。ショートカットは引き続き使えます。設定を開くには Finder や Spotlight から Hex をもう一度開きます", "Blendet das Hex-Symbol in der Menüleiste aus. Kürzel funktionieren weiter; öffne Hex erneut über den Finder oder Spotlight, um zu den Einstellungen zu gelangen", "Oculta el icono de Hex en la barra de menús. Los atajos siguen funcionando; vuelve a abrir Hex desde el Finder o Spotlight para ir a Ajustes", "Приховує значок Hex у рядку меню. Комбінації клавіш і далі працюють; щоб відкрити Налаштування, знову відкрийте Hex із Finder або Spotlight"]),
     ("⌘Q closes Settings", ["⌘Q zamyka Ustawienia", "⌘Q 关闭设置", "⌘Q で設定を閉じる", "⌘Q schließt die Einstellungen", "⌘Q cierra Ajustes", "⌘Q закриває Налаштування"]),
     ("⌘Q closes the Settings window instead of quitting Hex. Dictation keeps running; quit from the menu bar icon", ["⌘Q zamyka okno Ustawień zamiast kończyć Hex. Dyktowanie działa dalej; aby zakończyć, użyj ikony na pasku menu", "按 ⌘Q 关闭设置窗口而不退出 Hex。听写会继续运行；要退出请使用菜单栏图标", "⌘Q は Hex を終了せず、設定ウインドウを閉じます。音声入力はそのまま続きます。終了するにはメニューバーのアイコンから操作してください", "⌘Q schließt das Einstellungsfenster, statt Hex zu beenden. Das Diktieren läuft weiter; beenden kannst du Hex über das Menüleistensymbol", "⌘Q cierra la ventana de Ajustes en lugar de salir de Hex. El dictado sigue funcionando; para salir, usa el icono de la barra de menús", "⌘Q закриває вікно налаштувань, а не завершує Hex. Диктування працює далі; щоб вийти, скористайтеся значком у рядку меню"]),
-    ("Movable meeting capsules", ["Przesuwane kapsuły spotkań", "可移动的会议胶囊", "移動できる会議カプセル", "Verschiebbare Meeting-Kapseln", "Cápsulas de reunión movibles", "Переміщувані капсули зустрічей"]),
-    ("Drag meeting capsules out of the way; they come back in the corner you left them", ["Przeciągaj kapsuły spotkań na bok; wracają w rogu, w którym je zostawiono", "把会议胶囊拖到一边；它们会出现在你上次放下的角落", "会議カプセルをドラッグして脇へ移動できます。次からは最後に置いた隅に表示されます", "Ziehe Meeting-Kapseln aus dem Weg; sie erscheinen wieder in der Ecke, in der du sie gelassen hast", "Arrastra las cápsulas de reunión para apartarlas; vuelven a aparecer en la esquina donde las dejaste", "Перетягуйте капсули зустрічей убік; вони з'являються в куті, де ви їх залишили"]),
     ("Choose meeting summary model", ["Wybór modelu podsumowań spotkań", "选择会议摘要模型", "会議の要約モデルを選ぶ", "Modell für Meeting-Zusammenfassungen wählen", "Elegir el modelo de resúmenes de reuniones", "Вибір моделі для підсумків зустрічей"]),
     ("Pick the OpenCode provider and model that write meeting titles and summaries, in Meetings › Settings › Advanced", ["Wybierz dostawcę i model OpenCode, które piszą tytuły i podsumowania spotkań, w Spotkania › Ustawienia › Zaawansowane", "在“会议 › 设置 › 高级”中选择撰写会议标题和摘要的 OpenCode 提供方和模型", "会議のタイトルと要約を書く OpenCode のプロバイダとモデルを、会議 › 設定 › 詳細 で選びます", "Wähle unter Meetings › Einstellungen › Erweitert den OpenCode-Anbieter und das Modell, die Meeting-Titel und -Zusammenfassungen schreiben", "Elige el proveedor y el modelo de OpenCode que escriben los títulos y resúmenes de reuniones, en Reuniones › Ajustes › Avanzado", "Виберіть постачальника й модель OpenCode, які пишуть назви та підсумки зустрічей, у Зустрічі › Налаштування › Додатково"]),
-    ("Meeting finished event", ["Zdarzenie zakończenia spotkania", "会议结束事件", "会議終了イベント", "Ereignis „Meeting beendet“", "Evento de reunión terminada", "Подія завершення зустрічі"]),
-    ("Tell apps on this computer when a meeting's transcript is ready. They get only the meeting's ID, through Hex's local API", ["Powiadamiaj aplikacje na tym komputerze, gdy transkrypcja spotkania jest gotowa. Otrzymują tylko identyfikator spotkania, przez lokalne API Hex", "会议转写就绪时通知这台电脑上的应用。它们只会通过 Hex 的本地 API 收到会议的 ID", "会議の文字起こしができたら、このコンピュータ上のアプリに知らせます。アプリが受け取るのは Hex のローカル API 経由の会議 ID だけです", "Benachrichtigt Apps auf diesem Computer, wenn das Transkript eines Meetings fertig ist. Sie erhalten über die lokale API von Hex nur die ID des Meetings", "Avisa a las apps de este ordenador cuando la transcripción de una reunión está lista. Solo reciben el ID de la reunión, a través de la API local de Hex", "Повідомляє програми на цьому комп'ютері, коли розшифровка зустрічі готова. Вони отримують лише ID зустрічі через локальний API Hex"]),
     ("Annotate 15 s replay", ["Powtórka 15 s w Adnotacjach", "标注 15 秒回放", "注釈の 15 秒リプレイ", "15-Sekunden-Wiederholung in Annotate", "Repetición de 15 s en Anotar", "Повтор останніх 15 с у Нотатках"]),
     ("Save the last 15 seconds of your screen. macOS shows the screen-recording dot the whole time it's on", ["Zapisz ostatnie 15 sekund ekranu. macOS pokazuje kropkę nagrywania ekranu przez cały czas, gdy jest to włączone", "保存屏幕最近的 15 秒。开启期间 macOS 会一直显示屏幕录制圆点", "画面の直近 15 秒を保存します。オンの間、macOS の画面収録ドットが表示され続けます", "Speichere die letzten 15 Sekunden deines Bildschirms. Solange das aktiv ist, zeigt macOS durchgehend den Bildschirmaufnahme-Punkt an", "Guarda los últimos 15 segundos de la pantalla. macOS muestra el punto de grabación de pantalla todo el tiempo que esté activado", "Зберігає останні 15 секунд екрана. Поки увімкнено, macOS постійно показує індикатор запису екрана"]),
     ("Replay last 15 s", ["Powtórz ostatnie 15 s", "回放最近 15 秒", "直近 15 秒を保存", "Letzte 15 s speichern", "Guardar últimos 15 s", "Зберегти останні 15 с"]),
     ("Press to save the last 15 s; hold to narrate over it", ["Naciśnij, aby zapisać ostatnie 15 s; przytrzymaj, aby dodać komentarz głosowy", "按下保存最近 15 秒；按住可边说边配音", "押すと直近 15 秒を保存し、押し続けると音声で説明を添えられます", "Drücken, um die letzten 15 s zu speichern; halten, um darüberzusprechen", "Pulsa para guardar los últimos 15 s; mantén pulsado para narrar encima", "Натисніть, щоб зберегти останні 15 с; утримуйте, щоб озвучити"]),
-    ("Vocabulary in meeting notes", ["Słownik w notatkach ze spotkań", "会议笔记使用词汇表", "会議メモに語彙を使う", "Vokabular in Meeting-Notizen", "Vocabulario en las notas de reuniones", "Словник у нотатках зустрічей"]),
-    ("Meeting titles and summaries read your vocabulary, so names are spelled the way you wrote them", ["Tytuły i podsumowania spotkań korzystają z Twojego słownika, więc nazwy są pisane tak, jak je zapisano", "会议标题和摘要会参考你的词汇表，让名称按你写的方式拼写", "会議のタイトルと要約が語彙を参照し、名前をあなたが書いたとおりに綴ります", "Meeting-Titel und -Zusammenfassungen lesen dein Vokabular, damit Namen so geschrieben werden, wie du sie eingetragen hast", "Los títulos y resúmenes de reuniones leen tu vocabulario, para que los nombres se escriban como los escribiste", "Назви й підсумки зустрічей читають ваш словник, тож імена пишуться так, як ви їх записали"]),
     ("Summary model", ["Model podsumowań", "摘要模型", "要約モデル", "Modell für Zusammenfassungen", "Modelo de resúmenes", "Модель підсумків"]),
     ("After a meeting", ["Po spotkaniu", "会议结束后", "会議のあと", "Nach einer Besprechung", "Después de una reunión", "Після зустрічі"]),
     ("Summaries", ["Podsumowania", "摘要", "要約", "Zusammenfassungen", "Resúmenes", "Підсумки"]),
@@ -435,10 +442,6 @@ const TRANSLATIONS: &[(&str, [&str; 6])] = &[
     ("Use the key left of 1 on ISO keyboards, § or a dead key such as ^, alone as a shortcut; Hex takes it from every app while it's bound", ["Użyj klawisza na lewo od 1 na klawiaturach ISO, § lub martwego klawisza takiego jak ^, jako skrótu bez modyfikatora; gdy jest przypisany, Hex przejmuje go od wszystkich aplikacji", "将 § 键或 ^ 等死键（ISO 键盘上 1 左侧的键）单独用作快捷键。设为快捷键期间，所有应用都收不到该键，由 Hex 使用", "§ キー、または ^ などのデッドキー（ISO キーボードで 1 の左にあるキー）を修飾キーなしのショートカットとして使います。割り当てている間、Hex はすべてのアプリからそのキーを受け取ります", "Die Taste links neben der 1 auf ISO-Tastaturen, § oder eine Tottaste wie ^, ohne Zusatztaste als Kürzel verwenden. Solange sie zugewiesen ist, nimmt Hex allen Apps diese Taste weg", "Usa la tecla a la izquierda del 1 en teclados ISO, § o una tecla muerta como ^, como atajo sin modificador. Mientras esté asignada, Hex toma esa tecla de todas las apps", "Використовуйте клавішу ліворуч від 1 на клавіатурах ISO, § або мертву клавішу на кшталт ^, як комбінацію без модифікатора. Поки її призначено, Hex забирає цю клавішу у всіх програм"]),
     ("Microphone key alone", ["Klawisz mikrofonu bez modyfikatora", "单独使用麦克风键", "マイクキーを単独で使う", "Mikrofontaste allein", "Tecla de micrófono sola", "Клавіша мікрофона окремо"]),
     ("Use the mic key in F5's spot on Mac laptops as a shortcut; once set, only Hex gets it", ["Używaj klawisza mikrofonu w miejscu F5 na laptopach Mac jako skrótu; po ustawieniu dostaje go tylko Hex", "在 Mac 笔记本电脑上把 F5 位置的麦克风键用作快捷键；设置后只有 Hex 能收到它", "Mac ノートブックの F5 の位置にあるマイクキーをショートカットに。設定すると Hex だけが受け取ります", "Die Mikrofontaste an der Stelle von F5 auf Mac-Laptops als Kürzel verwenden; einmal gesetzt, bekommt sie nur Hex", "Usa la tecla de micrófono en el sitio de F5 de los portátiles Mac como atajo; una vez puesta, solo la recibe Hex", "Використовуйте клавішу мікрофона на місці F5 у ноутбуках Mac як комбінацію; щойно призначено, її отримує лише Hex"]),
-    ("Follow live transcript", ["Śledzenie transkrypcji na żywo", "跟随实时转写", "ライブ文字起こしを追う", "Live-Transkript folgen", "Seguir la transcripción en vivo", "Стежити за розшифровкою наживо"]),
-    ("More call apps", ["Więcej aplikacji do rozmów", "更多通话应用", "その他の通話アプリ", "Mehr Anruf-Apps", "Más apps de llamadas", "Більше програм для дзвінків"]),
-    ("Offer to record calls in Signal, Telegram, WeChat, LINE, Webex, Element and the Phone app, and name calls on more websites.", ["Proponuj nagrywanie rozmów w Signal, Telegram, WeChat, LINE, Webex, Element i aplikacji Telefon oraz nazywaj rozmowy na większej liczbie stron", "在 Signal、Telegram、WeChat、LINE、Webex、Element 和“电话”应用中提议录制通话，并在更多网站上识别通话", "Signal、Telegram、WeChat、LINE、Webex、Element、電話アプリの通話を録音するか提案し、より多くのウェブサイトで通話を判別します", "Biete an, Anrufe in Signal, Telegram, WeChat, LINE, Webex, Element und der Telefon-App aufzunehmen, und erkenne Anrufe auf mehr Websites", "Ofrece grabar llamadas en Signal, Telegram, WeChat, LINE, Webex, Element y la app Teléfono, y nombra llamadas en más sitios web", "Пропонуйте записувати дзвінки в Signal, Telegram, WeChat, LINE, Webex, Element і програмі Телефон та розпізнавайте дзвінки на більшій кількості сайтів"]),
-    ("While a meeting records, the transcript scrolls to the newest line. Scroll up to read earlier text; scroll back to the bottom to follow again.", ["Podczas nagrywania spotkania transkrypcja przewija się do najnowszej linii. Przewiń w górę, aby przeczytać wcześniejszy tekst; przewiń z powrotem na dół, aby znów śledzić.", "会议录制期间，转写会滚动到最新一行。向上滚动可阅读之前的内容；滚回底部即可继续跟随。", "会議の録音中、文字起こしは最新の行までスクロールします。前の内容を読むには上にスクロールし、再び追うには一番下まで戻します。", "Während ein Meeting aufgenommen wird, scrollt das Transkript zur neuesten Zeile. Scrolle nach oben, um früheren Text zu lesen; scrolle wieder ganz nach unten, um erneut zu folgen.", "Mientras se graba una reunión, la transcripción se desplaza a la línea más reciente. Desplázate hacia arriba para leer texto anterior; vuelve al final para seguirla de nuevo.", "Поки зустріч записується, розшифровка прокручується до найновішого рядка. Прокрутіть угору, щоб прочитати попередній текст; прокрутіть донизу, щоб знову стежити."]),
     ("Floating meeting capsules on GNOME", ["Pływające kapsułki spotkań w GNOME", "在 GNOME 上显示悬浮会议胶囊", "GNOME でフローティング会議カプセル", "Schwebende Meeting-Kapseln unter GNOME", "Cápsulas de reunión flotantes en GNOME", "Плаваючі панелі зустрічей у GNOME"]),
     ("Show the recording offer and recording indicator floating over your call, through XWayland. Works only while XWayland is already running", ["Pokazuje propozycję nagrania i wskaźnik nagrywania nad rozmową, przez XWayland. Działa tylko, gdy XWayland już działa", "通过 XWayland 在通话上方悬浮显示录制提示和录制指示器。仅在 XWayland 已运行时有效", "録音の提案と録音インジケーターを XWayland 経由で通話の上に表示します。XWayland がすでに動作しているときだけ使えます", "Zeigt das Aufnahmeangebot und die Aufnahmeanzeige schwebend über dem Anruf, über XWayland. Funktioniert nur, wenn XWayland bereits läuft", "Muestra la oferta de grabación y el indicador de grabación flotando sobre tu llamada, a través de XWayland. Solo funciona si XWayland ya se está ejecutando", "Показує пропозицію запису та індикатор запису поверх дзвінка через XWayland. Працює, лише коли XWayland уже запущено"]),
     ("Restore clipboard on GNOME", ["Przywracanie schowka w GNOME", "在 GNOME 上恢复剪贴板", "GNOME でクリップボードを復元", "Zwischenablage unter GNOME wiederherstellen", "Restaurar el portapapeles en GNOME", "Відновлення буфера обміну в GNOME"]),
@@ -574,8 +577,6 @@ const TRANSLATIONS: &[(&str, [&str; 6])] = &[
     ("Hardware unknown", ["Sprzęt nieznany", "硬件未知", "ハードウェア不明", "Hardware unbekannt", "Hardware desconocido", "Обладнання невідоме"]),
     ("Conditions unknown", ["Warunki nieznane", "测试条件未知", "測定条件不明", "Bedingungen unbekannt", "Condiciones desconocidas", "Умови невідомі"]),
     ("Speed: upstream figure; hardware and method unknown", ["Szybkość: wartość z projektu źródłowego; sprzęt i metoda nieznane", "速度：上游数据；硬件和方法未知", "速度: 上流の数値。ハードウェアと方法は不明", "Geschwindigkeit: Angabe des Herstellers; Hardware und Methode unbekannt", "Velocidad: dato del proyecto original; hardware y método desconocidos", "Швидкість: дані з першоджерела; обладнання й метод невідомі"]),
-    ("Subtitle export", ["Eksport napisów", "字幕导出", "字幕の書き出し", "Untertitel-Export", "Exportar subtítulos", "Експорт субтитрів"]),
-    ("Export meeting transcripts as SRT or VTT subtitles with hex meetings show", ["Eksportuj transkrypcje spotkań jako napisy SRT lub VTT poleceniem hex meetings show", "使用 hex meetings show 将会议转录导出为 SRT 或 VTT 字幕", "hex meetings show で会議の文字起こしを SRT または VTT 字幕として書き出します", "Meeting-Transkripte mit hex meetings show als SRT- oder VTT-Untertitel exportieren", "Exporta transcripciones de reuniones como subtítulos SRT o VTT con hex meetings show", "Експортуйте транскрипти зустрічей як субтитри SRT або VTT командою hex meetings show"]),
     ("Second dictation shortcut", ["Drugi skrót dyktowania", "第二个听写快捷键", "2つ目の音声入力ショートカット", "Zweites Diktierkürzel", "Segundo atajo de dictado", "Друга комбінація для диктування"]),
     ("Another shortcut that dictates like the main one, such as a key on an external keyboard", ["Kolejny skrót, który dyktuje jak główny, np. klawisz na zewnętrznej klawiaturze", "另一个与主快捷键一样听写的快捷键，例如外接键盘上的按键", "メインと同じように音声入力するもう1つのショートカット。外付けキーボードのキーなど", "Ein weiteres Kürzel, das wie das Hauptkürzel diktiert, etwa eine Taste auf einer externen Tastatur", "Otro atajo que dicta como el principal, como una tecla de un teclado externo", "Ще одна комбінація, що диктує як основна, наприклад клавіша на зовнішній клавіатурі"]),
     ("Smart spacing", ["Inteligentne odstępy", "智能空格", "スマートスペース", "Intelligente Leerzeichen", "Espaciado inteligente", "Розумні пробіли"]),
@@ -964,9 +965,8 @@ const TRANSLATIONS: &[(&str, [&str; 6])] = &[
     ("Shows a reminder with Record and Join buttons", ["Pokazuje przypomnienie z przyciskami Nagraj i Dołącz", "显示带有录制和加入按钮的提醒", "録音と参加のボタン付きでリマインダーを表示します", "Zeigt eine Erinnerung mit den Tasten Aufnehmen und Beitreten", "Muestra un recordatorio con los botones Grabar y Unirse", "Показує нагадування з кнопками «Записати» і «Приєднатися»"]),
     ("Keep meetings", ["Przechowuj spotkania", "会议保留时间", "会議の保存期間", "Meetings behalten", "Conservar reuniones", "Зберігати зустрічі"]),
     ("Keep audio", ["Przechowuj dźwięk", "音频保留时间", "音声の保存期間", "Audio behalten", "Conservar audio", "Зберігати аудіо"]),
-    ("Follow Keep meetings", ["Jak w Przechowuj spotkania", "跟随会议保留时间", "会議の保存期間に従う", "Wie „Meetings behalten“", "Igual que Conservar reuniones", "Як «Зберігати зустрічі»"]),
-    ("Expire meeting audio separately", ["Oddzielne wygasanie dźwięku spotkań", "单独过期会议音频", "会議の音声を別に期限切れにする", "Meeting-Audio getrennt verfallen lassen", "Caducar el audio de reuniones por separado", "Окреме видалення аудіо зустрічей"]),
-    ("Choose how long to keep meeting audio. Transcripts, notes, and summaries follow Keep meetings.", ["Wybierz, jak długo zachowywać dźwięk spotkań. Transkrypcje, notatki i podsumowania zależą od opcji Przechowuj spotkania.", "选择会议音频保留多久。转写、笔记和摘要跟随“会议保留时间”。", "会議の音声を保存する期間を選びます。文字起こし、メモ、要約は「会議の保存期間」に従います。", "Wähle, wie lange Meeting-Audio behalten wird. Transkripte, Notizen und Zusammenfassungen folgen „Meetings behalten“.", "Elige cuánto tiempo conservar el audio de las reuniones. Las transcripciones, notas y resúmenes siguen a Conservar reuniones.", "Виберіть, як довго зберігати аудіо зустрічей. Розшифровки, нотатки й підсумки залежать від «Зберігати зустрічі»."]),
+    ("Same as meetings", ["Tak jak spotkania", "与会议相同", "会議と同じ", "Wie Meetings", "Igual que las reuniones", "Як і зустрічі"]),
+    ("Export", ["Eksport", "导出", "書き出し", "Export", "Exportar", "Експорт"]),
     ("Audio follows Keep meetings. Choose a time to delete only meeting audio first", ["Dźwięk zależy od opcji Przechowuj spotkania. Wybierz czas, aby usuwać najpierw tylko dźwięk spotkań", "音频跟随“会议保留时间”。选择一个时间，仅先删除会议音频", "音声は「会議の保存期間」に従います。時間を選ぶと会議の音声だけを先に削除します", "Audio folgt „Meetings behalten“. Wähle eine Zeit, um zuerst nur das Meeting-Audio zu löschen", "El audio sigue a Conservar reuniones. Elige un tiempo para borrar antes solo el audio de las reuniones", "Аудіо залежить від «Зберігати зустрічі». Виберіть час, щоб спершу видаляти лише аудіо зустрічей"]),
     ("Finished meetings keep their transcript, notes, summary, and Markdown after their audio moves to the Trash", ["Zakończone spotkania zachowują transkrypcję, notatki, podsumowanie i Markdown po przeniesieniu dźwięku do kosza", "音频移到废纸篓后，已结束的会议仍保留转写、笔记、摘要和 Markdown", "音声がゴミ箱に移動したあとも、終了した会議の文字起こし、メモ、要約、Markdown は残ります", "Beendete Meetings behalten Transkript, Notizen, Zusammenfassung und Markdown, nachdem ihr Audio in den Papierkorb wandert", "Las reuniones terminadas conservan su transcripción, notas, resumen y Markdown después de que su audio vaya a la papelera", "Завершені зустрічі зберігають розшифровку, нотатки, підсумок і Markdown після переміщення аудіо в кошик"]),
     ("Audio, transcripts, notes, and Hex's Markdown copy move to the Trash", ["Nagrania, transkrypcje, notatki i kopia Markdown utworzona przez Hex trafiają do kosza", "音频、转写、笔记和 Hex 生成的 Markdown 副本会移到废纸篓", "音声、文字起こし、メモ、Hex が作成した Markdown のコピーはゴミ箱に移動します", "Audio, Transkripte, Notizen und die Markdown-Kopie von Hex kommen in den Papierkorb", "El audio, las transcripciones, las notas y la copia Markdown de Hex se mueven a la papelera", "Аудіо, транскрипти, нотатки й копія Markdown від Hex переміщуються до Смітника"]),
@@ -1314,6 +1314,15 @@ const TRANSLATIONS: &[(&str, [&str; 6])] = &[
     ("Crunch", ["Przester", "失真度", "クランチ", "Crunch", "Saturación", "Спотворення"]),
     ("Depth", ["Głębokość", "深度", "深さ", "Tiefe", "Profundidad", "Глибина"]),
     ("Driver not installed", ["Sterownik niezainstalowany", "驱动未安装", "ドライバ未インストール", "Treiber nicht installiert", "Controlador no instalado", "Драйвер не встановлено"]),
+    ("What callers hear", ["Co słyszą rozmówcy", "通话对方听到的声音", "通話相手に聞こえる声", "Was andere im Anruf hören", "Lo que oyen los demás", "Що чують співрозмовники"]),
+    ("Select an effect for dictation. Play previews it without changing your call. Your voice sounds normal between dictations.", ["Wybierz efekt dyktowania. Odtwórz próbkę bez zmiany dźwięku rozmowy. Poza dyktowaniem Twój głos brzmi normalnie.", "选择听写时使用的效果。点击播放可试听，不会改变通话声音。不听写时，你的声音保持原样。", "音声入力時の効果を選びます。再生しても通話の音声は変わりません。音声入力していないときは通常の声が届きます。", "Wähle einen Effekt fürs Diktieren. Die Hörprobe ändert nichts am Anruf. Zwischen Diktaten klingt deine Stimme normal.", "Elige un efecto para el dictado. Reprodúcelo para probarlo sin cambiar la llamada. Entre dictados, tu voz suena normal.", "Виберіть ефект для диктування. Прослуховування не змінює звук виклику. Між диктуваннями ваш голос звучить як завжди."]),
+    ("Adjust effect", ["Dostosuj efekt", "调整效果", "効果を調整", "Effekt anpassen", "Ajustar efecto", "Налаштувати ефект"]),
+    ("Play original", ["Odtwórz oryginał", "播放原声", "原音を再生", "Original abspielen", "Reproducir original", "Відтворити оригінал"]),
+    ("Original", ["Oryginał", "原声", "原音", "Original", "Original", "Оригінал"]),
+    ("Select Hex Microphone as the input in your call app", ["Wybierz Hex Microphone jako wejście w aplikacji do rozmów", "在通话应用中选择 Hex Microphone 作为输入设备", "通話アプリの入力に Hex Microphone を選択", "Wähle Hex Microphone als Eingang in deiner Anruf-App", "Selecciona Hex Microphone como entrada en la aplicación de llamadas", "Виберіть Hex Microphone як вхід у програмі для викликів"]),
+    ("Hex Microphone is installed but unavailable", ["Hex Microphone jest zainstalowany, ale niedostępny", "Hex Microphone 已安装，但不可用", "Hex Microphone はインストール済みですが使用できません", "Hex Microphone ist installiert, aber nicht verfügbar", "Hex Microphone está instalado pero no está disponible", "Hex Microphone встановлено, але він недоступний"]),
+    ("Installation briefly restarts system audio", ["Instalacja na chwilę ponownie uruchomi dźwięk systemowy", "安装会短暂重启系统音频", "インストール時にシステムオーディオが一時的に再起動します", "Die Installation startet das Audiosystem kurz neu", "La instalación reinicia brevemente el audio del sistema", "Під час встановлення звук системи ненадовго перезапуститься"]),
+    ("Install Hex Microphone", ["Zainstaluj Hex Microphone", "安装 Hex Microphone", "Hex Microphone をインストール", "Hex Microphone installieren", "Instalar Hex Microphone", "Встановити Hex Microphone"]),
     ("Effect strength", ["Siła efektu", "效果强度", "エフェクトの強さ", "Effektstärke", "Intensidad del efecto", "Інтенсивність ефекту"]),
     ("Example", ["Przykład", "示例", "サンプル", "Beispiel", "Ejemplo", "Приклад"]),
     ("Experimental: Hex microphone", ["Eksperymentalne: mikrofon Hex", "实验功能：Hex 麦克风", "実験的機能: Hex マイク", "Experimentell: Hex-Mikrofon", "Experimental: micrófono Hex", "Експериментальна функція: мікрофон Hex"]),
@@ -1609,6 +1618,24 @@ mod tests {
     }
 
     #[test]
+    fn clock_times_are_twelve_hour_in_english_and_twenty_four_hour_elsewhere() {
+        super::apply(Some("en"));
+        assert_eq!(super::clock_time(13, 5), "1:05 PM");
+        assert_eq!(super::clock_time(1, 5), "1:05 AM");
+        assert_eq!(super::clock_time(0, 5), "12:05 AM");
+        assert_eq!(super::clock_time(12, 0), "12:00 PM");
+        assert_eq!(super::twelve_hour_clock(14, 30), "2:30 PM");
+        super::apply(Some("de"));
+        assert_eq!(super::clock_time(13, 5), "13:05");
+        assert_eq!(super::clock_time(1, 5), "01:05");
+        assert_eq!(super::clock_time(0, 5), "00:05");
+        assert_eq!(super::clock_time(12, 0), "12:00");
+        // Reading a title written in English works in any language.
+        assert_eq!(super::twelve_hour_clock(14, 30), "2:30 PM");
+        super::apply(Some("en"));
+    }
+
+    #[test]
     fn preferred_language_tags_reduce_to_their_primary_subtag() {
         assert_eq!(primary_subtag("pt-BR").as_deref(), Some("pt"));
         assert_eq!(primary_subtag("zh-Hans-CN").as_deref(), Some("zh"));
@@ -1653,7 +1680,9 @@ mod tests {
         include_str!("../rune_ui/fun.rs"),
         include_str!("../rune_ui/general.rs"),
         include_str!("../rune_ui/general/extra_shortcuts.rs"),
-        include_str!("../rune_ui/general/search.rs"),
+        include_str!("../rune_ui/general/page.rs"),
+        include_str!("../rune_ui/find_popover.rs"),
+        include_str!("../rune_ui/find_popover/catalog.rs"),
         include_str!("../rune_ui/history.rs"),
         include_str!("../rune_ui/history/selection.rs"),
         include_str!("../rune_ui/hud_lab.rs"),
@@ -1662,6 +1691,7 @@ mod tests {
         include_str!("../rune_ui/labs/group.rs"),
         include_str!("../rune_ui/labs/screenshots.rs"),
         include_str!("../rune_ui/labs/store.rs"),
+        include_str!("../rune_ui/labs/stop_phrase.rs"),
         include_str!("../rune_ui/labs/voice_prompt.rs"),
         include_str!("../rune_ui/linux_host.rs"),
         include_str!("../rune_ui/list_detail.rs"),

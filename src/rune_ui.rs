@@ -16,6 +16,7 @@ mod controls;
 #[cfg(target_os = "macos")]
 pub(crate) mod deep_link;
 mod explainer;
+mod find_popover;
 mod found;
 mod found_choice;
 mod fun;
@@ -72,6 +73,7 @@ mod speech_model;
 #[cfg(target_os = "macos")]
 pub(crate) mod story_link;
 mod vocabulary;
+mod whats_new;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -113,6 +115,10 @@ pub(crate) fn run_app(
     shutdown: &'static std::sync::atomic::AtomicBool,
 ) -> Result<(), String> {
     use crate::linux::service::{Activation, Control};
+    // Rune ends a quitting app with `_exit` unless it is told an app has work
+    // after the loop. Hex does: the teardown below stops a meeting recording
+    // and joins it.
+    rune::orderly_exit();
     rune::set_app_id(crate::linux::portal::APP_ID);
     let mut app = self::app(Some(host.clone()))
         .args(window_args())
@@ -177,6 +183,9 @@ pub(crate) fn run_app(
     // the error and let `run_window` report it and keep Hex running (#979).
     let result = app.try_run();
     if result.is_ok() {
+        // Quitting is marked before the stop, so a recording cannot start
+        // behind the join and one in flight keeps its longer bound.
+        crate::desktop::process_exit::begin_quitting();
         // A recording stops, keeping its audio for the next launch.
         shutdown.store(true, std::sync::atomic::Ordering::Release);
         if let Some(meetings) = meetings {
@@ -368,6 +377,7 @@ fn build(init: impl FnOnce() -> Ui + 'static, playground: PlaygroundMode) -> run
 /// Closing the window saves pending text edits and stops a shortcut
 /// recording, as leaving a pane does. Hex keeps running.
 fn on_close(ui: &mut Ui, tx: &mut Tx) {
+    find_popover::close(ui);
     ui.flush_drafts();
     settings::cancel_capture(ui);
     // A hidden window only polls when woken, so poll's visibility check
@@ -662,7 +672,7 @@ pub(crate) struct Ui {
         Option<std::sync::mpsc::Receiver<Result<crate::audio::InputDevices, String>>>,
     mic_level: general::MicLevel,
     /// General's search, while Labs › Settings search is on.
-    general_search: TextEdit,
+    find: find_popover::Find,
     /// The panes whose Advanced fold is open.
     advanced: Vec<Pane>,
     /// The Labs page shows in place of a pane.
@@ -700,7 +710,6 @@ pub(crate) struct Ui {
     platform: platform::PlatformState,
     host: platform::PlatformHost,
     meetings: meetings::MeetingsPane,
-    fun: fun::FunPane,
     activity: activity::ActivityPane,
     /// HUD Lab's preset was copied since it last changed.
     hud_copied: bool,
@@ -720,6 +729,7 @@ struct Drafts {
     modes: bool,
     vocabulary: bool,
     phrase: bool,
+    stop_phrase: bool,
     origins: bool,
 }
 
@@ -798,7 +808,7 @@ impl Ui {
             input_sources_listed_at: f64::NEG_INFINITY,
             microphones_listing: None,
             mic_level: general::MicLevel::default(),
-            general_search: TextEdit::default(),
+            find: Default::default(),
             advanced: Vec::new(),
             labs_open: false,
             lab_store: labs::Store::default(),
@@ -826,7 +836,6 @@ impl Ui {
             platform: platform::PlatformState::new(platform::Capabilities::current()),
             host: platform::PlatformHost::Local(Default::default()),
             meetings: meetings::MeetingsPane::default(),
-            fun: fun::FunPane::default(),
             activity: activity::ActivityPane::default(),
             hud_copied: false,
             hud_saved: false,
@@ -898,6 +907,10 @@ impl Ui {
             &submitted.labs.voice_prompt_phrase,
             &candidate.labs.voice_prompt_phrase,
         );
+        self.lab_store.rebase_stop_phrase(
+            &submitted.labs.stop_phrase_text,
+            &candidate.labs.stop_phrase_text,
+        );
         self.lab_store.rebase_origins(
             &submitted.labs.api_browser_origins,
             &candidate.labs.api_browser_origins,
@@ -923,6 +936,7 @@ impl Ui {
         self.modes.project(&mut candidate);
         candidate.vocabulary = self.vocabulary.project();
         self.lab_store.project_phrase(&mut candidate);
+        self.lab_store.project_stop_phrase(&mut candidate);
         self.lab_store.project_origins(&mut candidate);
         candidate
     }
@@ -936,6 +950,7 @@ impl Ui {
             modes: modes.dictation_processing != settings.dictation_processing,
             vocabulary: self.vocabulary.project() != settings.vocabulary,
             phrase: self.lab_store.phrase_dirty(settings),
+            stop_phrase: self.lab_store.stop_phrase_dirty(settings),
             origins: self.lab_store.origins_dirty(settings),
         }
     }
@@ -1130,6 +1145,19 @@ impl Ui {
                     &service.labs.voice_prompt_phrase,
                 );
             }
+            // Stop phrase's field follows its lab and its saved phrase the
+            // same way.
+            if service.labs.stop_phrase != self.settings.labs.stop_phrase {
+                self.lab_store
+                    .sync_stop_phrase(&service.labs.stop_phrase_text);
+            } else if !drafts.stop_phrase
+                && service.labs.stop_phrase_text != self.settings.labs.stop_phrase_text
+            {
+                self.lab_store.rebase_stop_phrase(
+                    &self.settings.labs.stop_phrase_text,
+                    &service.labs.stop_phrase_text,
+                );
+            }
             // The origins field follows its lab and its saved list the same
             // way; a toggled lab resyncs it, dropping a stale draft.
             if service.labs.api_browser_access != self.settings.labs.api_browser_access {
@@ -1164,6 +1192,7 @@ impl Ui {
 
     /// Closes the dialogs and sheets a pane switch or window close ends.
     fn close_dialogs(&mut self) {
+        find_popover::close(self);
         picker::close(self);
         explainer::close(self);
         sound_sets::close(self);
@@ -1182,7 +1211,6 @@ impl Ui {
         self.flush_drafts();
         settings::cancel_capture(self);
         self.open = None;
-        self.general_search.clear();
         models::close(self);
         self.close_dialogs();
         self.output.prompt_copied = false;
@@ -1209,6 +1237,13 @@ fn on_key(ui: &mut Ui, event: &rune::KeyEvent, tx: &mut Tx) -> bool {
     if settings::on_key(ui, event, tx) {
         return true;
     }
+    if ui.find.open {
+        // The popover's field and modal scope own this key, not pane shortcuts.
+        return false;
+    }
+    if find_popover::open_key(ui, event, tx) {
+        return true;
+    }
     // Labs › Playground: ⇧⌘D (Ctrl+Shift+D off macOS) opens the playground.
     if event.key == rune::Key::Command('d') && event.mods.shift && playground::enabled() {
         tx.toggle_playground();
@@ -1222,7 +1257,8 @@ fn on_key(ui: &mut Ui, event: &rune::KeyEvent, tx: &mut Tx) -> bool {
         return true;
     }
     // ⌘F (Ctrl+F off macOS) searches Labs or General.
-    if general::focus_search_key(ui, event) {
+    if ui.labs_open && ui.find.local_find_allowed(event) {
+        labs::focus_search(ui);
         return true;
     }
     if let rune::Key::Command(digit @ '1'..='9') = event.key
@@ -1470,7 +1506,7 @@ fn view(ui: &Ui, cx: &mut Cx<Ui>) -> El {
     // Menus and popovers mount above the page (rune-kit overlays).
     let mut layer = Vec::new();
     let (actions, body) = match ui.pane {
-        _ if ui.labs_open => (vec![labs::tabs(ui, p)], labs::page(ui, p, &mut layer)),
+        _ if ui.labs_open => (vec![labs::tabs(ui, p)], labs::page(ui, p, cx, &mut layer)),
         Pane::General => (Vec::new(), general::pane(ui, p, &mut layer)),
         Pane::Output => (Vec::new(), output::pane(ui, p, cx.is_reduced_motion())),
         Pane::Modes => modes::pane(ui, p, &mut layer),
@@ -1483,6 +1519,7 @@ fn view(ui: &Ui, cx: &mut Cx<Ui>) -> El {
         Pane::VoiceFilter => (Vec::new(), fun::pane(ui, p)),
         Pane::HudLab => hud_lab::pane(ui, p),
         Pane::Activity => activity::pane(ui, p),
+        Pane::WhatsNew => (Vec::new(), whats_new::feed(ui, p)),
     };
     let panel = col()
         .key("panel")
@@ -1539,6 +1576,7 @@ fn view(ui: &Ui, cx: &mut Cx<Ui>) -> El {
     if let Some(first_run) = onboarding_kit::live::overlay(ui, p, cx.is_reduced_motion()) {
         layer.push(first_run);
     }
+    find_popover::layer(ui, p, &mut layer);
     rune_kit::root(window, layer).on_window_focus(window_focused)
 }
 

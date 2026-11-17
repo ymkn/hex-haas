@@ -9,6 +9,28 @@ use serde::Deserialize;
 use serde_json::json;
 use std::sync::atomic::Ordering;
 
+#[test]
+fn old_yolo_durations_leave_the_switch_and_apps_alone() {
+    for seconds in [1, 2, 3, 5, 10] {
+        for enabled in [false, true] {
+            for apps in [vec![], vec!["Messages", "Slack"]] {
+                let (settings, repaired) = decode_value(&mut json!({"labs": {
+                    "yolo_mode": enabled, "yolo_mode_apps": apps, "yolo_mode_seconds": seconds
+                }}));
+                assert!(!repaired);
+                assert_eq!(settings.labs.yolo_mode, enabled);
+                assert_eq!(settings.labs.yolo_mode_apps, apps);
+                assert!(
+                    serde_json::to_value(&settings.labs)
+                        .unwrap()
+                        .get("yolo_mode_seconds")
+                        .is_none()
+                );
+            }
+        }
+    }
+}
+
 struct SettingsFile {
     path: PathBuf,
 }
@@ -448,6 +470,24 @@ fn an_invalid_voice_prompt_phrase_loads_the_default_and_keeps_its_switch() {
     assert_eq!(
         settings.labs.voice_prompt_phrase,
         crate::dictation::voice_prompt::DEFAULT_PHRASE
+    );
+    assert!(settings.labs.live_text);
+    assert_eq!(fs::read(&file.path).unwrap(), original);
+    assert!(file.backups().is_empty());
+}
+
+#[test]
+fn an_invalid_stop_phrase_loads_the_default_and_keeps_its_switch() {
+    let original = br#"{"labs":{"stop_phrase":true,"stop_phrase_text":"nope","live_text":true}}"#;
+    let file = SettingsFile::new(original);
+    let settings = AppSettings::load_from(&file.path).unwrap();
+    assert!(
+        settings.labs.stop_phrase,
+        "the switch stays as saved; only the phrase falls back"
+    );
+    assert_eq!(
+        settings.labs.stop_phrase_text,
+        crate::dictation::stop_phrase::DEFAULT_PHRASE
     );
     assert!(settings.labs.live_text);
     assert_eq!(fs::read(&file.path).unwrap(), original);

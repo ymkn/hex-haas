@@ -76,11 +76,11 @@ impl Feature {
             | Self::VoiceFilter
             | Self::HideMenuBarIcon
             | Self::QuitClosesWindow
-            | Self::SettingsSearch
             | Self::Appearance
             | Self::ReleaseNotesLink
             | Self::SpeakersOnly
-            | Self::Playground => Group::Dictation,
+            | Self::Playground
+            | Self::StopPhrase => Group::Dictation,
             Self::SmartSpacing
             | Self::SpokenFormatting
             | Self::SpokenSymbols
@@ -109,18 +109,8 @@ impl Feature {
             | Self::CopyDictationAudio => Group::History,
             Self::Meetings
             | Self::LiveChapters
-            | Self::SubtitleExport
-            | Self::StopWhenCallEnds
-            | Self::MovableMeetingCapsules
-            | Self::MeetingNotesVocabulary
-            | Self::MeetingFinishedEvent
-            | Self::FollowLiveTranscript
-            | Self::MoreCallApps
             | Self::GnomeMeetingCapsules
             | Self::MeetingImport
-            | Self::MeetingDescriptiveFilenames
-            | Self::MeetingNotesFile
-            | Self::ExpireMeetingAudio
             | Self::CalendarMenu => Group::Meetings,
             Self::Screenshots
             | Self::AnnotateReplay
@@ -138,7 +128,8 @@ impl Feature {
             | Self::MicrophoneKeyAlone
             | Self::ShareShortcut
             | Self::CapsLockDictation
-            | Self::PauseMenu => Group::Shortcuts,
+            | Self::PauseMenu
+            | Self::HoldThroughKeys => Group::Shortcuts,
             Self::KeyboardModelSwitching
             | Self::AppModelSwitching
             | Self::UnloadIdle

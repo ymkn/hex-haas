@@ -35,7 +35,6 @@ impl Feature {
             | Self::SpokenFormatting
             | Self::FillerWords
             | Self::CleanUpWithAppleIntelligence
-            | Self::SubtitleExport
             | Self::SecondDictationShortcut
             | Self::TerminalPasteShortcut
             | Self::SmartSpacing
@@ -51,7 +50,6 @@ impl Feature {
             | Self::HistoryMultiSelect
             | Self::RecentDictations
             | Self::SkipPauses
-            | Self::StopWhenCallEnds
             | Self::OutputFixes
             | Self::PickerActiveFirst
             | Self::ModelInPlace
@@ -60,24 +58,15 @@ impl Feature {
             | Self::SectionKeyAlone
             | Self::MicrophoneKeyAlone
             | Self::KeepRecordings
-            | Self::SettingsSearch
             | Self::Appearance
             | Self::ReleaseNotesLink
             | Self::HideMenuBarIcon
-            | Self::MovableMeetingCapsules
             | Self::GnomeClipboardRestore
             | Self::TypedText
-            | Self::MeetingNotesVocabulary
-            | Self::MeetingFinishedEvent
             | Self::GnomeMeetingCapsules
             | Self::Screenshots
-            | Self::FollowLiveTranscript
-            | Self::MoreCallApps
             | Self::AnnotateReplay
             | Self::MeetingImport
-            | Self::MeetingDescriptiveFilenames
-            | Self::MeetingNotesFile
-            | Self::ExpireMeetingAudio
             | Self::NotchIndicator
             | Self::QuitClosesWindow
             | Self::GnomeAnnotate
@@ -96,7 +85,9 @@ impl Feature {
             | Self::YoloMode
             | Self::CursorContext
             | Self::MoreDictationShortcuts
-            | Self::CopyDictationAudio => Audience::Everyone,
+            | Self::CopyDictationAudio
+            | Self::StopPhrase
+            | Self::HoldThroughKeys => Audience::Everyone,
         }
     }
 
@@ -119,7 +110,6 @@ impl Feature {
             | Self::CopyOnly
             | Self::SpokenFormatting
             | Self::FillerWords
-            | Self::SubtitleExport
             | Self::SecondDictationShortcut
             | Self::SmartSpacing
             | Self::SpokenSymbols
@@ -132,29 +122,19 @@ impl Feature {
             | Self::HistoryStats
             | Self::RecentDictations
             | Self::SkipPauses => 20261101,
-            Self::StopWhenCallEnds
-            | Self::OutputFixes
+            Self::OutputFixes
             | Self::PickerActiveFirst
             | Self::ModelInPlace
             | Self::PickerDownloaded
             | Self::SectionKeyAlone
             | Self::KeepRecordings
             | Self::HideMenuBarIcon => 20261102,
-            Self::MovableMeetingCapsules
-            | Self::GnomeClipboardRestore
-            | Self::MeetingNotesVocabulary
-            | Self::NotchIndicator => 20261103,
-            Self::MeetingFinishedEvent
-            | Self::GnomeMeetingCapsules
-            | Self::Screenshots
-            | Self::FollowLiveTranscript
-            | Self::AnnotateReplay => 20261104,
-            Self::MoreCallApps | Self::SettingsSearch | Self::MeetingImport => 20261106,
+            Self::GnomeClipboardRestore | Self::NotchIndicator => 20261103,
+            Self::GnomeMeetingCapsules | Self::Screenshots | Self::AnnotateReplay => 20261104,
+            Self::MeetingImport => 20261106,
             Self::LiveTyping
-            | Self::MeetingDescriptiveFilenames
             | Self::QuitClosesWindow
             | Self::CapsLockDictation
-            | Self::ExpireMeetingAudio
             | Self::FailureNotices
             | Self::TypedText => 20261107,
             Self::GnomeAnnotate
@@ -166,7 +146,6 @@ impl Feature {
             | Self::DoubleTapModifiers
             | Self::ReturnToApp
             | Self::SpeakersOnly
-            | Self::MeetingNotesFile
             | Self::MoreDictationShortcuts => 20261109,
             Self::AppModelSwitching
             | Self::ApiTimestamps
@@ -184,6 +163,7 @@ impl Feature {
             | Self::CleanUpWithAppleIntelligence => 20261113,
             Self::CalendarMenu => 20261114,
             Self::CopyDictationAudio | Self::MicrophoneKeyAlone => 20261115,
+            Self::StopPhrase | Self::HoldThroughKeys => 20261116,
         }
     }
 
@@ -207,11 +187,14 @@ impl Feature {
         if key == "labs.keep_microphone_open_seconds" {
             return Some(Self::KeepMicrophoneOpen);
         }
-        if key == "labs.yolo_mode_seconds" || key == "labs.yolo_mode_apps" {
+        if key == "labs.yolo_mode_apps" {
             return Some(Self::YoloMode);
         }
         if key == "labs.voice_prompt_phrase" {
             return Some(Self::VoicePrompt);
+        }
+        if key == "labs.stop_phrase_text" {
+            return Some(Self::StopPhrase);
         }
         if key == "labs.caps_lock_light" {
             return Some(Self::CapsLockDictation);
@@ -260,13 +243,7 @@ impl Feature {
         const WINDOWS_LINUX: &[Os] = &[Os::Windows, Os::Linux];
         const EVERY: &[Os] = &[Os::Macos, Os::Windows, Os::Linux];
         match self {
-            Self::Meetings
-            | Self::LiveChapters
-            | Self::SubtitleExport
-            | Self::StopWhenCallEnds
-            | Self::MovableMeetingCapsules
-            | Self::KQuantModels
-            | Self::MeetingImport => MACOS,
+            Self::Meetings | Self::LiveChapters | Self::KQuantModels | Self::MeetingImport => MACOS,
             Self::VoiceFilter => MACOS_LINUX,
             Self::TerminalPaste | Self::ShareShortcut | Self::OpenCodeInWsl => WINDOWS,
             Self::SectionKeyAlone => MACOS_LINUX,
@@ -298,6 +275,7 @@ impl Feature {
             | Self::CalendarMenu => MACOS,
             Self::CleanUpWithAppleIntelligence => MACOS,
             Self::CopyOnly => MACOS_WINDOWS,
+            Self::HoldThroughKeys => MACOS_WINDOWS,
             Self::ReturnToApp => MACOS,
             Self::TapOrHold => MACOS_LINUX,
             Self::AppModelSwitching => MACOS_WINDOWS,
@@ -324,14 +302,6 @@ impl Feature {
             | Self::ModelInPlace
             | Self::PickerDownloaded
             | Self::KeepRecordings
-            | Self::MeetingNotesVocabulary
-            | Self::MeetingFinishedEvent
-            | Self::MeetingDescriptiveFilenames
-            | Self::MeetingNotesFile
-            | Self::FollowLiveTranscript
-            | Self::MoreCallApps
-            | Self::ExpireMeetingAudio
-            | Self::SettingsSearch
             | Self::Appearance
             | Self::ReleaseNotesLink
             | Self::FillerWords
@@ -343,7 +313,8 @@ impl Feature {
             | Self::SpeakersOnly
             | Self::ShellCompletions
             | Self::YoloMode
-            | Self::CopyDictationAudio => EVERY,
+            | Self::CopyDictationAudio
+            | Self::StopPhrase => EVERY,
         }
     }
 
@@ -373,7 +344,6 @@ impl Feature {
             Self::SpokenFormatting => "spoken-formatting",
             Self::FillerWords => "filler-words",
             Self::CleanUpWithAppleIntelligence => "clean-up-apple-intelligence",
-            Self::SubtitleExport => "subtitle-export",
             Self::SecondDictationShortcut => "second-dictation-shortcut",
             Self::TerminalPasteShortcut => "terminal-paste-shortcut",
             Self::SmartSpacing => "smart-spacing",
@@ -389,7 +359,6 @@ impl Feature {
             Self::HistoryMultiSelect => "history-multi-select",
             Self::RecentDictations => "recent-dictations",
             Self::SkipPauses => "skip-pauses",
-            Self::StopWhenCallEnds => "stop-when-call-ends",
             Self::OutputFixes => "output-fixes",
             Self::PickerActiveFirst => "picker-active-first",
             Self::ModelInPlace => "model-in-place",
@@ -398,27 +367,18 @@ impl Feature {
             Self::SectionKeyAlone => "section-key",
             Self::MicrophoneKeyAlone => "microphone-key",
             Self::KeepRecordings => "keep-recordings",
-            Self::SettingsSearch => "settings-search",
             Self::Appearance => "appearance",
             Self::ReleaseNotesLink => "release-notes-link",
             Self::HideMenuBarIcon => "hide-menu-bar-icon",
-            Self::MovableMeetingCapsules => "movable-meeting-capsules",
             Self::GnomeClipboardRestore => "gnome-clipboard-restore",
             Self::TypedText => "typed-text",
-            Self::MeetingNotesVocabulary => "meeting-notes-vocabulary",
             Self::NotchIndicator => "notch-indicator",
-            Self::MeetingFinishedEvent => "meeting-finished-event",
             Self::GnomeMeetingCapsules => "gnome-meeting-capsules",
             Self::GnomeAnnotate => "gnome-annotate",
             Self::Screenshots => "screenshots",
-            Self::FollowLiveTranscript => "follow-live-transcript",
-            Self::MoreCallApps => "more-call-apps",
             Self::AnnotateReplay => "annotate-replay",
             Self::MeetingImport => "meeting-import",
-            Self::MeetingDescriptiveFilenames => "meeting-descriptive-filenames",
-            Self::MeetingNotesFile => "meeting-notes-file",
             Self::QuitClosesWindow => "quit-closes-window",
-            Self::ExpireMeetingAudio => "expire-meeting-audio",
             Self::CapsLockDictation => "caps-lock-dictation",
             Self::OpenCodeInWsl => "opencode-in-wsl",
             Self::ApiProcessing => "api-processing",
@@ -435,6 +395,8 @@ impl Feature {
             Self::CalendarMenu => "calendar-menu",
             Self::MoreDictationShortcuts => "more-dictation-shortcuts",
             Self::CopyDictationAudio => "copy-dictation-audio",
+            Self::StopPhrase => "stop-phrase",
+            Self::HoldThroughKeys => "hold-through-keys",
         }
     }
 
@@ -464,7 +426,6 @@ impl Feature {
             Self::SpokenFormatting => "labs.spoken_formatting",
             Self::FillerWords => "labs.filler_words",
             Self::CleanUpWithAppleIntelligence => "labs.clean_up_with_apple_intelligence",
-            Self::SubtitleExport => "labs.subtitle_export",
             Self::SecondDictationShortcut => "labs.second_dictation_shortcut",
             Self::TerminalPasteShortcut => "labs.terminal_paste_shortcut",
             Self::SmartSpacing => "labs.smart_spacing",
@@ -480,7 +441,6 @@ impl Feature {
             Self::HistoryMultiSelect => "labs.history_multi_select",
             Self::RecentDictations => "labs.recent_dictations",
             Self::SkipPauses => "labs.skip_pauses",
-            Self::StopWhenCallEnds => "labs.stop_when_call_ends",
             Self::OutputFixes => "labs.output_fixes",
             Self::PickerActiveFirst => "labs.picker_active_first",
             Self::ModelInPlace => "labs.model_in_place",
@@ -489,27 +449,18 @@ impl Feature {
             Self::SectionKeyAlone => "labs.section_key_alone",
             Self::MicrophoneKeyAlone => "labs.microphone_key",
             Self::KeepRecordings => "labs.keep_recordings",
-            Self::SettingsSearch => "labs.settings_search",
             Self::Appearance => "labs.appearance",
             Self::ReleaseNotesLink => "labs.release_notes_link",
             Self::HideMenuBarIcon => "labs.hide_menu_bar_icon",
-            Self::MovableMeetingCapsules => "labs.movable_meeting_capsules",
             Self::GnomeClipboardRestore => "labs.gnome_clipboard_restore",
             Self::TypedText => "labs.typed_text",
-            Self::MeetingNotesVocabulary => "labs.meeting_notes_vocabulary",
             Self::NotchIndicator => "labs.notch_indicator",
-            Self::MeetingFinishedEvent => "labs.meeting_finished_event",
             Self::GnomeMeetingCapsules => "labs.gnome_meeting_capsules",
             Self::GnomeAnnotate => "labs.gnome_annotate",
             Self::Screenshots => "labs.screenshots",
-            Self::FollowLiveTranscript => "labs.follow_live_transcript",
-            Self::MoreCallApps => "labs.more_call_apps",
             Self::AnnotateReplay => "labs.annotate_replay",
             Self::MeetingImport => "labs.meeting_import",
-            Self::MeetingDescriptiveFilenames => "labs.meeting_descriptive_filenames",
-            Self::MeetingNotesFile => "labs.meeting_notes_file",
             Self::QuitClosesWindow => "labs.quit_closes_window",
-            Self::ExpireMeetingAudio => "labs.expire_meeting_audio",
             Self::CapsLockDictation => "labs.caps_lock_dictation",
             Self::OpenCodeInWsl => "labs.opencode_in_wsl",
             Self::ApiProcessing => "labs.api_processing",
@@ -526,6 +477,8 @@ impl Feature {
             Self::CalendarMenu => "labs.calendar_menu",
             Self::MoreDictationShortcuts => "labs.more_dictation_shortcuts",
             Self::CopyDictationAudio => "labs.copy_dictation_audio",
+            Self::StopPhrase => "labs.stop_phrase",
+            Self::HoldThroughKeys => "labs.hold_through_keys",
         }
     }
 

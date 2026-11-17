@@ -18,8 +18,7 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, GetMessageW, HC_ACTION, KBDLLHOOKSTRUCT, LLKHF_EXTENDED, LLKHF_INJECTED, MSG,
     MSLLHOOKSTRUCT, PM_NOREMOVE, PeekMessageW, PostThreadMessageW, SetWindowsHookExW,
-    UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP, WM_QUIT, WM_SYSKEYDOWN,
-    WM_SYSKEYUP,
+    UnhookWindowsHookEx, WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP, WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP,
 };
 
 use crate::app_settings::{HotkeyBinding, HotkeyKey, HotkeyModifiers, ModifierSide};
@@ -28,6 +27,7 @@ use crate::dictation::DictationFlavour;
 use crate::dictation::ShortcutMode;
 
 mod modifiers;
+mod rearm;
 
 use self::modifiers::ModifierState;
 
@@ -299,6 +299,10 @@ struct CaptureState {
     second_tap: bool,
     recording: bool,
     last_release_ms: Option<u32>,
+    /// When the held press that records began, from the hook's tick count:
+    /// a key joining it a second or more later is the app's (Labs › Hold
+    /// through other keys).
+    pressed_at_ms: Option<u32>,
     /// Every press acts as the second tap of a double-tap: releasing it
     /// locks the capture, and the next press finishes it.
     toggle: bool,
@@ -307,6 +311,7 @@ struct CaptureState {
 }
 
 mod commands;
+mod hold_through;
 
 impl CaptureState {
     /// Whether another shortcut owns a capture in progress.
@@ -351,6 +356,7 @@ impl CaptureState {
             return None;
         }
         self.recording = true;
+        self.pressed_at_ms = Some(timestamp_ms);
         Some(HotkeyAction::Start)
     }
 
@@ -372,21 +378,6 @@ impl CaptureState {
         }
         self.recording = false;
         Some(HotkeyAction::Finish)
-    }
-
-    /// Another key joined a held modifier-only shortcut: it was a chord
-    /// meant for another application. Only a recording capture reports
-    /// it, since a bare cancel also cancels the newest unfinished job.
-    fn interrupt(&mut self) -> Option<HotkeyAction> {
-        if !self.active {
-            return None;
-        }
-        let recording = self.recording;
-        self.active = false;
-        self.second_tap = false;
-        self.recording = false;
-        self.last_release_ms = None;
-        recording.then_some(HotkeyAction::Cancel)
     }
 
     /// Whether Toggle's cancel shortcut is Hex's now: only while a toggled
@@ -682,9 +673,8 @@ fn run_hook(mut initial: CallbackState, ready: SyncSender<Result<u32, String>>) 
         *state = Some(initial);
     }
 
-    let hook =
-        unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_hook), ptr::null_mut(), 0) };
-    if hook.is_null() {
+    let hooks = rearm::KeyboardHooks::install();
+    if hooks.keyboard().is_null() {
         CALLBACK_STATE
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -698,9 +688,7 @@ fn run_hook(mut initial: CallbackState, ready: SyncSender<Result<u32, String>>) 
     let mouse = unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook), ptr::null_mut(), 0) };
     if mouse.is_null() {
         let error = std::io::Error::last_os_error();
-        unsafe {
-            UnhookWindowsHookEx(hook);
-        }
+        hooks.uninstall();
         CALLBACK_STATE
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -711,8 +699,8 @@ fn run_hook(mut initial: CallbackState, ready: SyncSender<Result<u32, String>>) 
         return;
     }
     if ready.send(Ok(thread_id)).is_err() {
+        hooks.uninstall();
         unsafe {
-            UnhookWindowsHookEx(hook);
             UnhookWindowsHookEx(mouse);
         }
         CALLBACK_STATE
@@ -734,11 +722,12 @@ fn run_hook(mut initial: CallbackState, ready: SyncSender<Result<u32, String>>) 
             ));
             break;
         }
+        rearm::KeyboardHooks::on_message(&message);
     }
     unsafe {
-        UnhookWindowsHookEx(hook);
         UnhookWindowsHookEx(mouse);
     }
+    hooks.uninstall();
     CALLBACK_STATE
         .lock()
         .unwrap_or_else(|error| error.into_inner())
@@ -1112,11 +1101,16 @@ fn process_button(vk: u32, is_down: bool, time: u32) -> Disposition {
                 // the app (#786).
             } else if !modifier_event {
                 // A key or button joining a held modifier-only shortcut makes
-                // a chord meant for another application, such as Alt+Tab.
+                // a chord meant for another application, such as Alt+Tab,
+                // unless Labs › Hold through other keys keeps the long hold
+                // and leaves the key to the app in front.
                 if is_down
                     && state.trigger_vk.is_none()
                     && state.capture.active
                     && state.capture.flavour.normal()
+                    && !state
+                        .capture
+                        .holds_through_joining_keys(crate::labs::hold_through_keys(), time)
                 {
                     state.dirty = true;
                     if let Some(action) = state.capture.interrupt() {
@@ -1987,6 +1981,34 @@ mod tests {
                 Some(HotkeyAction::Start)
             );
         }
+    }
+
+    /// Labs › Stop phrase ends only a hands-free capture, as the shortcut's
+    /// finishing press would; a held press records on.
+    #[test]
+    fn a_stop_phrase_finishes_only_a_hands_free_capture() {
+        let mut idle = CaptureState::default();
+        assert!(!idle.finish_hands_free());
+
+        // A held press is speech, not a finish.
+        let mut held = CaptureState::default();
+        assert_eq!(held.press(true, false, 100), Some(HotkeyAction::Start));
+        assert!(!held.finish_hands_free());
+        assert!(held.active && held.recording);
+
+        // A Toggle press released locks, and the phrase ends that capture.
+        let mut locked = CaptureState {
+            toggle: true,
+            ..CaptureState::default()
+        };
+        assert_eq!(locked.press(true, false, 100), Some(HotkeyAction::Start));
+        assert_eq!(locked.release(true, 140), None);
+        assert!(locked.locked);
+        assert!(locked.finish_hands_free());
+        assert!(!locked.locked && !locked.recording);
+        assert!(!locked.finish_hands_free(), "a capture finishes once");
+        // The next press starts a fresh capture, as after a finishing press.
+        assert_eq!(locked.press(true, false, 5_000), Some(HotkeyAction::Start));
     }
 
     #[test]

@@ -47,7 +47,8 @@ a stable build with the driver keeps its pane for Uninstall alone), Playground
 language (#216), Mouse shortcuts (#209, macOS), Also pause the browser (#301,
 macOS), Share dictation shortcut (#176, Windows), Unload model when idle
 (#442), Smaller model files (macOS), Terminal paste (Windows), Terminal
-paste shortcut (Windows, Linux), and Microphone key alone (#181, macOS).
+paste shortcut (Windows, Linux), Stop phrase, Hold through other keys
+(macOS and Windows), and Microphone key alone (#181, macOS).
 Externally contributed features land there too.
 Every `Everyone` lab also gets a page on Hex's website,
 `anoma.ly/hex/labs/<id>` (index at `/hex/labs`), built from
@@ -537,7 +538,12 @@ substitute for source inspection or a second roadmap.
 - `meeting/transcript`: streaming 16 kHz resampling, short pause-aware
   overlapping chunks transcribed as background work on the dictation engine's
   loaded model (a process without the engine, such as the CLI, loads its own),
-  seam deduplication, echo suppression, the rolling in-call transcript and its
+  microphone chunks raised to the models' level only while the track stayed
+  under -35 dBFS across its last minute, so a microphone is left as captured
+  within a minute of its own normal-level speech, while its background and
+  speaker leakage before the first word or after a quiet minute can be
+  raised (the recording and echo envelopes keep the captured audio), seam
+  deduplication, echo suppression, the rolling in-call transcript and its
   `TranscriptReader`, and Markdown rendering.
 - `meeting/echo`: 20 ms energy envelopes of both tracks and the signal-level
   bleed/local classification of microphone segments.
@@ -619,7 +625,10 @@ substitute for source inspection or a second roadmap.
   `capture_host::pixels_per_point`. Hex's `Host`,
   `ConfigSource`, and Parakeet or Apple `Transcriber` for the engine, the
   listener-owned `CaptureHost` behind `hex capture` and the capture shortcut,
-  its 16 kHz gap-padded timeline handed to the engine as `AudioIn::External`,
+  its 16 kHz gap-padded timeline streamed to `audio.wav.partial` as it records,
+  renamed to `audio.wav` only once its build writes the capture's
+  `unfinished.json`, and handed to the engine as
+  `AudioIn::External`,
   the tap's pointer input forwarded to `Capture::input()`, Scrawl.app
   coexistence, the retention thread, and the `CaptureSnapshot` every view
   reads (`capture_host::snapshot`/`watch`, published on each change, so a
@@ -850,10 +859,18 @@ CoreAudio formats, AppleScript details, or event serialization.
   to grow it, and the stop tone cannot: speech must also be heard once the
   tone's own length plus 60 ms has passed. The event timestamp is never moved;
   the hold threshold uses it alone. The audio owner waits at most the base tail
-  plus 100 ms, or 600 ms plus 100 ms once speech grows it, and a stream stall,
-  failure, or gap in the tail finishes with the audio already delivered instead
-  of failing the capture. Escape, short taps, programmatic stops, and meetings
-  get no tail. A press during the tail is handled after the old clip finishes.
+  plus 100 ms, or 600 ms plus 100 ms once speech grows it, though deciding a
+  tone-masked tail keeps capture (and only capture) running until that
+  decision; the live stream is capped at the event plus `POST_RELEASE_TAIL`
+  when the finish begins, so the part of the tail audio the clip keeps is fed
+  from the finished clip and the rest is trimmed. A release handled late can
+  still have fed the stream past
+  the clip's trimmed end before the finish began, which `MAX_OVERFED_SAMPLES`
+  tolerates. A stream
+  stall, failure, or gap in the tail finishes with the audio already delivered
+  instead of failing the capture. Escape, short taps, programmatic stops, and
+  meetings get no tail. A press during the tail is handled after the old clip
+  finishes.
 - Active dictation capture is lossless with respect to event, UI,
   context, and worker stalls.
 - The dictation shortcut has a persisted `shortcut_mode`: `hold` (default)
@@ -863,9 +880,16 @@ CoreAudio formats, AppleScript details, or event serialization.
 - Streaming dictation is speculative on every OS: a hotkey capture's stream
   receives the capture's 16 kHz audio with each pause cut to its first 2.5 s
   and last 0.3 s (Parakeet drops words after pauses past its left context),
-  the finish always carries the complete clip, and a failed, empty, overfed, late, or interrupted stream
-  falls back to the whole clip, as does one whose text ends well before the
-  speech it heard (a dropped late phrase, #1101). Nothing pastes or reaches the focused app
+  and a finish caps live feeding at the release plus `POST_RELEASE_TAIL`: the
+  rest of the clip (a grown tail, the wait for the stop tone) is fed only once
+  the clip exists, and audio that arrived before the finish began is what
+  `MAX_OVERFED_SAMPLES` tolerates. The finish
+  always carries the complete clip, and a failed, empty, overfed, late, or
+  interrupted stream falls back to the whole clip, as does one whose text ends
+  well before the speech it heard (a dropped late phrase, #1101) or one whose
+  text starts well after speech it heard outside the capture's own sounds at
+  the head (a likely lost opening; the pre-roll and the start tone are
+  excluded). Nothing pastes or reaches the focused app
   before the final text. With Labs › Live text on, a hotkey capture's
   stream publishes its provisional text for Hex's own HUD only; it is never
   pasted, copied, or kept in History or Paste Last. One engine thread runs every inference because a live
@@ -982,8 +1006,9 @@ CoreAudio formats, AppleScript details, or event serialization.
   time limit to the desktop portal's advertised budget, which can be zero, and
   the kernel then kills Hex. Hex never takes realtime scheduling through the
   portal or rtkit.
-- Feedback volume is persisted from zero through one; zero disables tones.
-  Volume changes apply immediately and preview one recording-start tone.
+- Sound volume Off silences automatic tones and the slider. Explicit Sounds
+  sheet previews use the default level while Off, without changing the setting.
+  Nonzero volume changes apply immediately and preview one recording-start tone.
 - Launch at Login uses `SMAppService` for the signed main app. Treat both
   `NotRegistered` and `NotFound` as disabled before registration, represent
   `RequiresApproval` with a link to Login Items settings, and poll macOS as the
@@ -1023,9 +1048,15 @@ CoreAudio formats, AppleScript details, or event serialization.
   native Rust and never touch the script engine.
 - Clipboard insertion is the fixed text-insertion path. Restore the previous
   clipboard only if no newer paste or external clipboard change superseded it.
-  The one exception: on macOS, a frontmost app embedding Chromium 155 or 156
+  The first exception: on macOS, a frontmost app embedding Chromium 155 or 156
   (read from its bundle's framework version) gets the text typed, because
   those versions can drop a ⌘V that races their pasteboard notification.
+  A second exception on macOS: Microsoft's Windows App
+  (`com.microsoft.rdc.macos`, `com.microsoft.windowsapp`) gets the text typed
+  one paced key at a time, because that client reads a synthetic ⌘V as a bare
+  "v" (#1048). Typing stops between characters once another app is in front.
+  Neither publishes or restores the clipboard; Labs › Keep dictation on
+  clipboard still writes the typed text to it.
 - Dictate without processing (`raw_dictation_hotkey`, Output pane) is
   unbound by default and registers, grabs, or reserves nothing until bound
   (on Linux a portal entry and X11 grab exist only while bound). It follows
@@ -1086,7 +1117,9 @@ CoreAudio formats, AppleScript details, or event serialization.
   offer that times out only closes. Release builds keep the meeting controller
   idle, without inspecting microphone activity, until the user opts in. When the
   detected call app leaves the microphone, offer `Keep Recording` or
-  `Stop & Transcribe`; never stop automatically. An active recording stays
+  `Stop & Transcribe`; never stop automatically, except a recording Hex
+  started on its own while `meetings.stop_when_call_ends` (Detected calls ›
+  Stop when the call ends, default off) is on. An active recording stays
   visible and stoppable from the menu bar without the Settings window.
 - Calendar access is asked for only by Meetings › Settings' Connect calendar, never at
   launch, and only with Meetings on; Meetings off means no EventKit reads and
@@ -1138,10 +1171,10 @@ CoreAudio formats, AppleScript details, or event serialization.
   utility-QoS thread that yields to dictation, within a bounded chunk count and
   total deadline. Failures record `notes_error` and leave the Markdown
   untouched. Notes rewrite only the heading Hex wrote and the
-  `<!-- hex:notes -->` block. With Labs › Descriptive meeting file names on,
-  notes or chapter refinement that change the title, and user renames, also
-  rename the exported Markdown to the new title, keeping its date and time
-  prefix and never overwriting.
+  `<!-- hex:notes -->` block. With Meetings › Settings › Export › Descriptive
+  meeting file names on, notes or chapter refinement that change the title,
+  and user renames, also rename the exported Markdown to the new title,
+  keeping its date and time prefix and never overwriting.
 - Annotate (captures; `hex annotate`, alias `hex capture`) is compiled into
   every macOS, Linux, and Windows build and on by default in every build,
   stable included (`capture.enabled`, the pane's switch; the `annotate-on-by-default`
@@ -1287,7 +1320,7 @@ CoreAudio formats, AppleScript details, or event serialization.
   to the Trash (never `rm`), after a two-step confirmation, and is refused while
   it records, transcribes, or writes notes. Renaming rewrites the manifest and
   only a Markdown heading that still reads the previous title; files keep
-  their names unless Labs › Descriptive meeting file names is on, which renames
+  their names unless Export › Descriptive meeting file names is on, which renames
   the exported Markdown to the new title, keeping its date and time prefix and
   never overwriting.
 - Meeting data is a liability: until the user chooses a `meetings.retention`,

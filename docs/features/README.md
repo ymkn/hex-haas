@@ -36,12 +36,11 @@ Meetings, Annotate, Shortcuts, Models) with only this OS's labs.
 Its Sort and filter models toggle (off by default) adds a sort and a saved-language filter to the
 Local transcription picker (#645); its Benchmark details toggle (off by
 default) shows each model's raw WER or CER with its language, dataset, source,
-and conditions (#647); its Settings search toggle (off by default) puts a
-search field at the top of General that filters its rows; its Release notes
+and conditions (#647); its Release notes
 link toggle (off by default) puts a link to this build's release notes in the
 sidebar footer; its Appearance toggle (off by default) forces the main window
-light or dark instead of following the OS, while the HUD and other overlays
-keep following it; its Screen vocabulary
+light or dark instead of following the OS. The dictation HUD and meeting
+recording pill always stay dark; other overlays follow the OS; its Screen vocabulary
 toggle (off by default, macOS) uses names and terms visible in the focused
 window as temporary vocabulary for each dictation, read locally through
 Accessibility and never saved ([vocabulary.md](vocabulary.md)). Its Rewrite
@@ -60,7 +59,9 @@ Russian system language (#1317). None of these has had a native speaker's
 review yet. It offers 简体中文 (`zh`) and 繁體中文 (`zh-Hant`, #944);
 Traditional Chinese is drafted from the Simplified strings by a character and
 Taiwan-usage phrase converter (`desktop/i18n/traditional_chinese.rs`), not yet
-reviewed by a native speaker.
+reviewed by a native speaker. Meeting times in the Meetings pane, the macOS
+calendar card, and the exported transcript and notes are 12-hour ("2:30 PM")
+in English and 24-hour ("14:30") in every other interface language.
 The [vocabulary](vocabulary.md) biases transcription toward names you list.
 [Your own speech models](own-models.md) covers adding a GGUF file and using
 models another app already downloaded; its Labs › Smaller model files toggle
@@ -394,7 +395,8 @@ Choose a supported language              // setup.language-conditioning; macOS +
 ├── Norwegian -> NB-Whisper Medium, always with the `no` hint (Bokmål is all
 │   Hex measured); stock Whisper turbo also offers it (#1150)
 ├── Bangla -> Whisper only, with the `bn` hint; Auto lets Whisper guess per clip
-└── Khmer -> Whisper only, with the `km` hint; Auto lets Whisper guess per clip
+├── Khmer -> Whisper only, with the `km` hint; Auto lets Whisper guess per clip
+└── Azerbaijani -> Whisper only, with the `az` hint; Auto lets Whisper guess per clip
 ```
 
 Whisper and Qwen3-ASR (including QwenCleo) read the shared
@@ -540,6 +542,14 @@ choice and a system whose first preferred language is Khmer starts on Whisper.
 recommendation, the `km` hint, that Whisper's picker offers it, and that
 Qwen3-ASR rejects it. It runs no inference, and Khmer accuracy has not been
 measured.
+
+Azerbaijani (`az`) is offered because Whisper large-v3-turbo was trained on it
+and no other available catalog model supports it, so Whisper is its only,
+recommended choice and a system whose first preferred language is Azerbaijani
+starts on Whisper. `azerbaijani_is_transcribed_by_whisper_with_its_language_hint`
+checks the recommendation, the `az` hint, that Whisper's picker offers it, and
+that Qwen3-ASR rejects it. It runs no inference, and Azerbaijani accuracy has
+not been measured.
 
 Checks start in [desktop/onboarding.rs](../../src/desktop/onboarding.rs),
 [transcription.rs](../../src/transcription.rs), and
@@ -964,6 +974,26 @@ An optimized isolated harness using the production reader and a synthetic
 254 ms before and 222 ms after. This is reader evidence, not a native Settings
 latency measurement.
 
+## Find a setting or lab
+
+```ts
+Focused Hex window → ⌘K (Ctrl+K off macOS; ⌘F / Ctrl+F also works on General)
+├── Type a title, description or breadcrumb → one list of settings and Labs cards
+├── ↑ / ↓, then Return, or click → reveal and focus the control; no value changes
+│   ├── General › Advanced → unfold in this window only
+│   └── Labs → show the destination’s group and outline its card, without opting in
+└── Escape or press outside → close and restore focus
+```
+
+The [destination list](../../src/rune_ui/find_popover/catalog.rs) covers the
+ordinary General controls (including shortcut bindings, microphone, speech
+model and language, sound, HUD and application preferences), Output’s raw
+dictation shortcut, and every available unlocked Labs card, including Annotate.
+It does not index values, history, transcripts, files, commands, model choices,
+per-device mappings, per-app rules, inline lab controls, diagnostic or
+permission notices, or the contents of other panes. A focused editor, shortcut
+recorder, onboarding or another modal keeps its keys. Labs keeps its own ⌘F.
+
 ## Adjust Behavior
 
 ```ts
@@ -971,8 +1001,10 @@ Sidebar                                  // settings.nav
 ├── General, Output, History, then each feature that is on: Captures
 │   (Labs › Screenshots, macOS), Meetings and Voice Filter (Labs toggles),
 │   Annotate, Playground (Labs, an item)
-└── Labs -> a store of unfinished features, each off by default: search, categories, cards with their own settings inline; hex://labs/<feature> opens its group and scrolls to its card (labs.md)
-    // Command-1…9 follow the panes' order (labs::order)
+├── Labs -> a store of unfinished features, each off by default: search, categories, cards with their own settings inline; hex://labs/<feature> opens its group and scrolls to its card (labs.md)
+└── What’s new -> recent features and their controls; Down from Labs selects it
+    // Version, update actions, and Quit (Linux and Windows) are outside the navigation list
+    // Command-1…9 follow the main panes' order (labs::order)
 
 General                                  // settings
 ├── Basics card -> Shortcut, Speech model, Language, Microphone, Launch at login
@@ -1068,7 +1100,7 @@ General                                  // settings
 │       ├── Turning it on without System Audio Recording -> ask now, never while dictating
 │       ├── On -> Screen & System Audio Recording row: Allow / waiting / Allowed
 │       └── Dictation -> browser_media sequence below
-├── Sound volume -> slider 0-100%; release saves and previews the start sound; zero suppresses tones
+├── Sound volume -> slider 0-100%; release saves and previews start unless Off; only Sounds sheet auditions play while Off
 │   └── A saved zero displays Off; enabling sounds through the CLI restores the default level
 │   └── Default output changes or disappears (macOS) -> next tone reopens on the current default
 ├── Sounds -> Sheet: hear each set on Hex's real HUD, pick one
@@ -1142,8 +1174,11 @@ preserving balance and silent channels, then restore on finish, cancel, or
 orderly shutdown by easing back over one second. Changes apply to the next
 capture. The stop tone waits for restoration. A manually changed volume after
 settling is left alone;
-a newly selected output device is not lowered. Fixed-volume devices and outputs
-whose channel balance cannot be safely restored are left unchanged. Meetings do
+a newly selected output device is not lowered. On macOS, a channel with no
+volume control is left at its level, and a channel that can be read but not set
+sends lowering to the virtual main volume so the balance stays intact; an
+output with no controllable volume at all is left unchanged and logs a
+warning. Meetings do
 not acquire this dictation environment. Linux lowers the default sink's
 channels through `pactl` (one volume through `wpctl` without it), so Hex's own
 tones are lowered too and the stop tone waits, as on macOS. Windows lowers
@@ -1174,6 +1209,25 @@ restored. Checks: `ducking_preserves_balance_silence_and_restores` and
 that module, and `suppressing_audio_while_dictating_keeps_no_pre_roll` in
 [dictation.rs](../../src/dictation.rs) (constructed audio; not run on a device
 or physical output).
+
+**Changed November 16, 2026 (issue 1915):** on macOS, Lower audio needed every
+one of the output's stream channels to carry a settable volume scalar, so a USB
+adapter reporting two buffers of two channels where only the first pair has one
+was left unchanged, silently; Mute worked there because it uses the virtual main
+volume. Lower audio now ramps the channels that can be read and set and leaves
+channels without a volume control at their level, then falls back to the main
+volume and then to the virtual main volume Mute uses when no channel reports a
+volume at all. A channel that can be read but not set rules out both the
+per-channel ramp and the plain main volume, since either could leave it
+lopsided or flatten a balance that cannot be restored: the virtual main volume,
+which macOS keeps balanced, is the only choice then. Restore writes the same
+control it lowered, at the value it read. An output with no controllable volume
+at all now logs a warning instead of doing nothing quietly. Checks:
+`channels_without_a_volume_scalar_are_skipped_not_fatal`,
+`a_read_only_channel_leaves_the_balance_to_the_virtual_main_volume`, and
+`the_main_then_the_virtual_main_volume_are_the_fallbacks` in
+[ducking.rs](../../src/audio/recording_environment/ducking.rs) (selection only;
+not run on a device).
 
 On 2026-10-25, the macOS logic/settings checks and strict Clippy passed.
 The seven reference images were regenerated on Ubuntu 24.04 ARM64 with Mesa
@@ -1228,8 +1282,8 @@ what is playing, so Hex hears the browsers through a private process tap
 (aggregate `anomaly.hex.browser-tap.<pid>`, apart from the meeting tap) and sends
 play only after it saw the browser go silent right after its own pause. The
 browsers are the ones [microphone_activity.rs](../../src/microphone_activity.rs)
-knows: Chrome, Brave, Safari, Firefox, Edge, Arc, Vivaldi, and Helium, whose
-helpers count as their browser. The sequence checks in
+knows: Chrome, Brave, Safari, Firefox, Edge, Arc, Vivaldi, Helium, Ardia, and
+Zen, whose helpers count as their browser. The sequence checks in
 [audio/browser_media.rs](../../src/audio/browser_media.rs) run on fakes:
 `a_confirmed_pause_is_resumed`, `two_sounding_tabs_never_get_play`,
 `a_browser_already_playing_gets_no_play`, `a_call_is_never_paused`,
@@ -1552,7 +1606,13 @@ suppression, and the Markdown copy in the user's transcript folder.
 Labs › Voice Filter (experimental.hex_microphone = true), HEX_EXPERIMENTAL_MIC=1,
 or the driver installed; off, the pane is hidden  // fun.hex-microphone; macOS, Linux
 ├── Sidebar > Voice Filter  // the only home of these controls
-├── Hex Microphone card
+├── What callers hear: the effect applies only while dictating; normal speech otherwise
+│   ├── Select a name → apply it live: Muffled (default), Muted, Quiet, Normal, Chipmunk, Robot, Walkie, Underwater, Far
+│   ├── Play on a tile → preview that effect, never save it or change the virtual input
+│   │   ├── Example clip or an explicit 5 s recording (in memory only); Play original to compare
+│   │   └── Two waveforms highlight the dictation span. Switching previews stops the previous one
+│   └── Adjust effect → per-mode sliders, effect strength, Reset, and comfort noise for Muted
+├── Hex Microphone setup
 │   ├── Linux -> no driver: a PipeWire virtual source (Audio/Source "Hex Microphone",
 │   │   node hex_microphone) that Hex plays into through `pw-cat` while the Voice Filter is on
 │   │   ├── Status -> Starting… / Available ("Choose Hex Microphone as your input…") / Unavailable + reason
@@ -1561,16 +1621,11 @@ or the driver installed; off, the pane is hidden  // fun.hex-microphone; macOS, 
 │   │   │   1.2 and older reject it and already play raw on -
 │   │   ├── Off or Hex quits -> the source disappears (pw-cat ends with its input); no root, nothing installed
 │   │   └── Session priority 1 -> WirePlumber never picks it as the default input Hex records
-│   ├── macOS driver status -> Installed v<ver> / In use by <app> + Uninstall
-│   │   ├── Version mismatch -> v<old> installed + Update + Uninstall
+│   ├── macOS -> select Hex Microphone as the input in the call app / In use (by name only when observed on that input) + Uninstall
+│   │   ├── Version mismatch -> Update + Uninstall
 │   │   ├── Pre-Anomaly com.kitlangton driver at the same path -> Update replaces it in place
 │   │   ├── Not installed -> Install -> macOS admin prompt -> copies bundled HexMicrophone.driver + restarts coreaudiod
 │   │   └── Inline state -> Installing… / Uninstalling… / Cancelled / Failed with reason
-│   ├── Mode while dictating -> Muffled (default), Muted, Quiet, Normal, Chipmunk, Robot, Walkie, Underwater, Far
-│   ├── Key sliders -> Live mode tuning + Effect strength + Reset
-│   └── Try it -> Example clip OR Record 5s (in-memory only)
-│       ├── Dual waveform -> You vs Call hears with highlighted dictation span
-│       └── Explicit playback -> Play what call hears | Play your voice
 ├── Live microphone capture -> Raw audio to Hex transcription (unmodified)
 │   ├── Source -> Hex's dictation microphone (System default follows the OS default, never Hex Microphone itself), never a meeting's second stream
 │   ├── Lock-free ring -> 48 kHz virtual sink (macOS IOProc; Linux 11 ms blocks into a one-page pipe) -> Raised-cosine fade on intentional hold
@@ -1597,7 +1652,10 @@ and [rune_ui/fun.rs](../../src/rune_ui/fun.rs). Checks:
 `osascript_failure_classifies_user_cancel_and_errors`,
 `audio_service_restart_interrupts_stream_and_recovers`,
 `voice_filter_saves_the_mode_and_applies_the_tuning_live`,
-`try_it_records_and_plays_through_the_host`, and
+`try_it_records_and_plays_through_the_host`,
+`preview_each_effect_before_install_without_applying_it`,
+`voice_filter_setup_distinguishes_an_available_input_from_a_call`,
+`rapid_auditions_replace_pending_audio_and_invalidate_work_in_flight`, and
 `voice_filter_needs_labs_or_hex_microphone`.
 Scenes: `mac-voice-filter`, `mac-voice-filter-muted`,
 `mac-voice-filter-driver-missing`, `voice-filter`, `voice-filter-unavailable`
@@ -1802,6 +1860,9 @@ Hex checks the release service            // maintain.updates
 │   │   └── Same release, rollout deferred, unconfirmed switch, rollback, failure -> keep the staged one
 │   └── Sidebar Update, menu bar / tray: Restart to update; a dev build lists its
 │       first changes and What's new (https://anoma.ly/hex/dev) under it (updater/notes.rs)
+│       ├── A meeting is recording -> refused with that reason; the update stays
+│       │   staged and Ready, so the next click after it ends restarts. The macOS
+│       │   status item dims Restart to update while it would be refused
 │       ├── One more check first (manifest within 15 s) -> Checking / Downloading -> newest staged
 │       │   └── A release published after the relaunch -> the next launch's check
 │       ├── macOS -> renamex_np swap (also at quit) -> relaunch -> old bundle removed at launch
@@ -1834,6 +1895,24 @@ reads it once at launch, so a forced value wins and a change applies after
 relaunch. Speech-model downloads are unaffected. Releases through 2.3.1 read
 `com.kitlangton.hex2`; there is no fallback to it, so profiles must name
 `anomaly.hex`.
+
+Every quit Hex starts ends through its own drain: Rune is told the app has work
+after its loop (`rune::orderly_exit`, called by `macos_rune::run`,
+`windows::rune::open`, and `rune_ui::run_app`), so Quit Hex, `hex quit`, and
+Restart to update stop and join the meeting controller. The staged bundle is
+installed before that join (the swap is atomic and touches no meeting files),
+and a quit that begins during Restart to update's final check never swaps a
+second time. On macOS the AppKit terminate notification drains the same way,
+with 5 s before `_exit` (`DEADLINE`), extended up to 30 s from the quit's
+start while a recording or recovery is in flight (`MEETING_DEADLINE`), plus up
+to 5 s more after it ends (still within the 30 s bound) for the rest of the
+drain, so a finalising meeting is never cut off. Linux's service stop has its
+own 20 s bound (`STOP_DEADLINE`) under the unit's 30 s `TimeoutStopSec`;
+Windows marks quitting and arms 20 s around its post-loop teardown, extended to
+30 s while meeting audio is in flight and polled rather than read once
+(`arm_windows_deadline`), exiting 1 when the window failed. Restart to update
+refuses while meeting audio is in flight (`updater::restart_hold`), re-checks
+after its final manifest check, and keeps the release staged.
 
 [updater.rs](../../src/updater.rs) owns the worker and the shared status the
 window, menu bar, and tray show; `updater/protocol.rs` passes the release
@@ -1874,10 +1953,11 @@ release unpacked its own `.Hex-update-<version>` folder beside `Hex.app`
 every ten minutes) published builds left one ~80 MB copy of the app per build in
 `/Applications`. Staging a newer release now removes the folder of the one it
 replaces once the replacement is the staged update, and a release whose download
-finishes after a quit already installed an update is dropped instead of replacing
-it (that folder holds the bundle the installed update replaced), so a restart
-never swaps twice. The launch sweep still takes whatever a swap or an interrupted
-stage left behind. Observed on macOS 26
+finishes after a quit installed an update is dropped instead of replacing it
+(that folder holds the bundle the installed update replaced), so a restart never
+swaps twice. A quit that has not installed one keeps the older staged update
+Ready, so the quit still installs it. The launch sweep still takes whatever a
+swap or an interrupted stage left behind. Observed on macOS 26
 with the published 0.0.0-dev-1046 build: the launch sweep removed a folder
 holding an older signed build and one holding a swapped-in peer beside
 `/Applications/Hex.app`, and a folder owned by another user stayed with
