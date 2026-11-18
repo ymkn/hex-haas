@@ -100,10 +100,12 @@ fn tap_option(rt: &mut Runtime<Ui>, index: usize) {
         if middle > list[1] && middle < list[1] + list[3] {
             break;
         }
+        // A positive delta moves the content down, so bringing a row below
+        // the list into view needs a negative one.
         let dy = if middle > list[1] + list[3] {
-            20.0
-        } else {
             -20.0
+        } else {
+            20.0
         };
         rt.wheel(list[0] + list[2] / 2.0, list[1] + list[3] / 2.0, dy);
         rt.frame(1.0 / 60.0);
@@ -472,6 +474,26 @@ fn installs_that_never_update_hide_the_update_channel() {
     rt.invalidate();
     settle(&mut rt);
     assert!(rt.find("update-channel").is_none());
+}
+
+#[test]
+fn the_interface_language_menu_is_system_first_then_alphabetical() {
+    let mut rt = runtime("portal", true, GOLDEN_SIZE);
+    tap(&mut rt, "advanced-toggle");
+    let ordered = crate::desktop::i18n::language_menu_order();
+    assert_eq!(ordered[0], (None, "System"));
+    let deutsch = ordered
+        .iter()
+        .position(|(code, _)| *code == Some("de"))
+        .unwrap();
+    pick(&mut rt, "interface-language", deutsch);
+    assert_eq!(
+        rt.state.settings.ui_language.as_deref(),
+        Some("de"),
+        "the chosen row is the language it shows, not the catalog's index"
+    );
+    pick(&mut rt, "interface-language", 0);
+    assert_eq!(rt.state.settings.ui_language, None);
 }
 
 #[test]
@@ -1388,11 +1410,9 @@ fn history_stats_button_opens_and_closes_the_dialog() {
     assert!(rt.find("history-stats-open").is_none());
 }
 
-/// History with Labs › Select multiple dictations on.
+/// History, settled.
 fn history_multi() -> Runtime<Ui> {
     let mut rt = runtime("history", true, PANE_SIZE);
-    rt.state.settings.labs.history_multi_select = true;
-    rt.invalidate();
     settle(&mut rt);
     rt
 }
@@ -1615,6 +1635,55 @@ fn history_selection_copies_oldest_first() {
     assert!(texts(&rt).iter().any(|text| text == "Copied"));
 }
 
+// The notches affect too few pixels to trip the whole-window golden tolerance.
+#[test]
+fn history_rounds_only_the_exposed_ends_of_selected_rows() {
+    let _goldens = Goldens::collect();
+    for dark in [false, true] {
+        for separated in [false, true] {
+            let mut rt = runtime("history", dark, PANE_SIZE);
+            // A search-result snapshot: adjacent entries need not have consecutive ids.
+            rt.state.history.entries[0].id = 17;
+            rt.invalidate();
+            settle(&mut rt);
+            tap(&mut rt, "history-entry17");
+            hold(&mut rt, if separated { command() } else { shift() });
+            tap(&mut rt, "history-entry1");
+            hold(&mut rt, Mods::default());
+            rt.pointer_move(0.0, 0.0);
+            settle(&mut rt);
+            let rows = [17, 2, 1].map(|id| element(&rt, &format!("history-entry{id}")).rect);
+            let render = render_runtime(rt, PANE_SIZE);
+            if let Some((w, _, pixels)) = &render {
+                let pixel = |x: f32, y: f32| {
+                    let at = ((y * GOLDEN_SCALE) as usize * *w as usize
+                        + (x * GOLDEN_SCALE) as usize)
+                        * 4;
+                    &pixels[at..at + 4]
+                };
+                let [x, top, width, height] = rows[0];
+                let fill = pixel(x + 2.0, top + height / 2.0);
+                for edge in [x + 1.0, x + width - 1.5] {
+                    assert_ne!(pixel(edge, top + 0.5), fill, "rounded top");
+                    for [_, join, _, _] in &rows[1..] {
+                        for y in [join - 0.5, join + 0.5] {
+                            assert_eq!(pixel(edge, y) == fill, !separated, "join at {join}");
+                        }
+                    }
+                    assert_ne!(
+                        pixel(edge, rows[2][1] + rows[2][3] - 1.0),
+                        fill,
+                        "rounded bottom"
+                    );
+                }
+            }
+            if !separated {
+                check_render("history-selected-range", dark, render);
+            }
+        }
+    }
+}
+
 #[test]
 fn history_selection_deletes_in_two_steps() {
     let mut rt = history_multi();
@@ -1642,30 +1711,13 @@ fn history_selection_deletes_in_two_steps() {
 }
 
 #[test]
-fn history_shift_click_selects_one_without_the_lab() {
-    let mut rt = runtime("history", true, PANE_SIZE);
-    assert!(!rt.state.settings.labs.history_multi_select);
-    tap(&mut rt, "history-entry2");
-    hold(&mut rt, shift());
-    tap(&mut rt, "history-entry1");
-    hold(&mut rt, Mods::default());
-    assert_eq!(rt.state.history.selected, Some(1));
-    assert_eq!(rt.state.history.selection.len(), 0);
-    assert!(rt.find("history-selection-copy").is_none());
-}
-
-#[test]
-fn history_command_click_keeps_the_row_selected_before_the_lab() {
-    let mut rt = runtime("history", true, PANE_SIZE);
-    assert!(!rt.state.settings.labs.history_multi_select);
+fn history_command_click_keeps_the_selected_row() {
+    let mut rt = history_multi();
     tap(&mut rt, "history-entry2");
     assert_eq!(rt.state.history.selected, Some(2));
 
-    // A row selected before the lab was turned on joins the set first, so
-    // Command-clicking another row keeps it instead of dropping it.
-    rt.state.settings.labs.history_multi_select = true;
-    rt.invalidate();
-    settle(&mut rt);
+    // The one selected row joins the set first, so Command-clicking another
+    // row keeps it instead of dropping it.
     hold(&mut rt, command());
     tap(&mut rt, "history-entry3");
     hold(&mut rt, Mods::default());
@@ -1678,39 +1730,18 @@ fn history_command_click_keeps_the_row_selected_before_the_lab() {
 
 #[test]
 fn history_command_click_deselects_the_only_selected_row() {
-    let mut rt = runtime("history", true, PANE_SIZE);
+    let mut rt = history_multi();
     tap(&mut rt, "history-entry2");
     assert_eq!(rt.state.history.selected, Some(2));
 
-    // A row selected before the lab was turned on is the whole set: Command
-    // deselects it, leaving nothing selected.
-    rt.state.settings.labs.history_multi_select = true;
-    rt.invalidate();
-    settle(&mut rt);
+    // The one selected row is the whole set: Command deselects it, leaving
+    // nothing selected.
     hold(&mut rt, command());
     tap(&mut rt, "history-entry2");
     hold(&mut rt, Mods::default());
     assert_eq!(rt.state.history.selection.len(), 0);
     assert_eq!(rt.state.history.selected, None);
     assert!(!rt.state.history.is_selected(2));
-}
-
-#[test]
-fn history_multi_select_turns_off_to_one_entry() {
-    let mut rt = history_multi();
-    tap(&mut rt, "history-entry3");
-    hold(&mut rt, shift());
-    tap(&mut rt, "history-entry2");
-    hold(&mut rt, Mods::default());
-    assert_eq!(rt.state.history.selection.len(), 2);
-
-    rt.state.settings.labs.history_multi_select = false;
-    rt.invalidate();
-    settle(&mut rt);
-    assert_eq!(rt.state.history.selection.len(), 0);
-    assert_eq!(rt.state.history.selected, Some(2));
-    assert!(rt.state.history.is_selected(2));
-    assert!(!rt.state.history.is_selected(3));
 }
 
 #[test]
@@ -2522,13 +2553,14 @@ fn changing_only_the_language_prepares_the_same_model_again() {
     settle(&mut rt);
     tap(&mut rt, "transcription-language-control-trigger");
     assert_eq!(rt.state.open, Some(Menu::Pick("transcription-language")));
-    // Whisper lists every language in the catalog's order.
-    let japanese =
-        crate::transcription::models::definition(TranscriptionModelId::WhisperLargeV3Turbo)
-            .language_choices()
-            .iter()
-            .position(|code| *code == "ja")
-            .unwrap();
+    // Whisper lists every language by name, Auto first.
+    let japanese = crate::transcription::models::menu_order(
+        &crate::transcription::models::definition(TranscriptionModelId::WhisperLargeV3Turbo)
+            .language_choices(),
+    )
+    .iter()
+    .position(|code| *code == "ja")
+    .unwrap();
     tap_option(&mut rt, japanese);
     assert_eq!(rt.state.open, None);
     assert_eq!(
@@ -2541,6 +2573,63 @@ fn changing_only_the_language_prepares_the_same_model_again() {
     assert_eq!(
         rt.state.picker.fallback, None,
         "an explicit choice clears the note"
+    );
+}
+
+/// Whisper's language list is longer than its menu shows, so the check on
+/// the saved language would sit below the edge. The press that opens the
+/// menu reveals it.
+#[test]
+fn the_language_menu_opens_on_its_chosen_language() {
+    let mut rt = runtime("portal", true, GOLDEN_SIZE);
+    rt.state.settings.transcription.model = TranscriptionModelId::WhisperLargeV3Turbo;
+    rt.state.settings.transcription.language = "fr".into();
+    rt.invalidate();
+    settle(&mut rt);
+    tap(&mut rt, "transcription-language-control-trigger");
+    assert_eq!(rt.state.open, Some(Menu::Pick("transcription-language")));
+    let french = crate::transcription::models::menu_order(
+        &crate::transcription::models::definition(TranscriptionModelId::WhisperLargeV3Turbo)
+            .language_choices(),
+    )
+    .iter()
+    .position(|code| *code == "fr")
+    .unwrap();
+    let row = element(&rt, &format!("option{french}")).rect;
+    let list = element(&rt, "listbox").rect;
+    assert!(
+        row[1] >= list[1] - 0.5 && row[1] + row[3] <= list[1] + list[3] + 0.5,
+        "row {row:?} outside list {list:?}"
+    );
+    let auto = element(&rt, "option0").rect;
+    assert!(
+        auto[1] < list[1],
+        "Auto {auto:?} still at the top of {list:?}: the menu never moved"
+    );
+}
+
+/// A mode's language menu is the same long list in the kit's `Menu`, so its
+/// press reveals the chosen row too.
+#[test]
+fn a_modes_language_menu_opens_on_its_chosen_language() {
+    let mut rt = runtime("modes-speech", true, PANE_SIZE);
+    tap(&mut rt, "mode-speech-language-0-trigger");
+    assert_eq!(
+        rt.state.open,
+        Some(Menu::ModeSpeechLanguage(modes::Selection::Custom(0)))
+    );
+    let spanish = crate::transcription::models::menu_order(
+        &crate::transcription::models::definition(TranscriptionModelId::ParakeetV3)
+            .language_choices(),
+    )
+    .iter()
+    .position(|code| *code == "es")
+    .unwrap();
+    let row = element(&rt, &format!("mode-speech-language-0-item{spanish}")).rect;
+    let menu = element(&rt, "mode-speech-language-0-menu").rect;
+    assert!(
+        row[1] >= menu[1] - 0.5 && row[1] + row[3] <= menu[1] + menu[3] + 0.5,
+        "row {row:?} outside menu {menu:?}"
     );
 }
 

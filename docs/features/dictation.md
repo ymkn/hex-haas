@@ -107,7 +107,7 @@ recorder refuses them, and a saved shortcut on one goes back to its default
 when settings load or the toggle turns off. On, the window's recorder takes
 them too (#1187). Details and checks in [labs.md](labs.md).
 
-Linux and macOS with Labs › Section key alone on (`labs.section_key_alone`,
+Linux and macOS with Labs › § key alone on (`labs.section_key_alone`,
 off by default; issue 1050): the ISO section key, left of 1, may be a
 shortcut with no modifier. On Linux the window's recorder takes § pressed
 alone and shows §, and `hex settings set dictation_hotkey §` (or `section`)
@@ -282,7 +282,7 @@ two thumbs on two modifiers do not roll during typing, so the window is 80 ms
 (`BOTH_SIDES_WINDOW`). The recorder keeps a lone modifier's side (the Left ·
 Either · Right picker widens it, and shows only for one-modifier chords),
 keeps both sides of a modifier, and records every other modifier as either
-side, so ⌥⌘ works from either hand. On macOS, Labs › Sided modifier chords
+side, so ⌥⌘ works from either hand. On macOS, Labs › Left and right keys
 (`labs.sided_modifier_chords`, off by default, issue 710; see
 [labs.md](labs.md)) makes the recorder keep each modifier's side in a
 modifier-only chord instead, so Right ⌘ + Right ⌥ records as `R⌥ R⌘` and the
@@ -582,7 +582,7 @@ the read), and up to 1,000 after it join that capture's context
 (`ContextSnapshot::caret_text`); empty parts are omitted. The read uses
 `AXFocusedUIElement` through the 0.25 s messaging timeout and never reads Hex
 or an `AXSecureTextField`, so a password field returns nothing. Output's
-typed-text path, the Voice prompt request, meetings, the local API, History,
+typed-text path, the Rewrite by voice request, meetings, the local API, History,
 logs, and events never see it, and the text is never saved. Off, no
 Accessibility read or thread starts, and the rewrite prompt is byte for byte
 what it was. A cancelled capture discards a late read. See [labs.md](labs.md)
@@ -1237,9 +1237,9 @@ General > Shortcut mode (under Shortcut)               // dictate.shortcut-mode
   Tap                          -> Toggle, below
   Double-tap                   -> Double-tap only; needs a key binding, or a
                                   shortcut without a key (one or more
-                                  modifiers) with Labs › Double-tap on a lone
-                                  modifier (labs.double_tap_modifiers, macOS,
-                                  off by default)
+                                  modifiers) with Labs › Double-tap Option,
+                                  Command, or Globe (labs.double_tap_modifiers,
+                                  macOS, off by default)
 Tap
   Press -> Start (pre-roll as usual) -> Release keeps recording
   -> Fresh shortcut press -> Finish (with the release tail)
@@ -1298,7 +1298,7 @@ General > Shortcut mode                               // dictate.shortcut-explai
   ├── The current choice has a focus-coloured border
   ├── Double-tap with a shortcut that has no key -> Dimmed, takes no focus
   │   or press, says "Needs a shortcut with a key, like ⌥Space", unless
-  │   Labs › Double-tap on a lone modifier is on (macOS)
+  │   Labs › Double-tap Option, Command, or Globe is on (macOS)
   ├── Long chord -> The panel widens (up to the window) so each option's
   │   lanes keep at least 64 pt beside the keycaps
   ├── Pick an option (click, Space) -> Saves the choice
@@ -1349,7 +1349,7 @@ Shortcut mode = Hold or double-tap or Double-tap     // dictate.lock
 
 Shortcut mode = Double-tap                           // dictate.double-tap-only
   Requires a key binding AND locking enabled, or a shortcut without a key
-  with Labs › Double-tap on a lone modifier on (macOS)
+  with Labs › Double-tap Option, Command, or Globe on (macOS)
   Single press/hold -> No capture                     // disables hold, not a toggle
   Same two qualifying complete taps -> LOCKED         // same lock, not a third mode
 
@@ -1540,6 +1540,8 @@ Model advertises streaming, GPU device             // dictate.streaming
        │   -> Transcribe the whole clip offline (source=fallback)   // #1101
        ├── The raw decode carries two different <ll-RR> language tags
        │   -> Transcribe the whole clip offline (source=fallback)   // language switch
+       ├── Unified English: the text has no closing sentence mark
+       │   -> Transcribe the whole clip offline (source=fallback)   // #1933
        ├── No final text within 1.5 s -> Abort the stream -> Whole clip
        └── Model switched during the capture -> Stream closed -> Whole clip
   Short tap, chord discard -> Drop the stream
@@ -1838,6 +1840,25 @@ clip. Checks:
 `a_stream_that_switched_language_falls_back_to_the_whole_clip` (synthetic
 tones and tags, a fake stream). Not measured on a real model, microphone, or
 device; the stream's own loss is not fixed upstream.
+
+**Mitigation, November 17, 2026 (issue 1933):** a Unified English stream often
+finalizes without the closing full stop or question mark its whole-clip run
+keeps, so the paste lost the sentence mark. The native chunked decode still
+drops it; Hex now refuses a stream whose text, past trailing spaces and
+closing quotes or brackets, ends in anything but `.`, `?`, `!`, or `…`, and
+transcribes that clip whole (`source=fallback`, reason "the stream ended
+without closing sentence punctuation"). That also refuses text with nothing
+left once those are stripped, so it costs one extra whole-clip run on clips
+whose right text has no closing mark at all: single words, fragments, or a
+sentence whose trailing punctuation a transformation removed. The added
+latency was not measured. Checks:
+`a_sentence_mark_ends_every_accepted_stream`,
+`closing_quotes_and_brackets_do_not_hide_the_mark`,
+`a_stream_that_must_close_a_sentence_without_a_mark_falls_back`,
+`a_missing_mark_is_accepted_when_the_model_does_not_require_one`,
+`text_with_nothing_before_the_closers_fails_the_mark_check`, and
+`only_unified_english_streams_require_a_closing_mark` (synthetic text). Not
+measured on a real model or microphone.
 
 ### Ongoing Jobs And Output
 

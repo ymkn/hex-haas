@@ -335,7 +335,7 @@ pub(super) const KEYS: &[Key] = &[
     key(
         "labs.unload_idle_minutes",
         Kind::NumberChoice(&["5", "15", "30", "60"]),
-        "Minutes unused before Labs › Unload model when idle unloads the model",
+        "Minutes unused before Labs › Free memory when idle unloads the model",
     ),
     key(
         "labs.keep_microphone_open",
@@ -481,11 +481,6 @@ pub(super) const KEYS: &[Key] = &[
         "Labs: a summary of retained dictations at the top of History, and hex history stats",
     ),
     key(
-        "labs.history_multi_select",
-        Kind::Bool,
-        "Labs: select several dictations in History with Shift-click, Cmd-click (Ctrl on Windows and Linux), or a drag, then copy or delete them together",
-    ),
-    key(
         "labs.recent_dictations",
         Kind::Bool,
         "Labs: a Copy Recent Dictation submenu in the menu bar that copies one of the last five dictations (macOS)",
@@ -604,7 +599,7 @@ pub(super) const KEYS: &[Key] = &[
     key(
         "labs.yolo_mode",
         Kind::Bool,
-        "Labs: press Return after pasting a shortcut dictation",
+        "Labs: press Return after pasting a shortcut dictation, so the message sends itself",
     ),
     key(
         "labs.yolo_mode_apps",

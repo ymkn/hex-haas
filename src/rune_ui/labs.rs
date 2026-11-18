@@ -209,7 +209,7 @@ pub(super) struct Store {
     pub(super) tab: Tab,
     /// The chip selected: only this group's labs show.
     pub(super) group: Option<Group>,
-    /// Labs › Voice prompt's phrase while it's on: a draft, so invalid words
+    /// Labs › Rewrite by voice's phrase while it's on: a draft, so invalid words
     /// stay in its field instead of replacing the saved phrase.
     pub(super) phrase: TextEdit,
     /// Whether `phrase` started from the saved phrase.
@@ -643,7 +643,7 @@ fn rows(ui: &Ui) -> Vec<Row> {
         }
     }
     // The ISO section key, left of 1, may be a shortcut with no modifier
-    // (Labs › Section key alone, Linux and macOS).
+    // (Labs › § key alone, Linux and macOS).
     if matches!(
         caps.os,
         super::platform::Os::Linux | super::platform::Os::Macos
@@ -690,7 +690,6 @@ fn rows(ui: &Ui) -> Vec<Row> {
     rows.push(row(Feature::HistoryStats, None));
     rows.push(row(Feature::KeepRecordings, None));
     rows.push(row(Feature::CopyDictationAudio, None));
-    rows.push(row(Feature::HistoryMultiSelect, None));
     rows.push(row(Feature::OutputFixes, Some(&BOOK)));
     rows.push(row(Feature::VoicePrompt, None));
     // macOS's Accessibility reads the text element's caret and nearby text.
@@ -885,7 +884,6 @@ fn row_key(lab: Lab) -> &'static str {
         Feature::MicrophoneKeyAlone => "lab-microphone-key",
         Feature::KeepRecordings => "lab-keep-recordings",
         Feature::CopyDictationAudio => "lab-copy-dictation-audio",
-        Feature::HistoryMultiSelect => "lab-history-multi-select",
         Feature::Appearance => "lab-appearance",
         Feature::ReleaseNotesLink => "lab-release-notes-link",
         Feature::HideMenuBarIcon => "lab-hide-menu-bar-icon",

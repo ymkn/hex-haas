@@ -34,13 +34,13 @@ Agents can [read retained transcripts](transcript-cli.md) and
 default, listed under collapsible groups (Dictation, Output, History,
 Meetings, Annotate, Shortcuts, Models) with only this OS's labs.
 Its Sort and filter models toggle (off by default) adds a sort and a saved-language filter to the
-Local transcription picker (#645); its Benchmark details toggle (off by
+Local transcription picker (#645); its Model test details toggle (off by
 default) shows each model's raw WER or CER with its language, dataset, source,
 and conditions (#647); its Release notes
 link toggle (off by default) puts a link to this build's release notes in the
 sidebar footer; its Appearance toggle (off by default) forces the main window
 light or dark instead of following the OS. The dictation HUD and meeting
-recording pill always stay dark; other overlays follow the OS; its Screen vocabulary
+recording pill always stay dark; other overlays follow the OS; its Words on screen
 toggle (off by default, macOS) uses names and terms visible in the focused
 window as temporary vocabulary for each dictation, read locally through
 Accessibility and never saved ([vocabulary.md](vocabulary.md)). Its Rewrite
@@ -356,9 +356,11 @@ General > Dictation > Speech model, then Language below it   // setup.language-s
 │       │   stops at its output limit still counts as warm (same as the menu bar)
 │       └── Saved -> Language row: "<Model> doesn't support Japanese, so the
 │           language changed to English" until the next choice
-├── Language -> Select of the saved model's languages (catalog order, Auto first
-│   when it detects, including a model that takes no language input); one
-│   language -> the field shows it, disabled
+├── Language -> Select of the saved model's languages (alphabetical by name,
+│   Auto first when it detects, including a model that takes no language
+│   input); one language -> the field shows it, disabled
+│   ├── Open the language menu -> It scrolls to the chosen language so its
+│   │   check is in view (`the_language_menu_opens_on_its_chosen_language`)
 │   └── Choose -> ChooseModel(same model, language): the same preparation as a
 │       model choice, so per-language assets (Apple Speech locales) install
 └── The saved TranscriptionSelection is always a pair the model supports
@@ -457,7 +459,7 @@ Settings picker > Every model row          // fixed height; scrolls
 ├── Name, role, blurb, then "No wait · 1 in 50 words wrong · 25 languages · 2.5 GB"
 ├── Saved language unsupported -> Warning line naming the language it switches to
 ├── Trailing edge -> In use dot; progress with Cancel; else Use/Download; Delete when downloaded
-├── Labs > Benchmark details (off) -> raw error rate "7.57% CER", a wrapping line:
+├── Labs > Model test details (off) -> raw error rate "7.57% CER", a wrapping line:
 │   language · dataset/split · source · conditions or "unknown" ·
 │   speed qualified; "Most accurate" only between comparable records (labs.md)
 ├── Labs > Parakeet Ultra (off) -> its row with a Labs tag and Details: languages,  // setup.parakeet-ultra
@@ -665,6 +667,9 @@ interaction, installed-app switching, and Linux runtime behavior were not exerci
 ```ts
 Labs > Switch model with keyboard language      // setup.input-source-model; macOS, Windows, Linux X11; off by default; General shows the mappings while on
 ├── Each enabled keyboard input source -> Don't switch, or a downloaded model and language
+│   (alphabetical by name, Auto first)
+│   ├── Open the language menu -> It scrolls to the chosen language so its
+│   │   check is in view (`a_modes_language_menu_opens_on_its_chosen_language`)
 │   ├── New mapping -> The source's own language when the model has it
 │   ├── One-language model -> Its language shown fixed
 │   └── New/unmapped source -> Don't switch; keep the current model
@@ -734,6 +739,9 @@ desktop.
 ```ts
 Labs > Switch model with app                      // labs.app_model_switching; macOS, Windows; off by default; Modes shows each mode's choice while on
 ├── Each mode, Global included -> Don't switch, or an installed model and a language
+│   (alphabetical by name, Auto first)
+│   ├── Open the language menu -> It scrolls to the chosen language so its
+│   │   check is in view (`a_modes_language_menu_opens_on_its_chosen_language`)
 │   ├── New choice -> The model's last-used language, else the saved language it supports
 │   ├── One-language model -> Its language shown fixed
 │   └── No choice -> Leave the selected model alone
@@ -849,7 +857,7 @@ Saved shortcut                           // dictation; Option by default; Window
 General > Shortcut mode -> Hold or double-tap (default), Hold, Tap, Double-tap
   -> Modal: each choice with its keys and a looping key/recording timeline
   -> Double-tap needs a key binding; with a shortcut that has no key (one or
-     more modifiers) it says so, unless Labs > Double-tap on a lone modifier
+     more modifiers) it says so, unless Labs > Double-tap Option, Command, or Globe
      is on (macOS)
 
 Dictate without processing (Output pane; unbound)   // dictation.md
@@ -867,7 +875,7 @@ Labs > Second dictation shortcut (off)   // labs.md; issue 627
 
 Labs > More dictation shortcuts (macOS, off)   // labs.md
   -> General shows a numbered row per extra (recorder, shortcut mode, Remove) and Add shortcut under four
-  -> each row dictates like the shortcut in its own mode; Double-tap also takes a lone modifier while Labs > Double-tap on a lone modifier is on
+  -> each row dictates like the shortcut in its own mode; Double-tap also takes a lone modifier while Labs > Double-tap Option, Command, or Globe is on
   -> Escape cancels once it's locked, in Tap, or on a bare key or mouse button
   -> off, the saved rows stay and nothing matches; on, each needs its own keys
 
@@ -887,7 +895,7 @@ Labs > Caps Lock dictation (macOS, off)   // labs.md
      Lock capture; the normal shortcut stands down while one runs; off or
      quit clears the light and restores Caps Lock
 
-Labs > Unload model when idle (off; 5/15/30/60 min, default 15)   // labs.md; transcription/engine
+Labs > Free memory when idle (off; 5/15/30/60 min, default 15)   // labs.md; transcription/engine
   -> nothing used the model that long and nothing records -> the model unloads
   -> next press, meeting chunk, or API request -> reloads first; audio waits, nothing lost
 ```
@@ -919,11 +927,12 @@ Completed output                         // output
     ├── Retention ("Kept 7 days ▾" menu) -> Seven days by default, always hard-capped
     ├── Off ("History off") -> Stop new entries; preserve existing entries
     ├── Same menu > Clear all history… -> asks in the header; only the red confirm clears
-    ├── Labs > Select multiple dictations (off, every OS) -> one row as before   // labs.history_multi_select
+    ├── Select dictations (every OS, no setup)   // history.selection
     │   ├── Plain click, Shift-click on the visible (searched) rows, Cmd-click (Ctrl), or a drag -> one, a range, or a toggled set
+    │   ├── Adjacent selected rows share one highlight; an unselected search result separates two highlights
     │   ├── Two or more selected -> "{count} dictations selected": Copy (final texts, oldest first, a blank line between each) / Delete… (asks once)
     │   ├── One selected -> the ordinary card, Copy, Delete… (asks once, then Cancel), Transcribe again with Keep recordings
-    │   └── A search, new entries, or a delete prune it; turning the lab off keeps one entry (labs.md)
+    │   └── A search, new entries, or a delete prune the selection
     ├── Labs > Keep recordings (off) -> new entries keep their 16 kHz audio   // labs.keep-recordings
     │   -> also "Keep audio too" in the retention menu while the lab is offered
     │   -> the card's "Transcribe again" menu runs it through any installed model
@@ -1056,7 +1065,8 @@ General                                  // settings
 │   ├── Output -> Paste last shortcut, While dictating, Dictation HUD, Terminal paste (Linux)
 │   │   (Dictate without processing sits in the Output pane; see dictation.md)
 │   └── Application -> Enable on launch, Show Dock icon, Sound volume, Sounds,
-│       Interface language, Update channel (self-updating installs)
+│       Interface language (System first, then alphabetical by displayed name),
+│       Update channel (self-updating installs)
 │       // Interface language System: macOS's first preferred language (zh-Hans -> 简体中文,
 │       // zh-Hant, zh-TW, zh-HK, zh-MO -> 繁體中文), Linux LC_ALL/LC_MESSAGES/LANG
 │       // (zh_TW.UTF-8 -> 繁體中文), Windows the user locale; unknown -> English
@@ -1396,7 +1406,7 @@ Selected mode                            // replaces Global's rewrite and transf
   -> Its vocabulary, then the shared one   // features/vocabulary.md (vocabulary.modes)
   -> Speech Labs preparation              // formatting, symbols, English filler removal
   -> Global's corrections, then the mode's  // every OS
-  -> Labs > Voice prompt's phrase          // Labs off, or no phrase, processes as before
+  -> Labs > Rewrite by voice's phrase          // Labs off, or no phrase, processes as before
      -> one spoken instruction replaces the rewrite, with the mode's model and deadline (labs.md)
   -> OpenCode transformation             // optional provider-backed rewrite
   -> Transformations                     // ordered text chain
@@ -2155,7 +2165,7 @@ Linux beta                               // not macOS feature parity
 │       │   // centre, animating, focus unchanged, the pointer over it hits the
 │       │   // window below; not yet on a real GNOME Shell session
 │       │   ├── Meeting capsules take clicks, so they open there only with Labs ›
-│       │   │   Floating meeting capsules on GNOME on and Xwayland already running
+│       │   │   Call recording controls on GNOME on and Xwayland already running
 │       │   │   (meetings.md, labs.md; #1274)
 │       │   ├── Annotate's capsule and ink take clicks too, so they open there only
 │       │   │   with Labs › Annotate on GNOME and Xwayland already running; the ink
@@ -2245,7 +2255,12 @@ Linux beta                               // not macOS feature parity
 │       │       binds read Ctrl(+Shift)+V, not Ctrl(+Shift)+Escape (#444)
 │       ├── Otherwise -> RemoteDesktop portal: keyboard-only session, approved once
 │       │   (onboarding or Settings can ask first, `setup.paste-access`)
-│       │   (restore token, persist_mode 2) -> Ctrl+V as keysyms
+│       │   (restore token, persist_mode 2) -> keymap-resolved evdev keycodes
+│       │   // wl_seat keymap: a letter needs one code across every group that
+│       │   // has it (Dvorak v = KEY_DOT, AZERTY a = KEY_Q), while
+│       │   // Ctrl/Shift/Enter must be on 29/42/28 in every group; else the
+│       │   // whole chord as keysyms; KWin 6.8's fake input and Mutter lose a
+│       │   // keysym outside the active group
 │       │   ├── 15 s after the last paste -> session closes when its grant restores, so
 │       │   │   GNOME's remote-control indicator shows only around pastes (#718); a grant
 │       │   │   that can't restore keeps its session
@@ -2306,12 +2321,19 @@ reads only. The owner-change guards are not covered by any test: X11 compares
 the selection's owner window, so the same window replacing its contents mid-read
 is not seen, and Wayland compares the selection offer after one roundtrip.
 The Wayland paste choice lives in [linux/paste.rs](../../src/linux/paste.rs) and
-[linux/remote_desktop.rs](../../src/linux/remote_desktop.rs). Observed: the
-wtype path in the headless-Sway smoke and the virtual-keyboard probe on niri
-(apollo). niri's portal frontend advertises RemoteDesktop but its GNOME
-backend fails CreateSession, so wtype stays first there. The RemoteDesktop
-paste itself (KWin, Mutter) has unit tests for its key sequence only and is not
-yet observed on a real desktop. The modifier wait (`ShortcutKeys` in
+[linux/remote_desktop.rs](../../src/linux/remote_desktop.rs), whose
+[keymap.rs](../../src/linux/remote_desktop/keymap.rs) reads the desktop's
+keymap. Observed: the wtype path in the headless-Sway smoke and the
+virtual-keyboard probe on niri (apollo). niri's portal frontend advertises
+RemoteDesktop but its GNOME backend fails CreateSession, so wtype stays first
+there. The RemoteDesktop paste itself (KWin, Mutter) has unit tests for its key
+sequences and its keymap resolution only and is not yet observed on a real
+desktop: it sends evdev keycodes only where the keymap confirms each letter and
+Ctrl, Shift, and Enter (`ctrl:swapcaps` and the like fall back to keysyms),
+rather than keysyms, which fixes KWin 6.8's fake input, where a Latin `v` under
+a Russian layout arrived as a bare `v` with Ctrl stuck down (#1939), and Mutter,
+which drops a keysym outside the active group. Neither fix is observed on a
+real KDE or GNOME session either. The modifier wait (`ShortcutKeys` in
 [linux/input.rs](../../src/linux/input.rs)) has unit tests for its timing only;
 it is not yet observed on Hyprland, and a modifier held past the wait still
 changes the paste. wtype numbers its keymap from evdev code 1 in order of first

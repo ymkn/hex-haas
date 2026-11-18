@@ -156,7 +156,7 @@ struct JobTimings {
 
 struct CompletedTranscript {
     text: String,
-    /// Labs › Voice prompt asked for nothing: finish without output even if
+    /// Labs › Rewrite by voice asked for nothing: finish without output even if
     /// some later stage left text behind.
     nothing: bool,
     /// Corrected local transcript before mode processing.
@@ -291,7 +291,7 @@ impl DictationWorker {
         }));
 
         let (_, selection) = crate::app_settings::transcription_selection();
-        // Labs › Unload model when idle parks a GGUF model at launch too:
+        // Labs › Free memory when idle parks a GGUF model at launch too:
         // the first dictation reloads it, so memory stays free until then.
         // Apple Speech holds no model of Hex's and stays loaded.
         let parked = crate::labs::unload_idle().is_some()
@@ -446,7 +446,7 @@ impl DictationWorker {
         let audio_ms = clip.duration_ms();
         let send_gate = (matches!(target, TranscriptionTarget::Paste) && state.started_by_shortcut)
             .then(crate::dictation::yolo_mode::SendGate::open);
-        // Labs › Screen vocabulary: this capture's terms belong to its
+        // Labs › Words on screen: this capture's terms belong to its
         // whole-clip run and no other job. Only a model that reads the terms
         // gives up its live stream, whose vocabulary is fixed when it starts
         // (before the window was read); a model that ignores them keeps it.
@@ -2071,7 +2071,33 @@ mod tests {
             for (fed_ms, stable, tentative) in &timeline {
                 println!("    audio_ms={fed_ms} stable_words={stable} tentative_words={tentative}");
             }
-            assert_eq!(streamed.source, Source::Stream);
+            let closing_mark = |text: &str| {
+                const CLOSERS: [char; 8] = ['"', '\'', '”', '’', ')', ']', '}', '»'];
+                text.trim_end()
+                    .trim_end_matches(CLOSERS)
+                    .chars()
+                    .last()
+                    .is_some_and(|last| matches!(last, '.' | '?' | '!' | '…'))
+            };
+            // A stream that dropped its closing mark takes the whole-clip
+            // fallback for that reason only (#1933).
+            assert!(
+                streamed.source == Source::Stream
+                    || matches!(
+                        &streamed.source,
+                        Source::Fallback(reason)
+                            if reason.as_str() == "the stream ended without closing sentence punctuation"
+                    ),
+                "unexpected source {}",
+                streamed.source.label()
+            );
+            if closing_mark(&whole.text) {
+                assert!(
+                    closing_mark(&streamed.text),
+                    "the stream dropped the offline text's closing mark: {}",
+                    streamed.text
+                );
+            }
             assert!(differences * 20 <= reference.len().max(20));
         }
     }

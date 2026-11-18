@@ -203,14 +203,6 @@ pub fn history_stats() -> bool {
     on(HISTORY_STATS)
 }
 
-/// History selects several dictations at once, with Shift, Command (Control
-/// on Windows and Linux), or a drag, and copies or deletes them together.
-/// The window reads the same switch from `settings.labs`, as it reads Keep
-/// recordings; this process's copy is logged at launch with the other labs.
-pub fn history_multi_select() -> bool {
-    on(HISTORY_MULTI_SELECT)
-}
-
 /// The menu bar's Copy Recent Dictation submenu (macOS; read each time the
 /// menu opens).
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -467,7 +459,7 @@ pub fn yolo_mode_apps() -> Option<Vec<String>> {
 }
 
 /// How long the speech model may sit unused before the engine unloads it,
-/// while Labs › Unload model when idle is on.
+/// while Labs › Free memory when idle is on.
 pub fn unload_idle() -> Option<std::time::Duration> {
     let state = state();
     (state & UNLOAD_IDLE != 0)

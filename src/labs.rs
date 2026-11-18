@@ -4,7 +4,7 @@
 //! group's collapsible header (`Feature::group`). A feature
 //! with its own pane (Meetings, Voice Filter, Playground) joins the sidebar
 //! as a normal item while on and is hidden while off; a behaviour-only
-//! feature (Live text, Live chapters, Vocabulary biasing, Screen vocabulary,
+//! feature (Live text, Live chapters, Vocabulary help, Words on screen,
 //! the rewrite reading the text around the cursor (macOS),
 //! keyboard-language
 //! model switching, mouse shortcuts, pausing the browser, a spoken phrase
@@ -152,7 +152,6 @@ impl Feature {
             Self::ParakeetUltra => settings.labs.parakeet_ultra,
             Self::StandaloneSpecialKeys => settings.labs.standalone_special_keys,
             Self::HistoryStats => settings.labs.history_stats,
-            Self::HistoryMultiSelect => settings.labs.history_multi_select,
             Self::RecentDictations => settings.labs.recent_dictations,
             Self::SkipPauses => settings.labs.skip_pauses,
             Self::OutputFixes => settings.labs.output_fixes,
@@ -235,7 +234,6 @@ impl Feature {
             &mut labs.parakeet_ultra,
             &mut labs.standalone_special_keys,
             &mut labs.history_stats,
-            &mut labs.history_multi_select,
             &mut labs.recent_dictations,
             &mut labs.skip_pauses,
             &mut labs.output_fixes,
@@ -328,7 +326,6 @@ impl Feature {
             Self::BenchmarkDetails => settings.labs.benchmark_details = on,
             Self::ParakeetUltra => settings.labs.parakeet_ultra = on,
             Self::HistoryStats => settings.labs.history_stats = on,
-            Self::HistoryMultiSelect => settings.labs.history_multi_select = on,
             Self::RecentDictations => settings.labs.recent_dictations = on,
             Self::SkipPauses => settings.labs.skip_pauses = on,
             Self::OutputFixes => settings.labs.output_fixes = on,
@@ -449,7 +446,7 @@ const API_PROCESSING: u64 = OPENCODE_IN_WSL << 1;
 /// The next bit above Process API transcripts' switch: Double-tap accepts a
 /// shortcut without a key (macOS).
 const DOUBLE_TAP_MODIFIERS: u64 = API_PROCESSING << 1;
-/// The next bit above Double-tap on a lone modifier's switch: a dictation
+/// The next bit above Double-tap Option, Command, or Globe's switch: a dictation
 /// pastes into the app its capture started in (macOS).
 const RETURN_TO_APP: u64 = DOUBLE_TAP_MODIFIERS << 1;
 /// The next bit above Return to app's switch: "While dictating" applies only
@@ -464,15 +461,12 @@ const PAUSE_MENU: u64 = APP_MODEL_SWITCHING << 1;
 /// The next bit above Pause from menu bar: the local API's
 /// `timestamps=segment|word` returns native timings.
 const API_TIMESTAMPS: u64 = PAUSE_MENU << 1;
-/// The next bit above API timings: History selects several dictations at
-/// once, to copy or delete them together.
-const HISTORY_MULTI_SELECT: u64 = API_TIMESTAMPS << 1;
 /// With Release microphone while idle on, the microphone stays open for a
 /// while after a capture (Labs › Keep mic open after dictating). Its window
 /// does not fit above the minutes, so it lives in
 /// [`MICROPHONE_LINGER_SECONDS`]. A new lab can take one of the free bits
 /// below the minutes.
-const KEEP_MICROPHONE_OPEN: u64 = HISTORY_MULTI_SELECT << 1;
+const KEEP_MICROPHONE_OPEN: u64 = 1 << 60;
 
 /// This process's `labs` switches: unknown until settings load or one is
 /// first read.
@@ -487,7 +481,7 @@ static MICROPHONE_LINGER_SECONDS: AtomicU64 = AtomicU64::new(0);
 /// atomic, written by [`state`] and [`apply`].
 static PRINT_START: AtomicBool = AtomicBool::new(false);
 
-/// Labs › Screen vocabulary's switch, set beside [`STATE`] like [`PRINT_START`]:
+/// Labs › Words on screen's switch, set beside [`STATE`] like [`PRINT_START`]:
 /// that lab reads the focused window once per dictation.
 static SCREEN_VOCABULARY: AtomicBool = AtomicBool::new(false);
 
@@ -496,7 +490,7 @@ static SCREEN_VOCABULARY: AtomicBool = AtomicBool::new(false);
 /// once per dictation, and the state word has no bit for it.
 static CURSOR_CONTEXT: AtomicBool = AtomicBool::new(false);
 
-/// Labs › Voice prompt's switch in its own atomic, written by [`state`] and
+/// Labs › Rewrite by voice's switch in its own atomic, written by [`state`] and
 /// [`apply`].
 static VOICE_PROMPT: AtomicBool = AtomicBool::new(false);
 
@@ -505,7 +499,7 @@ static VOICE_PROMPT: AtomicBool = AtomicBool::new(false);
 /// [`state`] and [`apply`].
 static STOP_PHRASE: AtomicBool = AtomicBool::new(false);
 
-/// Labs › Copy captures as a zip's switch, set beside [`STATE`] like
+/// Labs › Copy a capture as one file's switch, set beside [`STATE`] like
 /// [`PRINT_START`]: a written capture copies as one zip file.
 static COPY_CAPTURE_ZIP: AtomicBool = AtomicBool::new(false);
 
@@ -608,7 +602,7 @@ fn print_start_enabled(settings: &LabsSettings) -> bool {
     settings.print_start && Feature::PrintStart.shipped() && Feature::PrintStart.managed().is_none()
 }
 
-/// Whether `settings` turn on Labs › Screen vocabulary in this build, before
+/// Whether `settings` turn on Labs › Words on screen in this build, before
 /// its managed lock; the state word has no bit for it.
 fn screen_vocabulary_enabled(settings: &LabsSettings) -> bool {
     settings.screen_vocabulary
@@ -624,7 +618,7 @@ fn cursor_context_enabled(settings: &LabsSettings) -> bool {
         && Feature::CursorContext.managed().is_none()
 }
 
-/// Whether `settings` turn on Labs › Voice prompt in this build, before its
+/// Whether `settings` turn on Labs › Rewrite by voice in this build, before its
 /// managed lock; the state word has no bit for it.
 fn voice_prompt_enabled(settings: &LabsSettings) -> bool {
     settings.voice_prompt
@@ -638,7 +632,7 @@ fn stop_phrase_enabled(settings: &LabsSettings) -> bool {
     settings.stop_phrase && Feature::StopPhrase.shipped() && Feature::StopPhrase.managed().is_none()
 }
 
-/// Whether `settings` turn on Labs › Copy captures as a zip in this build,
+/// Whether `settings` turn on Labs › Copy a capture as one file in this build,
 /// before its managed lock; the state word has no bit for it.
 fn copy_capture_zip_enabled(settings: &LabsSettings) -> bool {
     settings.copy_capture_zip
@@ -857,11 +851,6 @@ fn encode_where(settings: &LabsSettings, reaches: impl Fn(Feature) -> bool) -> u
         ),
         (Feature::HistoryStats, settings.history_stats, HISTORY_STATS),
         (
-            Feature::HistoryMultiSelect,
-            settings.history_multi_select,
-            HISTORY_MULTI_SELECT,
-        ),
-        (
             Feature::RecentDictations,
             settings.recent_dictations,
             RECENT_DICTATIONS,
@@ -982,7 +971,6 @@ pub fn log_launch() {
         vocabulary_biasing = vocabulary_biasing(),
         screen_vocabulary = screen_vocabulary(),
         cursor_context = cursor_context(),
-        history_multi_select = history_multi_select(),
         copy_dictation_audio = copy_dictation_audio(),
         hold_through_keys = hold_through_keys(),
         "labs"
@@ -1389,28 +1377,6 @@ mod tests {
         assert_ne!(state & HISTORY_STATS, 0);
         assert_eq!(state & PARAKEET_ULTRA, 0);
         assert_eq!(state >> MINUTES_SHIFT, 24 * 60);
-    }
-
-    #[test]
-    fn history_multi_select_is_its_own_bit_and_off_by_default() {
-        assert_eq!(HISTORY_MULTI_SELECT, 1 << 59);
-        let mut labs = LabsSettings::default();
-        assert_eq!(encode_where(&labs, |_| true) & HISTORY_MULTI_SELECT, 0);
-        labs.history_multi_select = true;
-        labs.unload_idle_minutes = 24 * 60;
-        let state = encode_where(&labs, |_| true);
-        assert_ne!(state & HISTORY_MULTI_SELECT, 0);
-        assert_eq!(state & HISTORY_STATS, 0);
-        assert_eq!((state >> MINUTES_SHIFT) & MINUTES_MASK, 24 * 60);
-        assert!(Feature::HistoryMultiSelect.on_this_os());
-        assert_eq!(Feature::HistoryMultiSelect.added(), 20261110);
-        assert_eq!(Feature::HistoryMultiSelect.audience(), Audience::Everyone);
-        assert_eq!(Feature::HistoryMultiSelect.group(), Group::History);
-        assert_eq!(
-            Feature::HistoryMultiSelect.settings_key(),
-            "labs.history_multi_select"
-        );
-        assert_eq!(Feature::HistoryMultiSelect.name(), "history-multi-select");
     }
 
     #[test]

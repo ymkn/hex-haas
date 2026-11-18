@@ -53,8 +53,8 @@ pub(super) struct HistoryPane {
     pub(super) stats: Option<HistoryStats>,
     /// The stats dialog is open.
     pub(super) stats_open: bool,
-    /// Labs › Select multiple dictations: every selected entry, and the
-    /// Delete confirmation while the card shows one.
+    /// Every selected entry, when several are, and the Delete confirmation
+    /// while the card shows one.
     pub(super) selection: selection::Selection,
     /// Labs › Keep recordings: the installed models Transcribe again
     /// offers, read when its menu opens.
@@ -188,18 +188,13 @@ impl HistoryPane {
     /// searches again only when the query or the store's revision changed,
     /// and sums the stats again when the entries or the toggle changed, or
     /// once when the dialog closes because the stats emptied.
-    pub(super) fn poll(&mut self, visible: bool, keep_audio: bool, multi: bool) -> bool {
+    pub(super) fn poll(&mut self, visible: bool, keep_audio: bool) -> bool {
         let answered = self.poll_again();
         // Playback's answer returns the card to Play; it is not a reason to
         // read the stats again.
         let played = self.poll_playback();
         let copied = self.poll_audio();
         let mut changed = false;
-        // Labs › Select multiple dictations off, History keeps one selected
-        // entry: the others fall away.
-        if !multi && selection::collapse(self) {
-            changed = true;
-        }
         // A playback belongs to the card that shows its Stop: leaving the
         // entry or History, turning the lab off, or hiding the window
         // quietly ends it.
@@ -267,8 +262,7 @@ impl HistoryPane {
         self.entries.iter().find(|entry| entry.id == id)
     }
 
-    /// Whether row `id` draws as selected: the one entry, or any of the
-    /// several Labs › Select multiple dictations holds.
+    /// Whether row `id` draws as selected: the one entry, or any of several.
     pub(super) fn is_selected(&self, id: u64) -> bool {
         self.selected == Some(id) || self.selection.contains(id)
     }
@@ -337,8 +331,7 @@ impl HistoryPane {
         Self::default()
     }
 
-    /// Labs › Select multiple dictations: two entries selected, for the
-    /// preview's card.
+    /// Two entries selected, for the preview's card.
     pub(super) fn fixture_selection() -> Self {
         let mut pane = Self::fixture();
         pane.selected = Some(2);
@@ -600,12 +593,6 @@ fn delete(ui: &mut Ui, id: u64) {
     }
 }
 
-/// Labs › Select multiple dictations, as the pane reads it while drawing,
-/// polling, and taking a press.
-pub(super) fn multi(ui: &Ui) -> bool {
-    selection::on(ui)
-}
-
 /// The header's retention menu and the list + detail body.
 pub(super) fn pane(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> (Vec<El>, El) {
     let pane = &ui.history;
@@ -626,15 +613,22 @@ pub(super) fn pane(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> (Vec<El>, El) {
         None => {
             let mut list = col().key("history-list").label(tr("History"));
             let count = pane.entries.len();
-            for (index, entry) in pane.entries.iter().enumerate() {
+            let mut rows = pane
+                .entries
+                .iter()
+                .map(|e| (e, pane.is_selected(e.id)))
+                .enumerate()
+                .peekable();
+            let mut selected_above = false;
+            while let Some((index, (entry, selected))) = rows.next() {
                 let id = entry.id;
                 let mut meta = tr(entry.kind.label()).to_string();
                 if let Some(application) = &entry.application {
                     meta.push_str(" · ");
                     meta.push_str(application);
                 }
-                let selected = pane.is_selected(id);
                 let primary = pane.selected == Some(id);
+                let selected_below = rows.peek().is_some_and(|(_, (_, selected))| *selected);
                 list = list.child(
                     ld::item_with_press(
                         p,
@@ -647,10 +641,20 @@ pub(super) fn pane(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> (Vec<El>, El) {
                             hover: vec![copy_action(ui, p, id, true)],
                             selected,
                         },
-                        move |row| selection::gesture(row, id, primary),
+                        move |row| {
+                            let row = if selected && (selected_above || selected_below) {
+                                let top = if selected_above { 0.0 } else { p.k.radius.md };
+                                let bottom = if selected_below { 0.0 } else { p.k.radius.md };
+                                row.corners([top, top, bottom, bottom])
+                            } else {
+                                row
+                            };
+                            selection::gesture(row, id, primary)
+                        },
                     )
                     .position_in_set(index + 1, count),
                 );
+                selected_above = selected;
             }
             let search = TextInput::new(&pane.search)
                 .placeholder(tr("Search history"))
@@ -985,7 +989,7 @@ fn empty(ui: &Ui, p: Paint) -> Option<El> {
 
 fn detail(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> El {
     let pane = &ui.history;
-    if multi(ui) && pane.selection.len() >= 2 {
+    if pane.selection.len() >= 2 {
         return selection::card(ui, p);
     }
     let Some(entry) = pane.selected.and_then(|id| pane.entry(id)) else {
@@ -1286,9 +1290,11 @@ fn again_section(ui: &Ui, p: Paint, id: u64, layer: &mut Vec<El>) -> El {
 
 /// The chosen model's language for this run, and Transcribe.
 fn language_row(ui: &Ui, p: Paint, pending: &Pending, layer: &mut Vec<El>) -> El {
-    use crate::transcription::models::language_name;
-    let choices = language_choices(pending.model).unwrap_or_default();
-    let labels: Vec<&str> = choices.iter().map(|code| language_name(code)).collect();
+    use crate::transcription::models::{language_name, menu_order};
+    let choices = language_choices(pending.model)
+        .map(|choices| menu_order(&choices))
+        .unwrap_or_default();
+    let labels: Vec<&'static str> = choices.iter().copied().map(language_name).collect();
     let current = tr_named(
         "{model} · Language: {language}",
         &[
@@ -1296,28 +1302,37 @@ fn language_row(ui: &Ui, p: Paint, pending: &Pending, layer: &mut Vec<El>) -> El
             ("language", language_name(&pending.language)),
         ],
     );
+    let open = ui.open == Some(Menu::HistoryAgainLanguage);
+    let chosen = choices
+        .iter()
+        .position(|code| *code == pending.language)
+        .map(|index| format!("option{index}"));
     let languages = Select::new("again-language", &labels)
         .appearance(SelectAppearance::Inline)
         .current(Some(&current))
-        .open(ui.open == Some(Menu::HistoryAgainLanguage))
-        .on_toggle(|ui: &mut Ui| {
-            ui.open =
-                (ui.open != Some(Menu::HistoryAgainLanguage)).then_some(Menu::HistoryAgainLanguage);
-        })
+        .open(open)
         .on_close(|ui: &mut Ui| ui.open = None)
-        .on_choose(|ui: &mut Ui, choice: &str, _: &mut Tx| {
+        .on_choose(move |ui: &mut Ui, choice: &str, _: &mut Tx| {
             ui.open = None;
             if let Some(pending) = &mut ui.history.pending
-                && let Some(code) = language_choices(pending.model).and_then(|choices| {
-                    choices
-                        .into_iter()
-                        .find(|code| crate::transcription::models::language_name(code) == choice)
-                })
+                && let Some(code) = choices
+                    .iter()
+                    .copied()
+                    .find(|code| language_name(code) == choice)
             {
                 pending.language = code.into();
             }
         })
         .build(p.k, layer)
+        .on_press_tx(super::controls::revealing_press(
+            open,
+            "again-language-content".into(),
+            chosen,
+            |ui: &mut Ui| {
+                ui.open = (ui.open != Some(Menu::HistoryAgainLanguage))
+                    .then_some(Menu::HistoryAgainLanguage);
+            },
+        ))
         .label(tr("Language"))
         .a11y_value(current.clone());
     row()
