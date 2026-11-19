@@ -830,6 +830,52 @@ fn the_sidebar_always_shows_output() {
     }
 }
 
+/// Labs › Modes editor brings the old editor back as a main pane, right after
+/// Output, and the Modes destination (the menu bar, `hex window show --pane
+/// modes`) opens it instead of Output. Off, nothing changes.
+#[test]
+fn the_modes_editor_lab_brings_modes_back_to_the_sidebar() {
+    let mut rt = runtime("mac-labs", true, (980.0, 2000.0));
+    unfold_labs(&mut rt);
+    assert!(rt.find("nav-modes").is_none(), "off, Output replaces Modes");
+    // Off, the Modes destination still lands on Output.
+    show(&mut rt.state, Destination::Modes, &mut rune::Tx::default());
+    rt.invalidate();
+    settle(&mut rt);
+    assert_eq!(rt.state.pane, Pane::Output);
+    // Its card turns the editor on.
+    tap(&mut rt, "nav-labs");
+    tap(&mut rt, "lab-modes-editor");
+    assert!(rt.state.settings.labs.modes_editor);
+    // It joins the sidebar right after Output, and Command-3 opens it.
+    tap(&mut rt, "nav-output");
+    assert!(rt.find("nav-modes").is_some());
+    let order = labs::order(&rt.state);
+    let output = order
+        .iter()
+        .position(|pane| *pane == Pane::Output)
+        .expect("Output is a main pane");
+    assert_eq!(order.get(output + 1), Some(&Pane::Modes));
+    key(&mut rt, Key::Command('3'), Mods::default());
+    settle(&mut rt);
+    assert_eq!(rt.state.pane, Pane::Modes, "Command-3 is Modes now");
+    // The menu bar and `hex window show --pane modes` open the editor too.
+    show(&mut rt.state, Destination::Modes, &mut rune::Tx::default());
+    rt.invalidate();
+    settle(&mut rt);
+    assert_eq!(rt.state.pane, Pane::Modes);
+    // Off while the editor shows, the adoption fallback leaves the hidden
+    // pane for Output, as a saved `hex settings set labs.modes_editor off`
+    // does while the window shows it.
+    crate::labs::Feature::ModesEditor.set(&mut rt.state.settings, false);
+    assert!(!Pane::Modes.shown(&rt.state));
+    assert!(leave_hidden_pane(&mut rt.state));
+    rt.invalidate();
+    settle(&mut rt);
+    assert_eq!(rt.state.pane, Pane::Output);
+    assert!(rt.find("nav-modes").is_none());
+}
+
 #[test]
 fn the_sidebar_switches_panes_and_keeps_settings() {
     let mut rt = runtime("portal", true, PANE_SIZE);
@@ -1085,6 +1131,49 @@ fn segments_and_switch_tracks_hover_at_once() {
     }
 }
 
+/// An unset model on a catalog with a ranked pick is Hex's own automatic
+/// choice, not OpenCode's default; with no ranked model it really is
+/// OpenCode's default.
+#[test]
+fn an_unset_model_says_automatic_only_while_hex_ranks_a_model() {
+    let mut rt = runtime("modes", true, PANE_SIZE);
+    rt.state.settings.dictation_processing.modes[0]
+        .post_processing
+        .model = None;
+    rt.invalidate();
+    settle(&mut rt);
+    let shown = texts(&rt);
+    assert!(shown.iter().any(|text| text == "Automatic"), "{shown:?}");
+    assert!(!shown.iter().any(|text| text == "Default"), "{shown:?}");
+
+    rt.state.models.open_picker();
+    rt.invalidate();
+    settle(&mut rt);
+    assert_eq!(
+        element(&rt, "model-picker-option-0").label.as_deref(),
+        Some("Automatic")
+    );
+
+    let mut rt = runtime("modes", true, PANE_SIZE);
+    rt.state.models = models::Models::fixture_unranked();
+    rt.state.settings.dictation_processing.modes[0]
+        .post_processing
+        .model = None;
+    rt.invalidate();
+    settle(&mut rt);
+    let shown = texts(&rt);
+    assert!(shown.iter().any(|text| text == "Default"), "{shown:?}");
+    assert!(!shown.iter().any(|text| text == "Automatic"), "{shown:?}");
+
+    rt.state.models.open_picker();
+    rt.invalidate();
+    settle(&mut rt);
+    assert_eq!(
+        element(&rt, "model-picker-option-0").label.as_deref(),
+        Some("Use OpenCode default")
+    );
+}
+
 #[test]
 fn choosing_an_opencode_model_saves_it() {
     let mut rt = runtime("modes", true, PANE_SIZE);
@@ -1108,7 +1197,7 @@ fn choosing_an_opencode_model_saves_it() {
             .post_processing
             .model,
         None,
-        "back to the OpenCode default"
+        "back to the automatic model"
     );
 }
 
@@ -1249,6 +1338,45 @@ fn history_selects_deletes_and_clears_in_two_steps() {
 }
 
 #[test]
+fn history_clear_removes_a_usage_rollup_with_no_entries() {
+    use crate::history::{History, HistoryRetention, HistoryStore};
+
+    let directory =
+        std::env::temp_dir().join(format!("hex-rune-history-usage-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("history.json");
+    let history = History::new(HistoryStore::open(
+        path.clone(),
+        HistoryRetention::Week,
+        crate::history::now_ms(),
+    ));
+    crate::history::usage::count(
+        &crate::history::usage::path(&path),
+        crate::history::now_ms(),
+        5,
+        1_000,
+    )
+    .unwrap();
+    let check = history.clone();
+    let mut rt = runtime("history-empty", true, PANE_SIZE);
+    rt.state.history = history::HistoryPane::shared(Some(history));
+    rt.state.history.reload();
+    rt.state.pane = Pane::History;
+    rt.invalidate();
+    settle(&mut rt);
+    assert!(check.has_usage(), "the rollup exists with no entries");
+
+    tap(&mut rt, "history-retention-field-trigger");
+    let clear = menu_item(&rt, "history-retention", "Clear all history…");
+    tap(&mut rt, &clear);
+    assert!(rt.state.history.clear_armed);
+    tap(&mut rt, "history-confirm-clear");
+    assert!(!check.has_usage(), "Clear all deleted the rollup");
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[test]
 fn history_delete_confirmation_stops_when_the_pane_moves_on() {
     use crate::history::{History, HistoryDraft, HistoryKind, HistoryRetention, HistoryStore};
     let directory =
@@ -1341,6 +1469,39 @@ fn history_stats_button_opens_and_closes_the_dialog() {
     assert!(rt.state.history.stats_open);
     assert!(rt.find("history-stats-dialog").is_some());
     assert!(texts(&rt).iter().any(|text| text == "Dictation stats"));
+    // Headline tiles, the daily chart, the app bars, Output's share, and
+    // Output time all show for the fixture, and the numbers group their
+    // thousands.
+    for key in [
+        "tile-dictations",
+        "tile-words",
+        "tile-time-saved",
+        "tile-wpm",
+        "tile-streak",
+        "tile-busiest-hour",
+        "history-stats-typing",
+        "history-stats-daily",
+        "history-stats-hours",
+        "history-stats-apps",
+        "history-stats-changed",
+        "history-stats-output-time",
+    ] {
+        assert!(rt.find(key).is_some(), "{key} shows");
+    }
+    let shown = texts(&rt);
+    assert!(shown.iter().any(|text| text == "128,402"), "{shown:?}");
+    assert!(shown.iter().any(|text| text == "1,284"), "{shown:?}");
+    // Labs › Dictation stats adds the year heatmap from its rollup.
+    rt.state.history.usage = Some(history::HistoryPane::fixture_usage());
+    rt.state.settings.labs.history_stats = true;
+    crate::labs::apply(&rt.state.settings.labs);
+    rt.invalidate();
+    settle(&mut rt);
+    assert!(
+        rt.find("history-stats-yearly").is_some(),
+        "the heatmap shows"
+    );
+    assert!(rt.find("history-stats-typing").is_some());
     tap(&mut rt, "history-stats-close");
     assert!(!rt.state.history.stats_open);
     assert!(rt.find("history-stats-dialog").is_none());
@@ -1387,6 +1548,7 @@ fn history_stats_button_opens_and_closes_the_dialog() {
 
     tap(&mut rt, "history-stats-open");
     rt.state.history.stats = Some(Default::default());
+    rt.state.history.usage = None;
     rt.invalidate();
     settle(&mut rt);
     assert!(
@@ -1408,6 +1570,83 @@ fn history_stats_button_opens_and_closes_the_dialog() {
         "turning the lab off closes the dialog"
     );
     assert!(rt.find("history-stats-open").is_none());
+}
+
+/// The dialog leaves out the sections a summary has nothing for, and keeps
+/// the tiles.
+#[test]
+fn history_stats_dialog_hides_sections_with_nothing_to_show() {
+    let mut rt = runtime("history", true, PANE_SIZE);
+    rt.state.history.stats = Some(crate::history::stats::HistoryStats {
+        dictations: 3,
+        words: 12,
+        ..Default::default()
+    });
+    rt.state.settings.labs.history_stats = true;
+    crate::labs::apply(&rt.state.settings.labs);
+    rt.state.history.stats_open = true;
+    rt.invalidate();
+    settle(&mut rt);
+    assert!(rt.find("history-stats-dialog").is_some());
+    assert!(rt.find("tile-dictations").is_some());
+    for key in [
+        "history-stats-daily",
+        "history-stats-apps",
+        "history-stats-output-time",
+    ] {
+        assert!(rt.find(key).is_none(), "{key} stays out");
+    }
+    // With no Output changes at all, its meter still reads zero.
+    assert!(rt.find("history-stats-changed").is_some());
+}
+
+/// The dialog's worst case in the window's least size: it stays inside the
+/// window, keeps its title and Close, and scrolls the sections between them.
+#[test]
+fn the_stats_dialog_fits_the_smallest_window_with_a_scrolling_body() {
+    let rt = runtime("history-stats", true, (860.0, 560.0));
+    let (dialog, _) = rt.presented("history-stats-dialog").expect("the dialog");
+    assert!(
+        dialog[1] >= 0.0 && dialog[1] + dialog[3] <= 560.0,
+        "the dialog fits the window: {dialog:?}"
+    );
+    let (close, _) = rt.presented("history-stats-close").expect("Close");
+    assert!(
+        close[1] + close[3] <= dialog[1] + dialog[3],
+        "Close stays inside the dialog: {close:?} in {dialog:?}"
+    );
+    let (body, _) = rt.presented("history-stats-body").expect("the body");
+    let (sections, _) = rt
+        .presented("history-stats-sections")
+        .expect("the sections");
+    assert!(
+        sections[3] > body[3],
+        "the body scrolls: {sections:?} in {body:?}"
+    );
+    assert!(
+        body[1] + body[3] <= close[1],
+        "the scrolling viewport ends before the footer: {body:?} in {close:?}"
+    );
+}
+
+/// At a tall window the sections fit, so the dialog draws no scroll body at
+/// all and takes the sections' own height. The year heatmap and hourly strip
+/// make a richer dialog than the default window's, so this uses a taller one.
+#[test]
+fn the_stats_dialog_has_no_scroll_body_when_its_sections_fit() {
+    let rt = runtime("history-stats", true, (980.0, 1_080.0));
+    assert!(
+        rt.find("history-stats-body-scroll-area").is_none(),
+        "no scroll body"
+    );
+    let (body, _) = rt.presented("history-stats-body").expect("the body");
+    let (sections, _) = rt
+        .presented("history-stats-sections")
+        .expect("the sections");
+    assert!(
+        sections[3] <= body[3],
+        "the sections fit the body: {sections:?} in {body:?}"
+    );
 }
 
 /// History, settled.

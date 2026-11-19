@@ -306,12 +306,31 @@ Windows modifier-only shortcut                           // dictate.windows-lone
   └── Hex's own injected keys (paste, mask) -> Skipped by the hook (HEX_INJECTED)
 ```
 
-On layouts where Right Alt is AltGr, Windows adds a Left Ctrl press, so Right
-Alt alone never matches there; bind Right Ctrl instead. Checks:
+On layouts where Right Alt is AltGr, Windows sends a synthesized Left Ctrl
+(scan code 0x21D, not 0x1D), and `GetAsyncKeyState` reports it as a real Ctrl.
+The listener's hook and the recorder's own both leave it out, so Right Alt
+alone fires there and recording it stores `right-option`; it still reaches the
+app, so AltGr keeps typing. A modifier-only binding an AltGr-layout recording
+made before this (`control+option`) still fires on AltGr, while a real Left
+Ctrl with Right Alt is a chord and matches only a binding that names Ctrl. On
+AltGr layouts, AltGr plus a typing key (a letter, a digit, or a punctuation
+key) types its character instead of pressing a Ctrl+Alt shortcut, so the key
+reaches the app (#1964): use Left Ctrl+Alt for those shortcuts. A key that
+types nothing keeps its chord, so AltGr+F9 still presses Ctrl+Alt+F9, and
+AltGr never presses an Alt+<key> chord. Any key joining the hold still
+discards it. Checks:
 `one_modifier_alone_is_a_shortcut_and_alt_or_windows_mask_their_release`,
+`altgr_left_ctrl_is_no_ctrl_for_a_right_alt_shortcut`,
+`an_altgr_recorded_control_option_still_fires`,
+`a_key_chord_on_altgr_is_not_alt_with_that_key`,
 `a_key_joining_a_held_modifier_ends_it_quietly_unless_it_records` in
-[windows/input.rs](../../src/windows/input.rs), cross-compiled only; the menu
-mask and AltGr behavior have not run on a Windows PC.
+[windows/input.rs](../../src/windows/input.rs),
+`left_control_bits_follow_the_hooks_and_heal_a_missed_release`,
+`a_typing_key_is_a_letter_a_digit_or_punctuation` in
+[windows/input/modifiers.rs](../../src/windows/input/modifiers.rs), and
+`altgr_records_right_alt_alone`, `altgr_with_a_key_records_the_ctrl_windows_added`
+in [windows/input/chord.rs](../../src/windows/input/chord.rs), cross-compiled
+only; the menu mask and AltGr behavior have not run on a Windows PC.
 
 **Fixed November 4, 2026 (issue 1254):** a Windows key chord holding Alt or
 Windows (Alt+0, say) swallows its key, so the app saw Alt pressed and released
@@ -595,9 +614,28 @@ A dictation's OpenCode rewrite or voice prompt with no chosen model walks Hex's
 ranked fast models: the list is cached per service, any one failing drops the
 cache (the next request reads OpenCode's catalog again), and when every ranked
 model fails OpenCode's own default model answers, so a list read while OpenCode
-was still loading no longer fails every request until a restart (#1123). Check:
-`stale_ranked_models_fall_back_to_the_default_model` in
-[dictation/processor.rs](../../src/dictation/processor.rs).
+was still loading no longer fails every request until a restart (#1123).
+Providers that run a model through a local agent harness, like Claude Agent,
+are never picked automatically because each request pays the harness's startup,
+and they stay explicitly selectable (#1954). While
+that list has a model, the mode's model row and the picker's unset entry say
+Automatic (the entry keeps the model's name); only with no ranked model listed
+do they say Default and Use OpenCode default, because then OpenCode's own
+default answers. `live.ndjson` and History's processing observation record the
+rewrite model as `provider/id` in a `model` field, omitted when no model was
+named (OpenCode's own default answered, Hex's automatic choice failed before any
+model answered, or the on-device Apple Intelligence cleanup ran). The "dictation
+post-processing" and "voice prompt" completed and failed log lines name it too:
+`provider/id` for the named model that answered, or on failure the one the
+request asked for; `opencode default` when no model was named and OpenCode's
+default answered; `automatic` when no model was named and none answered. Checks:
+`stale_ranked_models_fall_back_to_the_default_model`,
+`agent_harness_models_never_rank_and_fall_back_to_the_default_model`,
+`a_processing_observation_names_the_model_that_answered`,
+`a_processing_log_line_names_the_model_or_its_automatic_choice`, and
+`an_unset_model_on_a_ranked_catalog_is_automatic` in
+[dictation/processor.rs](../../src/dictation/processor.rs) and
+[desktop/opencode_catalog.rs](../../src/desktop/opencode_catalog.rs).
 
 ### Terminal Paste Shortcut (Labs, Windows and Linux)
 
@@ -1425,6 +1463,22 @@ Release when idle -> Press shortcut                   // dictate.cold-microphone
      └── Labs › Keep mic open after dictating -> Keep it open for the
          chosen window (30 s, 1/3/5/30 min), then close; a press inside it
          takes the warm path above with its pre-roll (labs.md)
+
+Person away, warm microphone                          // dictate.warm-away; macOS
+  -> Display asleep, session locked, or Mac going to sleep releases it like
+     Release when idle; back on wake or unlock
+  -> Launch reads the current display and lock state, so Hex starts released
+     when it launches asleep or locked
+  -> Ignores Labs › Keep mic open after dictating's window (up to 30 min): the
+     idle microphone closes at once
+  -> Back, or the setting switched off by hand -> a plain open; a press while
+     it opens becomes a pending capture
+  -> A press before the stream is back stays cold: wall-clock edge, no
+     pre-roll, tone once it opens, so it never anchors to a closed
+     timeline's zero instant
+  -> Checks: `a_press_stays_cold_until_the_warm_microphone_is_back`,
+     `a_warm_microphone_releases_while_away_and_keeps_a_press_during_its_reopen`,
+     `an_away_release_bypasses_the_labs_linger_window`
 ```
 
 Source: `DictationCapture` in [dictation.rs](../../src/dictation.rs); checks:
@@ -1456,7 +1510,18 @@ tail also keeps any key-up or click sound made at release; no filtering is appli
 The owner in [dictation/audio.rs](../../src/dictation/audio.rs) has
 `cold_capture_restart_rejects_late_open_results_and_closes_after_finish` and
 `pending_open_uses_physical_press_for_intentional_threshold`: controlled opening
-and ownership transitions, not physical device startup latency. Tail checks there
+and ownership transitions, not physical device startup latency. It also has
+`a_warm_microphone_releases_while_away_and_keeps_a_press_during_its_reopen`:
+with the setting off, macOS releases the warm microphone while the display
+sleeps, the session is locked, or the Mac sleeps
+([audio/system_idle.rs](../../src/audio/system_idle.rs), NSWorkspace, the
+distributed screen-lock notifications, and the display and lock state read at
+launch), and a press during the reopen is kept as a pending capture instead of
+being refused as a failed stream. The away release bypasses Labs › Keep mic
+open after dictating's window (`an_away_release_bypasses_the_labs_linger_window`),
+and switching the setting off by hand also opens with a plain request, so a
+press during that reopen becomes a pending capture too. The setting and
+`hex status` keep reporting the persisted value. Tail checks there
 drive the owner with a fake stream: `release_waits_for_its_tail_and_keeps_no_later_audio`,
 `a_press_inside_the_tail_starts_its_own_capture_after_the_old_one_finishes`,
 `a_stalled_or_failed_stream_bounds_the_tail_wait`, and
@@ -2164,6 +2229,27 @@ sequence and the identifier match, not insertion into a real session.
 **Windows paste (issue 477):** Windows puts the transcript on the clipboard,
 waits for Shift, Alt, and Win to come up, sends Ctrl+V, and restores the
 previous clipboard 500 ms later unless a newer paste or another app changed it.
+Back-to-back dictations join as they do on macOS: when no key, click, or
+foreground-window change happened between them, the next transcript is pasted
+as a continuation with a space and sentence-aware capitalization. Paste last
+dictation continues too. A real key or click (any of the five mouse buttons)
+ends the join, and so does input another program injects, while the
+shortcut's own chord and Hex's own synthetic keys do not; a window switch ends
+it as a context change does on macOS. The shortcut's own press never ends
+it, even when Labs › Share dictation shortcut lets that key reach the app,
+while a bare press of the same key without the shortcut's modifiers is
+ordinary typing and does end the join.
+Everything in between is the shared [`continuation`](../../src/continuation.rs)
+policy. Sources: `ends_continuation` in
+[windows/input/activity.rs](../../src/windows/input/activity.rs), wired into the
+keyboard and mouse hooks in [windows/input.rs](../../src/windows/input.rs), and
+`text_to_paste` in [windows/paste.rs](../../src/windows/paste.rs). Checks:
+`real_input_ends_a_paste_continuation_but_hexs_own_events_do_not`,
+`a_shared_shortcut_trigger_does_not_end_a_paste_continuation`,
+`a_bare_trigger_key_ends_a_paste_continuation_but_the_shortcut_does_not`,
+`back_to_back_dictations_join_until_input_breaks_the_session`, and
+`a_paste_joins_only_the_session_that_made_it`; no automated check pastes into a
+real Windows app.
 Labs › Terminal paste (`paste_with_shift`, off by default; on Linux it is a
 General › Advanced row) sends Ctrl+Shift+V instead, for apps that ignore
 a synthetic Ctrl+V (the herdr desktop app); a Labs › Terminal paste shortcut
@@ -2836,6 +2922,14 @@ TextEdit process were stopped afterward.
   (CPU-forced) evidence only. Real microphones, room noise, Bluetooth inputs,
   and a physical shortcut on a Mac or a Linux GPU have not been observed with a
   live stream.
+- **M5-class Metal:** macOS `main` sets `GGML_METAL_TENSOR_DISABLE` before any
+  backend or thread starts, because ggml's Metal tensor-API kernels (which it
+  enables by itself on M5/M6/A19/A20 GPUs) give wrong results there, so every
+  GGUF model transcribed to empty or garbage text (#1965). This build has not
+  been run on an M5 Mac; the evidence is the reporter's
+  `GGML_METAL_TENSOR_DISABLE=1 hex transcribe` run. Ignored model tests and
+  `scripts/dictation-corpus.sh` run under the test harness's own `main`, so set
+  the variable yourself when running them on an M5.
 - **Paste consumption:** current paste policy waits a fixed interval rather than
   acknowledging target consumption. Internal ordering does not establish
   correctness for an arbitrarily slow target application.

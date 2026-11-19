@@ -910,6 +910,8 @@ Do not start it beside an existing listener.
 ```ts
 Completed output                         // output
 ├── Paste -> Current focus, in submission order
+│   ├── Back-to-back dictations with no key, click, or window change between
+│   │   -> joined with a space and sentence-aware capitalization (macOS, Windows)
 │   ├── Previous clipboard restored 500 ms later, unless something newer replaced it
 │   ├── Windows -> the transcript is marked out of clipboard history (Win+V) and cloud sync (#851)
 │   ├── Labs > Keep dictation on clipboard (every OS, off) -> the dictation stays on the clipboard (labs.md)
@@ -938,9 +940,13 @@ Completed output                         // output
     │   -> the card's "Transcribe again" menu runs it through any installed model
     │   -> the new text with Copy and Replace; Clear all and retention delete the audio (labs.md, #1032)
     │   -> Replace keeps the old text as one of 5 earlier versions: Copy, Use this version (#1177)
-    └── Labs > Copy dictation audio (off) -> copies a kept WAV as a file   // labs.copy-dictation-audio
-        -> the card's Copy audio beside Play, and the menu bar or tray's Copy last dictation audio
-        -> needs Keep recordings; it stores no audio itself (labs.md)
+    ├── Labs > Copy dictation audio (off) -> copies a kept WAV as a file   // labs.copy-dictation-audio
+    │   -> the card's Copy audio beside Play, and the menu bar or tray's Copy last dictation audio
+    │   -> needs Keep recordings; it stores no audio itself (labs.md)
+    └── Labs > Dictation stats (off) -> History's Stats dialog and hex history stats   // labs.history-stats
+        -> headline tiles, time saved with a typing-speed slider, the busiest hour, a 30-day chart, top apps
+        -> a 53-week heatmap and all-time totals, from a daily rollup in usage.json with no text or app names
+        -> Clear all history deletes the rollup too (labs.md)
 Every entry since #1177 -> "Speech model" fact: the model that made its text (+ language when chosen)
 ```
 
@@ -1007,9 +1013,9 @@ recorder, onboarding or another modal keeps its keys. Labs keeps its own ⌘F.
 
 ```ts
 Sidebar                                  // settings.nav
-├── General, Output, History, then each feature that is on: Captures
-│   (Labs › Screenshots, macOS), Meetings and Voice Filter (Labs toggles),
-│   Annotate, Playground (Labs, an item)
+├── General, Output, Modes (Labs › Modes editor, while on), History, then each
+│   feature that is on: Captures (Labs › Screenshots, macOS), Meetings and
+│   Voice Filter (Labs toggles), Annotate, Playground (Labs, an item)
 ├── Labs -> a store of unfinished features, each off by default: search, categories, cards with their own settings inline; hex://labs/<feature> opens its group and scrolls to its card (labs.md)
 └── What’s new -> recent features and their controls; Down from Labs selects it
     // Version, update actions, and Quit (Linux and Windows) are outside the navigation list
@@ -1088,6 +1094,12 @@ General                                  // settings
 │   ├── One switch, no confirmation; its line says what the state means (issue 61), on every OS
 │   ├── Off (default) -> "The mic stays ready so dictation starts instantly; your system shows it in use"
 │   │   Open while idle; pre-roll available
+│   │   └── macOS: released while the display sleeps, the session is locked, or the Mac
+│   │       sleeps, and back on wake or unlock   // dictate.warm-away
+│   │       ├── Launch reads the current display and lock state, so it starts released
+│   │       ├── Ignores Labs › Keep mic open after dictating's window (up to 30 min)
+│   │       └── Turning the setting off reopens it with a plain open; a press
+│   │           during that reopen becomes a pending capture
 │   └── On -> "The mic opens only while you dictate; the first moment can be clipped"
 │       Open on press; no pre-roll; startup delay
 ├── While dictating -> Mute / Pause media / Lower audio / Do nothing
@@ -1391,7 +1403,9 @@ Output (main sidebar, replaces the Modes editor) // rune_ui/output.rs; scenes ou
 │   unbound by default: copies the focused field, runs its Output steps, re-checks the
 │   selection, and replaces it (labs.md, dictation.md)
 └── In some apps -> Each mode's apps and its steps (Only: …), opens to list them
-    // the old Modes editor stays in the code for its scenes, unreachable
+    // Labs > Modes editor (off) shows the old Modes editor as its own sidebar pane,
+    // right after Output, with editable apps, corrections, rewriting, and
+    // transformations; the Modes destination opens it instead of Output (labs.md)
     // Its drafts and delete confirmation follow the unique saved mode name
     // across reloads; removing, renaming or duplicating it drops the draft.
     // A dirty field stays; untouched fields adopt the new values individually.
@@ -1408,7 +1422,7 @@ Selected mode                            // replaces Global's rewrite and transf
   -> Global's corrections, then the mode's  // every OS
   -> Labs > Rewrite by voice's phrase          // Labs off, or no phrase, processes as before
      -> one spoken instruction replaces the rewrite, with the mode's model and deadline (labs.md)
-  -> OpenCode transformation             // optional provider-backed rewrite
+  -> OpenCode transformation             // optional provider-backed rewrite; an unset model is Hex's ranked pick, shown Automatic
   -> Transformations                     // ordered text chain
   -> Paste or Send
 
@@ -1638,6 +1652,9 @@ or the driver installed; off, the pane is hidden  // fun.hex-microphone; macOS, 
 │   │   └── Inline state -> Installing… / Uninstalling… / Cancelled / Failed with reason
 ├── Live microphone capture -> Raw audio to Hex transcription (unmodified)
 │   ├── Source -> Hex's dictation microphone (System default follows the OS default, never Hex Microphone itself), never a meeting's second stream
+│   │   └── macOS: with Release when idle off, locking the screen or sleeping the
+│   │       display releases that microphone, so Hex Microphone pauses until wake or unlock
+│   │       (dictate.warm-away)
 │   ├── Lock-free ring -> 48 kHz virtual sink (macOS IOProc; Linux 11 ms blocks into a one-page pipe) -> Raised-cosine fade on intentional hold
 │   │   └── Not dictating -> bit-exact pass-through; non-48 kHz inputs resample continuously
 │   └── Ring underflows/overflows -> process.log each minute while an app reads it, and on sink stop

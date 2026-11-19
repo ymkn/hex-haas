@@ -74,6 +74,7 @@ impl Feature {
             Self::MoreDictationShortcuts => "More dictation shortcuts",
             Self::PauseMenu => "Pause from menu bar",
             Self::CalendarMenu => "Upcoming meetings in menu bar",
+            Self::CalendarSelectAll => "Select all calendars",
             Self::PrintStart => "Dictation for a command",
             Self::VoicePrompt => "Rewrite by voice",
             Self::CursorContext => "Rewrite reads nearby text",
@@ -83,6 +84,7 @@ impl Feature {
             Self::CopyDictationAudio => "Copy dictation audio",
             Self::StopPhrase => "Stop phrase",
             Self::HoldThroughKeys => "Hold through other keys",
+            Self::ModesEditor => "Modes editor",
         }
     }
 
@@ -179,7 +181,7 @@ impl Feature {
                 "Use Menu, Pause, or Scroll Lock as a shortcut by itself, such as Caps Lock remapped to Menu"
             }
             Self::HistoryStats => {
-                "Add a Stats button to History that summarizes the dictations you kept. The hex history stats command prints it too"
+                "Add a Stats button to History that summarizes the dictations you kept, with time saved against your typing speed, the hour you dictate most, a year-long heatmap, and all-time totals kept beyond History's retention (counts only, no text). The hex history stats command prints it too"
             }
             Self::RecentDictations => {
                 "Copy one of your last five dictations from the menu bar, under Paste Last Dictation"
@@ -270,6 +272,9 @@ impl Feature {
             Self::CalendarMenu => {
                 "Show your next calendar meetings in the menu bar menu. Choosing one with a call link opens it; that click doesn't start a recording."
             }
+            Self::CalendarSelectAll => {
+                "Adds a button to the Calendars row to include or leave out every calendar at once."
+            }
             Self::PrintStart => {
                 "A command such as hex dictation start --print gets the text back when a dictation ends, without pasting or copying it"
             }
@@ -299,6 +304,9 @@ impl Feature {
             }
             Self::HoldThroughKeys => {
                 "If a shortcut is made only of Option, Command, Shift, Control, or Globe, with no letter or number key, pressing another key or clicking after the first second no longer ends the dictation; let go to finish"
+            }
+            Self::ModesEditor => {
+                "Edit each mode's apps, corrections and OpenCode rewrite in a Modes pane"
             }
         }
     }

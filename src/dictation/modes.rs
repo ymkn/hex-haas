@@ -138,6 +138,7 @@ pub fn history_draft(
             crate::history::HistoryProcessing {
                 profile: processing.profile.clone(),
                 latency_ms: processing.latency_ms,
+                model: processing.model.clone(),
                 fallback: processing.fallback.clone(),
             }
         }),
@@ -369,7 +370,10 @@ mod tests {
 
         assert_eq!(processed.text, "keep opencode exact.");
         let observation = processed.observation.as_ref().expect("transformation ran");
-        assert_eq!(observation.profile, "Custom transformations");
+        assert_eq!(
+            observation.profile,
+            crate::dictation::processor::CUSTOM_TRANSFORMATIONS
+        );
         assert_eq!(observation.fallback, None);
     }
 

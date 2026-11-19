@@ -99,7 +99,7 @@ impl Feature {
                 "Use Menu, Pause, or Scroll Lock as a shortcut by itself, such as Caps Lock remapped to Menu"
             }
             Self::HistoryStats => {
-                "Add a Stats button to History that summarizes the dictations you kept; the hex history stats command prints it too"
+                "Add a Stats button to History that summarizes the dictations you kept, with time saved against a typing speed, the local hour you dictate most, a year-long heatmap, and all-time totals from a daily rollup in usage.json (counts only, no text or app names) that outlives History's retention; off, the rollup is never written or read; the hex history stats command prints it too"
             }
             Self::RecentDictations => {
                 "Copy one of your last five dictations from the menu bar, under Paste Last Dictation"
@@ -190,6 +190,9 @@ impl Feature {
             Self::CalendarMenu => {
                 "Show your next calendar meetings in the menu bar menu. Choosing one with a call link opens it; that click doesn't start a recording (macOS, with Meetings on and a calendar connected)"
             }
+            Self::CalendarSelectAll => {
+                "Add a Select all or Deselect all button beside the Calendars row in Meetings settings, so every calendar is included or left out at once (macOS)"
+            }
             Self::PrintStart => {
                 "Let hex dictation start --print hand the transcript to the command that started it, however the recording ends"
             }
@@ -216,6 +219,9 @@ impl Feature {
             }
             Self::HoldThroughKeys => {
                 "If a shortcut is made only of Option, Command, Shift, Control, or Globe, with no letter or number key, pressing another key or clicking after the first second no longer ends the dictation; let go to finish. Before that first second a chord still ends it, and a shortcut with a key is unchanged"
+            }
+            Self::ModesEditor => {
+                "Edit each mode's apps and websites, corrections, OpenCode rewrite (on or off, and its model), and transformations in a Modes pane; Output stays the read-only view"
             }
         }
     }

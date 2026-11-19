@@ -2,8 +2,8 @@
 //! each behind its own switch, off by default. There is no master switch:
 //! Settings › Labs lists every feature as a card with a toggle, under its
 //! group's collapsible header (`Feature::group`). A feature
-//! with its own pane (Meetings, Voice Filter, Playground) joins the sidebar
-//! as a normal item while on and is hidden while off; a behaviour-only
+//! with its own pane (Meetings, Voice Filter, Playground, the Modes editor)
+//! joins the sidebar as a normal item while on and is hidden while off; a behaviour-only
 //! feature (Live text, Live chapters, Vocabulary help, Words on screen,
 //! the rewrite reading the text around the cursor (macOS),
 //! keyboard-language
@@ -181,6 +181,7 @@ impl Feature {
             Self::ApiBrowserAccess => settings.labs.api_browser_access,
             Self::SpeakersOnly => settings.labs.speakers_only,
             Self::CalendarMenu => settings.labs.calendar_menu,
+            Self::CalendarSelectAll => settings.labs.calendar_bulk_select,
             Self::PauseMenu => settings.labs.pause_menu,
             Self::PrintStart => settings.labs.print_start,
             Self::VoicePrompt => settings.labs.voice_prompt,
@@ -192,6 +193,7 @@ impl Feature {
             Self::CursorContext => settings.labs.cursor_context,
             Self::MoreDictationShortcuts => settings.labs.more_dictation_shortcuts,
             Self::CopyDictationAudio => settings.labs.copy_dictation_audio,
+            Self::ModesEditor => settings.labs.modes_editor,
         }
     }
 
@@ -263,6 +265,7 @@ impl Feature {
             &mut labs.api_browser_access,
             &mut labs.speakers_only,
             &mut labs.calendar_menu,
+            &mut labs.calendar_bulk_select,
             &mut labs.app_model_switching,
             &mut labs.pause_menu,
             &mut labs.print_start,
@@ -275,6 +278,7 @@ impl Feature {
             &mut labs.cursor_context,
             &mut labs.more_dictation_shortcuts,
             &mut labs.copy_dictation_audio,
+            &mut labs.modes_editor,
         ]
     }
 
@@ -353,6 +357,7 @@ impl Feature {
             Self::ApiBrowserAccess => settings.labs.api_browser_access = on,
             Self::SpeakersOnly => settings.labs.speakers_only = on,
             Self::CalendarMenu => settings.labs.calendar_menu = on,
+            Self::CalendarSelectAll => settings.labs.calendar_bulk_select = on,
             Self::PauseMenu => settings.labs.pause_menu = on,
             Self::PrintStart => settings.labs.print_start = on,
             Self::VoicePrompt => settings.labs.voice_prompt = on,
@@ -364,6 +369,7 @@ impl Feature {
             Self::CursorContext => settings.labs.cursor_context = on,
             Self::MoreDictationShortcuts => settings.labs.more_dictation_shortcuts = on,
             Self::CopyDictationAudio => settings.labs.copy_dictation_audio = on,
+            Self::ModesEditor => settings.labs.modes_editor = on,
             // Off, no shortcut keeps a key only the feature allows.
             Self::StandaloneSpecialKeys => {
                 settings.labs.standalone_special_keys = on;
@@ -404,7 +410,7 @@ const SKIP_PAUSES: u64 = 1 << 16;
 const PARAKEET_ULTRA: u64 = 1 << 17;
 const HISTORY_STATS: u64 = 1 << 18;
 const RECENT_DICTATIONS: u64 = 1 << 19;
-// 1 << 20 is free (Stop when the call ends moved to Meetings › Settings).
+// 1 << 20 is free (Yearly stats merged into Dictation stats).
 const KEEP_RECORDINGS: u64 = 1 << 21;
 const HIDE_MENU_BAR_ICON: u64 = 1 << 22;
 // 1 << 23 and 1 << 24 are free (Movable meeting capsules and More call apps
@@ -992,6 +998,10 @@ mod tests {
             .to_string();
         assert!(error.contains("graduated"), "{error}");
         assert_eq!(Feature::from_name("meeting-platform-icons"), None);
+        // Yearly stats is part of Dictation stats now.
+        let error = resolve("yearly-stats", |_| true).unwrap_err().to_string();
+        assert!(error.contains("history-stats"), "{error}");
+        assert_eq!(Feature::from_name("yearly-stats"), None);
     }
 
     #[test]
@@ -1721,6 +1731,31 @@ mod tests {
         assert_eq!(Feature::CalendarMenu.group(), Group::Meetings);
         assert_eq!(Feature::CalendarMenu.settings_key(), "labs.calendar_menu");
         assert_eq!(Feature::CalendarMenu.name(), "calendar-menu");
+    }
+
+    #[test]
+    fn calendar_select_all_is_its_own_switch_and_macos_only() {
+        let mut settings = AppSettings::default();
+        assert!(!Feature::CalendarSelectAll.on(&settings));
+        settings.labs.calendar_bulk_select = true;
+        settings.labs.unload_idle_minutes = 24 * 60;
+        assert!(Feature::CalendarSelectAll.on(&settings));
+        // The state word has no bit for it: the other switches keep theirs.
+        let state = encode_where(&settings.labs, |_| true);
+        assert_eq!(state & PAUSE_MENU, 0);
+        assert_eq!((state >> MINUTES_SHIFT) & MINUTES_MASK, 24 * 60);
+        assert_eq!(
+            Feature::CalendarSelectAll.on_this_os(),
+            cfg!(target_os = "macos")
+        );
+        assert_eq!(Feature::CalendarSelectAll.added(), 20261118);
+        assert_eq!(Feature::CalendarSelectAll.audience(), Audience::Everyone);
+        assert_eq!(Feature::CalendarSelectAll.group(), Group::Meetings);
+        assert_eq!(
+            Feature::CalendarSelectAll.settings_key(),
+            "labs.calendar_bulk_select"
+        );
+        assert_eq!(Feature::CalendarSelectAll.name(), "calendar-select-all");
     }
 
     #[test]

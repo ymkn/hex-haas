@@ -278,6 +278,11 @@ pub(super) const KEYS: &[Key] = &[
         "How long dictation history is kept",
     ),
     key(
+        "typing_wpm",
+        Kind::Integer { min: 10, max: 200 },
+        "Words a minute you type, which Dictation stats compares against your dictations to show the time saved; 40 by default",
+    ),
+    key(
         "labs.live_text",
         Kind::Bool,
         "Labs: provisional words beside the HUD while dictating",
@@ -439,6 +444,13 @@ pub(super) const KEYS: &[Key] = &[
          release still finishes (macOS and Windows)",
     ),
     key(
+        "labs.modes_editor",
+        Kind::Bool,
+        "Labs: a Modes pane in the main sidebar edits each mode's apps and websites, \
+         corrections, OpenCode rewrite (on or off, and its model), and transformations; \
+         Output stays the read-only view",
+    ),
+    key(
         "labs.benchmark_details",
         Kind::Bool,
         "Labs: the Local transcription picker shows each model's raw error rate (WER or CER), benchmark, source, and conditions",
@@ -478,7 +490,7 @@ pub(super) const KEYS: &[Key] = &[
     key(
         "labs.history_stats",
         Kind::Bool,
-        "Labs: a summary of retained dictations at the top of History, and hex history stats",
+        "Labs: a summary of retained dictations at the top of History, with a year-long heatmap and all-time totals from a daily rollup in usage.json (counts only, no text or app names) kept beyond History's retention. While off, the rollup is never written or read; hex history stats prints it too",
     ),
     key(
         "labs.recent_dictations",
@@ -643,6 +655,13 @@ pub(super) const KEYS: &[Key] = &[
         "Labs: the menu bar lists the next calendar meetings, each a local start and end time and \
          title; choosing one that has a call link opens it, and that click doesn't start a \
          recording (macOS, with Meetings on and a calendar connected)",
+    ),
+    key(
+        "labs.calendar_bulk_select",
+        Kind::Bool,
+        "Labs: Meetings settings shows Select all or Deselect all beside the Calendars row, so \
+         every calendar is included or left out at once; calendars added later stay included \
+         (macOS)",
     ),
     key(
         "labs.pause_menu",
@@ -920,6 +939,7 @@ pub(super) const RETIRED: &[(&str, &str)] = &[
     ),
     ("labs.meeting_notes_file", "meetings.export.notes_file true"),
     ("labs.expire_meeting_audio", "meetings.audio_retention week"),
+    ("labs.yearly_stats", "labs.history_stats true"),
 ];
 
 /// Settings that act only where Hex has a capability (by its

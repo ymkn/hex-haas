@@ -136,6 +136,12 @@ substitute for source inspection or a second roadmap.
   assertion on macOS, a logind `idle:sleep` inhibitor (only `idle` where
   polkit refuses a process outside the seat session) on Linux, and a
   system-required power request on Windows.
+- `audio/system_idle`: whether the person demonstrably cannot dictate (the
+  display asleep, the session locked, or the Mac asleep), from NSWorkspace and
+  the distributed screen-lock notifications, with the display and lock state
+  read at launch, so the warm microphone is released while away and does not
+  hold coreaudiod's idle-sleep assertion. macOS only; elsewhere every reason
+  stays clear.
 - `dictation/processor`: the one OpenCode client and ordered processing policy
   for macOS, Windows, and Linux: context-selected corrections, deadline-bounded
   OpenCode rewrite profiles with corrected-transcript fallback, the ranked
@@ -247,8 +253,11 @@ substitute for source inspection or a second roadmap.
   lifecycle, authenticated model preparation, and host-audio transcription.
 - `control/developer_control`: the typed debug-only command/reply protocol the local
   API uses to drive the running app from `hex dev`.
-- `paste`: clipboard insertion, continuation joins, and generation-safe
-  clipboard restoration.
+- `continuation`: the platform-neutral input-activity revision and back-to-back
+  paste join macOS and Windows share; `paste` applies it, the Windows hooks in
+  `windows::input` end it on real keys and clicks, and the `windows::dictation`
+  listener ends it when the foreground window changes.
+- `paste`: clipboard insertion and generation-safe clipboard restoration.
 - `accessibility`: bounded focused-window and selected-text capture through
   Accessibility without touching the clipboard, including the bounded visible
   window text Labs › Words on screen reads (macOS).
@@ -458,7 +467,9 @@ substitute for source inspection or a second roadmap.
 - `history`: the owner-only bounded retained-dictation store: retention
   windows with hard entry and byte caps, atomic crash-safe persistence, and
   search. Text and bounded metadata; audio only with Labs › Keep recordings
-  (`history/recordings`: one owner-only WAV per entry, Transcribe again).
+  (`history/recordings`: one owner-only WAV per entry, Transcribe again), and
+  Labs › Dictation stats' owner-only daily rollup (`history/usage`, counts but
+  no text, 400 days) that outlives retention.
 - `control/transcript_cli`: read-only release commands `hex history` and
   `hex meetings list|show|search` on every OS, versioned JSON projections and
   filters.
@@ -841,7 +852,15 @@ CoreAudio formats, AppleScript details, or event serialization.
   hold threshold returns the press to pending and reopens; on macOS, a later
   failure keeps the audio already delivered as a copy-only dictation, or fails
   the capture when no audio after the start arrived or it is near-silent. Cold
-  opens retry the selected device briefly before falling back.
+  opens retry the selected device briefly before falling back. With it
+  disabled, macOS still releases the warm microphone while the display sleeps,
+  the session is locked, or the Mac goes to sleep, and reopens on wake or
+  unlock (`audio/system_idle.rs`; launch reads the current display and lock
+  state, and the setting and `hex status` keep the persisted value). That away
+  release ignores Labs › Keep mic open after dictating's window. Until the
+  reopen finishes, a press keeps cold-mic behavior, and the reopen is a plain
+  open (also when the setting is switched off by hand), so a press during it
+  becomes a pending capture.
 - Model inference, optional post-processing, and paste must
   never block authoritative audio capture. Their queues remain bounded.
 - CoreAudio capture timestamps and annotated-session CGEvent shortcut timestamps
@@ -954,6 +973,9 @@ CoreAudio formats, AppleScript details, or event serialization.
 - Cohere's advertised encoder input capacity is not its recommended inference
   window. Both GGUF adapters cap Cohere chunks at the reference processor's
   35 seconds (or a stricter advertised bound); capture duration remains unlimited.
+- macOS `main` sets `GGML_METAL_TENSOR_DISABLE` first thing, because ggml's
+  Metal tensor-API kernels give wrong results on M5-class GPUs; the simdgroup
+  kernels every earlier Mac uses are correct.
 - The microphone is either System default (`microphone` unset) or one saved
   device. System default follows the OS default input live: macOS through
   CoreAudio listeners on the default input and the device list (their callbacks
@@ -1172,10 +1194,12 @@ CoreAudio formats, AppleScript details, or event serialization.
   utility-QoS thread that yields to dictation, within a bounded chunk count and
   total deadline. Failures record `notes_error` and leave the Markdown
   untouched. Notes rewrite only the heading Hex wrote and the
-  `<!-- hex:notes -->` block. With Meetings › Settings › Export › Descriptive
-  meeting file names on, notes or chapter refinement that change the title,
-  and user renames, also rename the exported Markdown to the new title,
-  keeping its date and time prefix and never overwriting.
+  `<!-- hex:notes -->` block. Titles and summaries are written in the language
+  spoken in the transcript, never in the instructions' English. With Meetings ›
+  Settings › Export › Descriptive meeting file names on, notes or chapter
+  refinement that change the title, and user renames, also rename the exported
+  Markdown to the new title, keeping its date and time prefix and never
+  overwriting.
 - Annotate (captures; `hex annotate`, alias `hex capture`) is compiled into
   every macOS, Linux, and Windows build and on by default in every build,
   stable included (`capture.enabled`, the pane's switch; the `annotate-on-by-default`
@@ -1223,8 +1247,8 @@ CoreAudio formats, AppleScript details, or event serialization.
   `capture.routing`'s autoSend on, routed by Scrawl's router in Hex's process
   (`capture_host::routing`): one `capture-look` thread per stop, one
   `capture-route` thread with a bounded queue, a rule's send held 3 s for
-  Undo (a page naming its session, by meta tag or `.opencode-session`, sends
-  like a rule and beats one), guesses sent only when picked. Queued sends retry only while neither
+  Undo; a page naming its session, by meta tag or `.opencode-session`, only
+  suggests it. Guesses send only when picked. Queued sends retry only while neither
   Scrawl.app runs nor anything serves the ingest port, and never in tests.
   `capture.routing` never holds a Jev key. A cabled iPhone records through
   `scrawl-helper mirror --no-microphone`, narrated by the dictation timeline

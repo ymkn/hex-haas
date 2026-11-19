@@ -197,8 +197,10 @@ pub fn parakeet_ultra() -> bool {
     on(PARAKEET_ULTRA)
 }
 
-/// History's summary of retained dictations and `hex history stats` (read
-/// when the History pane reloads and when the command starts).
+/// Labs › Dictation stats: History's summary of retained dictations, the
+/// daily rollup that outlives retention, and `hex history stats` (read as
+/// each entry is recorded, when the History pane reloads, and when the
+/// command starts). Off, the rollup is never written or read.
 pub fn history_stats() -> bool {
     on(HISTORY_STATS)
 }

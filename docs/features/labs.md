@@ -53,6 +53,10 @@ Feature             Pane  Toggle (settings.json, hex settings)   On: what it doe
 ├── Voice Filter (Dev) yes experimental.hex_microphone (macOS, Linux) Voice Filter joins the sidebar; feeds the Hex Microphone (macOS driver, Linux PipeWire source)
 │                                        a stable build never feeds it; with the macOS driver installed it keeps the pane with Uninstall alone
 ├── Playground (Dev) yes  labs.playground                        a Playground sidebar item and ⇧⌘D open the story browser
+├── Modes editor    yes   labs.modes_editor                      Modes joins the sidebar right after Output, with every mode's
+│                                        applications, corrections, OpenCode rewrite, and transformations, as the old editor
+│                                        did before Output replaced it; off, `hex window show --pane modes` opens Output
+│                                        // checks: the_modes_editor_lab_brings_modes_back_to_the_sidebar (rune_ui/tests.rs)
 ├── Live text       no    labs.live_text                         provisional words beside the HUD while dictating; its card says when the selected speech model can't stream (Linux: or Speech engine is CPU), so no words would show
 ├── Stop phrase     no    labs.stop_phrase + labs.stop_phrase_text ("stop dictation", every OS)
 │                                        saying the phrase at the end of a hands-free dictation finishes it, as if the
@@ -128,7 +132,7 @@ Feature             Pane  Toggle (settings.json, hex settings)   On: what it doe
 ├── Special keys alone no labs.standalone_special_keys (Linux, Windows) Linux: Menu, Pause, Scroll Lock may be a shortcut's key, alone or with modifiers (#767); Windows: Insert, Home, End, Page Up, Page Down may stand alone (#794)
 ├── § key alone no  labs.section_key_alone       (Linux, macOS) the key left of 1 on ISO keyboards, § or a dead key such as ^, may be a shortcut with no modifier (#1050)
 ├── Microphone key alone no labs.microphone_key        (macOS) the microphone (dictation) key in a laptop keyboard's top row, always reported as Fn with key code 176, may be a shortcut with no modifier (#181)
-├── Dictation stats no    labs.history_stats           History's Stats button opens a summary of retained dictations; hex history stats prints it (#790)
+├── Dictation stats no    labs.history_stats           History's Stats button opens a summary of retained dictations, with headline tiles, a typing-speed slider and time saved, the busiest-hour strip, a daily chart, app and Output bars, and Output time; an owner-only daily rollup (counts only, no text or app names) outlives retention, so the dialog also charts a 53-week heatmap and its headline totals cover all time; Clear all history deletes the rollup even with no entries; hex history stats prints it (#790)
 ├── Copy recent dictations no labs.recent_dictations (macOS) the menu bar's Copy Recent Dictation submenu copies one of the last five dictations (#877)
 ├── Skip long pauses no    labs.skip_pauses             (Linux, Windows) a whole-clip dictation run hears only the head and tail of each long pause (#899)
 ├── Fix results in Output no labs.output_fixes           Output's Try card offers Vocabulary and Fix this, which copies an agent prompt naming the wrong result (#989)
@@ -211,6 +215,13 @@ Feature             Pane  Toggle (settings.json, hex settings)   On: what it doe
 │                                        // calendar_menu_is_its_own_switch_and_macos_only (labs.rs);
 │                                        // the_menu_reads_upcoming_then_meetings_then_actions_then_the_app (macos_rune/status_item.rs);
 │                                        // not observed on a real Mac, in a real menu, or opening a real call link
+├── Select all calendars no labs.calendar_bulk_select  (macOS, with Meetings on) Meetings › Settings › Calendar puts one
+│                                        Select all / Deselect all button beside the Calendars select: Select all clears
+│                                        meetings.calendar.excluded_calendars, and Deselect all sets it to the IDs shown now,
+│                                        so calendars added later are still included; hidden with no calendars, and each
+│                                        calendar's own switch in the menu is unchanged; off, the row is exactly as before
+│                                        // checks: calendar_select_all_is_its_own_switch_and_macos_only (labs.rs);
+│                                        // the_select_all_calendars_lab_saves_every_calendar_at_once (rune_ui/tests/panes.rs)
 ├── ⌘Q closes Settings no labs.quit_closes_window      (macOS) the app menu's Quit Hex (⌘Q) closes the Settings window instead of quitting Hex; dictation keeps running, the menu bar icon still quits (#1473)
 ├── Notch indicator no    labs.notch_indicator         (macOS) on a screen with a notch, the HUD widens the notch sideways in the Dynamic Island's compact style at either visible position: an orange mic and level bars, the macOS spinner, a green checkmark; Hidden still hides it, and flat screens keep the Top/Bottom setting
 ├── Import audio    no    labs.meeting_import           (macOS)   Meetings offers Import audio…: a WAV, M4A, MP3, AIFF, or CAF
@@ -350,7 +361,8 @@ Settings › Labs                          // labs.page, a store (labs/store.rs)
 │   set the store; hex://labs/<lab> also selects that lab's group chip (unless ?category names one), scrolls to its card,
 │   and gives the card a focus border for 1.5 s (Store::flash). It never turns a lab on. An unknown
 │   or absent name -> the page opens and process.log notes it. hex://settings/<pane>
-│   (general, output, history, meetings, voice-filter) opens a main pane; one Hex doesn't show -> General.
+│   (general, output, modes — only while Labs › Modes editor shows it — history,
+│   meetings, voice-filter) opens a main pane; one Hex doesn't show -> General.
 │   Links over 2048 bytes are ignored; a test build's scheme is hex-test://
 ├── Annotate is listed as a lab (Annotate group) wherever Hex has the Annotate pane; its switch flips capture.enabled
 └── Footer -> "Unfinished features. They may change or break.", Run setup again (replays the onboarding,
@@ -769,8 +781,9 @@ restore (`ClipboardRestore::keep`), and ends the continuation, so the next
 dictation is not joined to it. On Windows, `windows::dictation` reads the same
 gate as each job's output commits and calls
 `windows::paste::WindowsPaster::copy_only`, which writes an ordinary entry,
-calls its `ClipboardRestore::keep`, and sends no keystroke, so the dictation
-appears in Windows clipboard history (Win+V). History and Paste last dictation
+calls its `ClipboardRestore::keep`, ends its continuation, and sends no
+keystroke, so the dictation appears in Windows clipboard history (Win+V).
+History and Paste last dictation
 update as for a paste, and Paste last dictation still pastes (meeting pastes
 on macOS too). Off, output is exactly as before. Checks:
 `a_copy_only_dictation_is_left_on_the_clipboard_with_nothing_to_restore` in
@@ -1983,34 +1996,93 @@ macOS's Dictation shortcut is on for every macOS version.
 
 Dictation stats (`history-stats`, issue 790, every OS): while on, History's
 header shows a Secondary "Stats" button beside its retention select once
-anything is retained. It opens a centered "Dictation stats" dialog (Escape, a
-scrim press, or Close dismisses it, and focus returns to Stats) with dictations,
-words, words per minute, how often Output changed the text, the daily streak,
-and the top five apps; `hex history stats [--since] [--until] [--json]` prints
-the same ([transcript-cli.md](../transcript-cli.md)). It sums every entry within
+anything is retained, or once the daily rollup exists. It opens a
+centered "Dictation stats" dialog (Escape, a scrim press, or Close dismisses
+it, and focus returns to Stats) with six headline tiles (dictations, words,
+time saved, words per minute, the daily streak, and the busiest hour, each a
+grouped number over a muted label), a Typing speed slider under them, a bar
+chart of dictations per local day over the last 30 days with empty days left
+at zero and today's bar in the accent colour, a compact 24-bar hourly strip
+with the busiest hour in the accent colour, a 53-week × 7-day heatmap of
+dictations per local day (four accent levels over faint empty days), the top
+five apps as bars measured against the busiest one, Output's share of the text
+as a meter, and each mode's Output time (`median 0.9 s · slowest 3.2 s`, the
+four most run modes).
+Time saved is `words / typing_wpm` minutes less recorded audio, floored at
+zero (`history/stats.rs::time_saved_ms`); the slider runs from 10 to 200 words
+a minute, starts at 40, saves as `typing_wpm`, and recomputes the tile from
+its current value. The busiest hour is the earliest local hour on a tie, and
+the tile and the strip always read the same hours: retained entries, or the
+whole daily rollup while it has a day. Output time is a mode's whole
+Output processing, rewrite plus any transformations that ran after it; runs
+that fell back (a failure or a deadline) and runs that only applied the
+person's transformations are left out. A section with nothing to show is left
+out; the meter still reads 0%, and the body scrolls while the window is short
+so the title and Close stay put. The dialog is built in
+[rune_ui/history/stats.rs](../../src/rune_ui/history/stats.rs) with the big
+number as `controls::STATS_NUMBER`; `hex history stats [--since] [--until]
+[--json]` prints the same totals ([transcript-cli.md](../transcript-cli.md)),
+and its JSON adds the typing speed, time saved, hourly series and busiest
+hour, the daily series, per-mode Output time, and a `yearly` summary
+of the rollup. It sums every entry within
 retention (`History::stats`, `history/stats.rs`), not the pane's 200-entry
-search, so it ends with what retention removes; the rollup that outlives
-retention, streak notifications, and per-replacement counts are not built. The
-gates are `labs::history_stats()`, read when the pane reloads (off, it reads
-nothing for stats, and sums again when the entries or the toggle change, or
-once when the dialog closes because the stats emptied) and where
-`hex history stats` starts (off, it fails naming `hex labs on
-history-stats` before History is read), and the window's own setting for the
-button and dialog. Closing the window, opening History again from the menu bar
-or `hex window show history`, turning the switch off, emptying retained
-history, or leaving History closes the dialog, and Command-1…9 pane shortcuts
-wait while it is open. Off, History is exactly as before. Checks:
-the tests in [history/stats.rs](../../src/history/stats.rs) (words, speed,
-changes, top apps, streak across a gap, expired entries skipped past the search
-cap); `history_stats_parse_sum_retained_entries_and_need_the_labs_toggle` in
+search, so it ends with what retention removes. The headline totals and hours
+come from the rollup instead whenever it has a day (all time); streak
+notifications and per-replacement counts are not built. The gates are
+`labs::history_stats()`, read when the
+pane reloads (off, it reads nothing for stats, and sums again when the entries,
+the typing speed, or the toggle changes, or once when the dialog closes because
+the stats emptied), as each entry is recorded (the rollup's write), and where
+`hex history stats` starts (off, it fails naming
+`hex labs on history-stats` before History is read), and the window's own
+setting for the button and dialog. Closing the window, opening History again
+from the menu bar or `hex window show history`, turning the switch off,
+emptying retained history and the rollup, or leaving History closes the
+dialog, and Command-1…9 pane shortcuts wait while it is open. Off, History is
+exactly as before. The rollup is `usage.json` beside `history.json` in the
+support folder: while History retention is not Off, each recorded entry adds
+its local day, dictations, words, recorded milliseconds, and 24 hourly counts,
+with no text and no application names. The first write seeds itself from the
+retained History entries and then adds the new entry once, so the dialog's
+totals don't drop when the lab turns on. The file is owner-only from its
+staging file (0600; `durable::write_private` after
+`crate::app_paths::create_private_dir`), atomic, keeps at most 400 days, and a
+failed write is logged and ignored so capture and paste never wait on it. A
+damaged or unreadable rollup is moved aside as `usage.json.corrupt` before a
+fresh one starts, as History does, so a year is never silently overwritten;
+display reads may still fall back to empty. History retention Off records
+nothing, here or in History; Clear all history removes the rollup too, even
+with no retained entries; off, the lab writes and reads nothing. The recording
+site is `HistoryStore::record` (`history/usage.rs::count`). The retired Yearly
+stats lab (`yearly-stats`) merged into this one: the `yearly-stats-merge`
+migration reads a saved `labs.yearly_stats` into `labs.history_stats` once, so
+someone who had it on keeps the heatmap and all-time totals, and a later
+choice sticks. Checks: the tests in
+[history/stats.rs](../../src/history/stats.rs) (words, speed, changes, time
+saved and its floor, hours and the busiest hour tie, top apps, streak across a
+gap, the daily series' zero days and today, Output time medians for odd and
+even counts, fallback and transformation-only runs left out, the JSON's field
+names, expired entries skipped past the search cap);
+`history_stats_parse_sum_retained_entries_and_need_the_labs_toggle` and
+`history_stats_json_includes_the_yearly_rollup_with_dictation_stats` in
 [control/transcript_cli_tests.rs](../../src/control/transcript_cli_tests.rs);
+rollup accumulation, bounding, damage preservation, and owner-only round trips
+in [history/usage.rs](../../src/history/usage.rs); the record site, seeding,
+the retention-Off skip, and clearing with no entries in
+[history.rs](../../src/history.rs); the grid's Monday start, accent levels,
+and single-source hours in
+[rune_ui/history/heatmap.rs](../../src/rune_ui/history/heatmap.rs);
 `history_stats_is_its_own_bit_and_off_by_default` in
-[labs.rs](../../src/labs.rs); and
-`history_stats_button_opens_and_closes_the_dialog` in
+[labs.rs](../../src/labs.rs); `retired_yearly_stats_becomes_dictation_stats_once`
+in [app_settings.rs](../../src/app_settings.rs); and
+`history_stats_button_opens_and_closes_the_dialog` and
+`history_stats_dialog_hides_sections_with_nothing_to_show` in
 [rune_ui/tests.rs](../../src/rune_ui/tests.rs). `history-stats` in
-[rune_ui/scenes.rs](../../src/rune_ui/scenes.rs) renders the button and dialog
-in both themes. Not yet observed: the dialog in a real window, and the Labs
-page goldens need regenerating on Linux with the new row.
+[rune_ui/scenes.rs](../../src/rune_ui/scenes.rs) renders the button, dialog,
+heatmap, and hourly strip in both themes, and its fixture is the worst case
+(five apps, four modes, long names, a six-digit word count, a year of
+heatmap). Not yet observed: the dialog in a real window, its slider dragged by
+hand, and a real dictation written to `usage.json`.
 
 Copy recent dictations (`recent-dictations`, issue 877, macOS): while on,
 the menu-bar menu shows a Copy Recent Dictation submenu right under Paste
@@ -2367,6 +2439,28 @@ Checks: `an_in_progress_meeting_reads_now`,
 Not yet observed: the section in a real Mac's menu bar, a real EventKit read
 reaching it, a click opening Zoom or Meet, and the menu with calendar access
 denied. The rows render only in macOS builds, so no golden changes.
+
+Select all calendars (`calendar-select-all`, macOS, with Meetings on): off by
+default, and off the Calendars row is exactly as before. On, Meetings ›
+Settings › Calendar puts one small secondary button beside the Calendars
+select. While any calendar is left out it reads "Select all" and clears
+`meetings.calendar.excluded_calendars`, so every calendar is included; while
+every calendar is included it reads "Deselect all" and sets that list to the
+IDs in `ui.platform.calendar.calendars` as shown now. The setting stores
+exclusions, so a calendar added later is still included. The button hides
+while there are no calendars, and each calendar's own switch in the menu stays
+as it is. The lab is UI only: it has no runtime gate or state-word bit, and the
+row reads `Feature::CalendarSelectAll` with `shipped`, no organization lock,
+and `on`, as `in_place_on` in
+[model_import.rs](../../src/rune_ui/model_import.rs) reads its lab. A save goes
+through `ui.update`, like the per-calendar toggle. Off, nothing is drawn.
+
+Checks: `calendar_select_all_is_its_own_switch_and_macos_only` in
+[labs.rs](../../src/labs.rs) and
+`the_select_all_calendars_lab_saves_every_calendar_at_once` in
+[rune_ui/tests/panes.rs](../../src/rune_ui/tests/panes.rs). Not yet observed:
+the button on a real Mac. The row renders only in macOS builds, and the lab is
+off by default, so no golden changes.
 
 Pause from menu bar (`pause-menu`, issue 82, macOS): for people whose game or
 another app collides with Hex's shortcuts and who don't want to quit. With the

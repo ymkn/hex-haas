@@ -437,7 +437,13 @@ pub(crate) fn show(ui: &mut Ui, destination: Destination, tx: &mut Tx) {
     let pane = match &destination {
         Destination::Settings | Destination::Models => Pane::General,
         Destination::Meetings(_) => Pane::Meetings,
-        Destination::Modes => Pane::Output,
+        Destination::Modes => {
+            if crate::labs::Feature::ModesEditor.on(&ui.settings) {
+                Pane::Modes
+            } else {
+                Pane::Output
+            }
+        }
         Destination::History => Pane::History,
     };
     ui.close_dialogs();
@@ -539,6 +545,9 @@ pub(crate) fn render() {
 /// The window's logical size, which every pane and the picker fit.
 const WINDOW_SIZE: (f32, f32) = (980.0, 760.0);
 
+/// The window's least size: narrower windows crowd the sidebar and rows.
+const MIN_WINDOW_SIZE: (f32, f32) = (860.0, 560.0);
+
 /// One fixed size the user cannot change, which macOS tiling window managers
 /// (AeroSpace, yabai) float: the first-run tour opens centred this way. With
 /// the playground, it resizes, so the stage beside its columns has room.
@@ -559,8 +568,7 @@ fn spec() -> AppSpec<Ui> {
     AppSpec {
         title: "Hex",
         size: WINDOW_SIZE,
-        // Narrower windows crowd the sidebar and rows.
-        min_size: Some((860.0, 560.0)),
+        min_size: Some(MIN_WINDOW_SIZE),
         init: Ui::fixture_base,
         view,
         scenes: SCENES,
@@ -1379,6 +1387,7 @@ fn poll(ui: &mut Ui, clock: f64, tx: &mut Tx) -> bool {
             && !ui.labs_open
             && ui.window.as_ref().is_none_or(rune::AppHandle::is_visible),
         ui.settings.labs.keep_recordings,
+        ui.settings.typing_wpm,
     );
     #[cfg(hex_capture)]
     let mut changed = ui.captures.poll(ui.pane == Pane::Captures && !ui.labs_open) | changed;
@@ -1462,13 +1471,7 @@ fn poll(ui: &mut Ui, clock: f64, tx: &mut Tx) -> bool {
         }
         if let Some(settings) = settings {
             changed |= ui.adopt(settings);
-            // A pane the adopted settings hide (the Hex Microphone turned
-            // off from `hex settings`) leaves for General.
-            if !ui.pane.shown(ui) {
-                ui.pane = Pane::General;
-                ui.open = None;
-                changed = true;
-            }
+            changed |= leave_hidden_pane(ui);
         }
     }
     let preparing = ui
@@ -1486,6 +1489,22 @@ fn poll(ui: &mut Ui, clock: f64, tx: &mut Tx) -> bool {
     changed |= explainer::poll(ui, clock, visible, tx);
     changed |= sound_sets::poll(ui, clock, visible, tx);
     changed | settings::advance_capture(ui, clock, tx)
+}
+
+/// Adopted settings may hide the pane on screen: the Hex Microphone turned off
+/// from `hex settings` hides Voice Filter, and Labs › Modes editor turned off
+/// while the editor shows hides Modes. The window leaves, Output standing in
+/// for the editor it replaced. Returns whether the pane moved.
+fn leave_hidden_pane(ui: &mut Ui) -> bool {
+    if ui.pane.shown(ui) {
+        return false;
+    }
+    ui.pane = match ui.pane {
+        Pane::Modes => Pane::Output,
+        _ => Pane::General,
+    };
+    ui.open = None;
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -1508,7 +1527,7 @@ fn view(ui: &Ui, cx: &mut Cx<Ui>) -> El {
         Pane::General => (Vec::new(), general::pane(ui, p, &mut layer)),
         Pane::Output => (Vec::new(), output::pane(ui, p, cx.is_reduced_motion())),
         Pane::Modes => modes::pane(ui, p, &mut layer),
-        Pane::History => history::pane(ui, p, &mut layer),
+        Pane::History => history::pane(ui, p, cx, &mut layer),
         #[cfg(hex_capture)]
         Pane::Captures => (Vec::new(), captures::pane(ui, p)),
         Pane::Meetings => meetings::pane(ui, p, &mut layer),

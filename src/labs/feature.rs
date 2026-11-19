@@ -69,6 +69,7 @@ pub enum Feature {
     ApiBrowserAccess,
     SpeakersOnly,
     CalendarMenu,
+    CalendarSelectAll,
     MoreDictationShortcuts,
     PauseMenu,
     PrintStart,
@@ -80,10 +81,11 @@ pub enum Feature {
     CopyDictationAudio,
     StopPhrase,
     HoldThroughKeys,
+    ModesEditor,
 }
 
 impl Feature {
-    pub const ALL: [Self; 75] = [
+    pub const ALL: [Self; 77] = [
         Self::Meetings,
         Self::VoiceFilter,
         Self::Playground,
@@ -148,6 +150,7 @@ impl Feature {
         Self::ApiBrowserAccess,
         Self::SpeakersOnly,
         Self::CalendarMenu,
+        Self::CalendarSelectAll,
         Self::MoreDictationShortcuts,
         Self::PauseMenu,
         Self::PrintStart,
@@ -159,5 +162,6 @@ impl Feature {
         Self::CopyDictationAudio,
         Self::StopPhrase,
         Self::HoldThroughKeys,
+        Self::ModesEditor,
     ];
 }

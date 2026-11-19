@@ -56,7 +56,7 @@ impl AppearanceTheme {
     }
 }
 
-/// The `labs` switches (`crate::labs`), each off by default; older Labs features keep their own keys, and retired switches (`labs.enabled`, `labs.collapsible_meeting_sections`, `labs.meeting_platform_icons`, `labs.transcribe_files`, `labs.restore_shortcut_default`, and the graduated meeting labs) are ignored.
+/// The `labs` switches (`crate::labs`), each off by default; older Labs features keep their own keys, and retired switches (`labs.enabled`, `labs.collapsible_meeting_sections`, `labs.meeting_platform_icons`, `labs.transcribe_files`, `labs.restore_shortcut_default`, `labs.yearly_stats`, and the graduated meeting labs) are ignored.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default)]
 pub struct LabsSettings {
@@ -225,6 +225,10 @@ pub struct LabsSettings {
     /// end time and title; choosing one with a call link opens it (macOS,
     /// with Meetings on and a calendar connected).
     pub calendar_menu: bool,
+    /// Meetings › Settings › Calendar shows Select all or Deselect all beside
+    /// the Calendars row, so every calendar is included or left out at once
+    /// (macOS).
+    pub calendar_bulk_select: bool,
     /// The menu bar offers Pause Hex, which makes every capture shortcut
     /// inert until Resume (macOS).
     pub pause_menu: bool,
@@ -251,6 +255,9 @@ pub struct LabsSettings {
     /// after it went down reaches the app in front and leaves the dictation
     /// recording, which the release still finishes (macOS and Windows).
     pub hold_through_keys: bool,
+    /// The Modes editor joins the sidebar: every mode's apps, corrections,
+    /// OpenCode rewrite, and transformations.
+    pub modes_editor: bool,
     /// Settings › Labs' groups opened or closed by hand, by `labs::Group`
     /// id; a group not here is open while it holds a lab that's on.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
@@ -267,6 +274,11 @@ pub struct LabsSettings {
     pub meeting_notes_file: Option<bool>,
     #[serde(skip_serializing)]
     pub expire_meeting_audio: Option<bool>,
+    /// Retired: `labs.yearly_stats`, read into `history_stats` once by the
+    /// `yearly-stats-merge` migration, since the daily rollup and the year
+    /// heatmap are part of Dictation stats now. Never written.
+    #[serde(skip_serializing)]
+    pub yearly_stats: Option<bool>,
 }
 
 /// The idle times Labs › Free memory when idle offers, in minutes.
@@ -275,6 +287,23 @@ pub const UNLOAD_IDLE_MINUTES: [u32; 4] = [5, 15, 30, 60];
 /// The times Labs › Keep mic open after dictating offers, in seconds:
 /// 30 s, 1, 3, 5, and 30 minutes.
 pub const KEEP_MICROPHONE_OPEN_SECONDS: [u32; 5] = [30, 60, 180, 300, 1_800];
+
+/// The retired Yearly stats lab merged into Dictation stats: its daily
+/// rollup and year heatmap are part of the one lab now.
+pub(super) const YEARLY_STATS_MERGE_MIGRATION: &str = "yearly-stats-merge";
+
+impl AppSettings {
+    /// A saved `labs.yearly_stats` reads into `labs.history_stats` once, so
+    /// someone who had Yearly stats on keeps their heatmap and all-time
+    /// totals without a second switch. A later choice sticks.
+    pub(super) fn migrate_yearly_stats_lab(&mut self) {
+        if !self.has_migration(YEARLY_STATS_MERGE_MIGRATION) {
+            self.labs.history_stats |= self.labs.yearly_stats == Some(true);
+            self.migrations.push(YEARLY_STATS_MERGE_MIGRATION.into());
+        }
+        self.labs.yearly_stats = None;
+    }
+}
 
 impl LabsSettings {
     /// The default [`KEEP_MICROPHONE_OPEN_SECONDS`] choice.
@@ -394,6 +423,7 @@ impl Default for LabsSettings {
             speakers_only: false,
             app_model_switching: false,
             calendar_menu: false,
+            calendar_bulk_select: false,
             pause_menu: false,
             print_start: false,
             voice_prompt: false,
@@ -401,6 +431,7 @@ impl Default for LabsSettings {
             stop_phrase: false,
             stop_phrase_text: crate::dictation::stop_phrase::DEFAULT_PHRASE.to_owned(),
             hold_through_keys: false,
+            modes_editor: false,
             gnome_meeting_capsules: false,
             gnome_annotate: false,
             screenshots: false,
@@ -411,6 +442,7 @@ impl Default for LabsSettings {
             meeting_descriptive_filenames: None,
             meeting_notes_file: None,
             expire_meeting_audio: None,
+            yearly_stats: None,
         }
     }
 }
