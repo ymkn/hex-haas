@@ -341,7 +341,7 @@ fn api_error(config: &CloudApiConfig, status: u16, body: &[u8]) -> color_eyre::e
     // An endpoint can echo the credentials it was sent (a gateway
     // naming the bad key, say): scrub the configured secrets from
     // whatever is quoted, then cap the length.
-    let code = redact_secrets(code, config);
+    let code = redact_secrets(&code, config);
     let message = redact_secrets(message, config);
     let message: String = message.chars().take(200).collect();
     let code = code.as_str();
@@ -357,13 +357,13 @@ fn api_error(config: &CloudApiConfig, status: u16, body: &[u8]) -> color_eyre::e
 /// extra header value long enough to be distinctive.
 fn redact_secrets(text: &str, config: &CloudApiConfig) -> String {
     let mut out = text.to_owned();
-    let mut secrets: Vec<&str> = vec![config.api_key.as_str()];
+    let mut secrets: Vec<String> = vec![config.api_key.clone()];
     if let Ok(headers) = parse_extra_headers(&config.extra_headers) {
-        secrets.extend(headers.iter().map(|(_, value)| value.as_str()));
+        secrets.extend(headers.into_iter().map(|(_, value)| value));
     }
-    for secret in secrets {
+    for secret in &secrets {
         if secret.len() >= 4 {
-            out = out.replace(secret, "***");
+            out = out.replace(secret.as_str(), "***");
         }
     }
     out
