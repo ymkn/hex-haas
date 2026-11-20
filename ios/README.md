@@ -5,9 +5,14 @@
 (`HEXWidgets`). The containing app records a generation-scoped temporary WAV,
 transcribes on-device with Apple Speech (`SpeechTranscriber` on iOS 26+) or
 FluidAudio Parakeet V2 (iOS 18+), and removes each capture's file after
-inference, cancellation, or failure. The keyboard extension sends commands and
-inserts completed text over the shared App Group (`group.com.kitlangton.hex.mobile`);
-it never accesses the microphone, speech model, or network.
+inference, cancellation, or failure. During a warm session the keyboard
+extension sends commands and inserts completed text over the shared App Group
+(`group.anomaly.hex.mobile`). Otherwise it dictates by itself (in-keyboard
+dictation, iOS 26+): iOS refuses to record from a keyboard extension
+directly, so it captures through `getUserMedia` in a hidden `WKWebView`
+under Hex's microphone permission, writes a temporary WAV, and transcribes
+it on-device with Apple Speech, downloading the speech assets on first use
+(`HEXKeyboard/KeyboardLocalDictation.swift`). Audio never leaves the iPhone.
 
 ## Capabilities
 
@@ -22,7 +27,7 @@ it never accesses the microphone, speech model, or network.
     do nothing in a keyboard extension, so the keyboard opens Hex through
     the `UIApplication` at the end of its responder chain
     (`ContainingAppOpener`).
-  - **Cold start:** Tapping **Dictate** opens the containing app
+  - **Cold start (before iOS 26):** Tapping **Dictate** opens the containing app
     (`hex-dictation://keyboard/record?...`) with a 10-second
     handoff window, starts recording, and opens the selected host app's URL
     scheme (`messages://`, `slack://`, `claude://`, `chatgpt://`,
@@ -58,11 +63,10 @@ it never accesses the microphone, speech model, or network.
     `Casual` (lowercase chat without trailing period), `Notes` (spoken
     `"bullet"` / `"next line"` markers), and `Verbatim`, with cursor-aware
     insertion spacing and repeating backspace.
-  - **Full keyboard Hex key (Experiments › Full keyboard):** A tap does
-    nothing, so a stray one while typing is harmless. A still hold of 0.35 s
-    starts dictation in a warm session (or opens Hex without one), with a
-    haptic. Moving more than 10 pt before then opens the style and **Return
-    to** menu; releasing over a row picks it, and releasing elsewhere leaves
+  - **Full keyboard Hex key (Experiments › Full keyboard):** A tap, or a
+    still hold of 0.35 s, starts dictation: in a warm session, else inside
+    the keyboard (in-keyboard dictation, iOS 26+), else by opening Hex. Moving
+    more than 10 pt first opens the style and **Return to** menu; releasing over a row picks it, and releasing elsewhere leaves
     the menu open for taps (`HexKeyGesture`). VoiceOver activation dictates,
     and the **Dictation styles** action opens the menu.
   - **Apple Intelligence cleanup (Experiments › Clean up with Apple
@@ -84,6 +88,43 @@ it never accesses the microphone, speech model, or network.
     "WeChat" can also match the plain phrase ("we chat"). On iOS 26 Apple Speech
     the list is also sent as a best-effort recognition hint; Parakeet's batch
     path gets no hint.
+  - **Learn how I type (Experiments › Learn how I type):** Off by default, and
+    shown whether or not the full keyboard is on. A private journal in the App
+    Group (`typing-journal.json`) that never stores what you write: per-key tap
+    offsets, and word-level pairs with counts and at most one word of context on
+    each side. Only plain text fields that allow autocorrect count
+    (`TypingJournal.allows`). Nothing leaves the iPhone.
+    - **Typing:** words you erase and retype, autocorrect fixes you undo with one
+      backspace, suggestions you pick, and autocorrections you turn down by
+      tapping what you typed. A typo you fixed the same way twice (never a
+      completion, never fixed two ways) becomes a fix on space, only a suggestion
+      when what you typed is a real word; an autocorrection you turned down twice
+      never applies again (`TypingLearning`, read by `AutocorrectEngine`).
+    - **Dictation:** from the full keyboard and the dictation bar alike, the
+      keyboard remembers each dictation by the text around it
+      (`DictationEditTracker`), finds it again after edits through Hex's keys and
+      on `textDidChange`, and diffs it word by word against what Hex inserted and
+      the raw transcript the app or in-keyboard dictation sends with it
+      (`DictationEditInference.swift`). It settles after 60 s, when the keyboard
+      goes away or the field changes, on a Send return key, or when the host
+      clears the field (a send). Each dictation gets an outcome (kept, edited,
+      rewritten when more than half changed, undone, deleted, or redictated when
+      deleted and dictated again within 20 s) and its pairs: substitutions,
+      insertions, deletions, words cleanup dropped that you added back, and
+      fillers Hex left that you deleted, each as heard, inserted, and final words.
+      New writing before or after a dictation, changes that aren't plausibly the
+      same words, edges the host's cut-short context can't show, and translated
+      dictations teach nothing.
+    - **Applied:** a substitution seen twice and never contradicted (you kept the
+      heard words in a dictation you corrected, changed the fix back, or fixed
+      the same words another way) is applied right after transcription, in
+      in-keyboard dictation and in the app before custom vocabulary and cleanup,
+      whole words only (never inside a longer, hyphenated, dotted, or slashed
+      word) and following the original's case unless the fix has capitals. Its
+      meant words join the Apple Speech hints after custom vocabulary's.
+      Typing insights lists these fixes with a switch each and the share of
+      dictations kept and edited; Delete what Hex learned erases everything,
+      including what a running keyboard still holds.
 - **Resilient capture & expiry contract (`DictationController`):**
   - Monotonic `jobGeneration`, retained `transcriptionTask`, and unique
     per-capture WAV filenames ensure an expiring warm session never drops an
@@ -92,9 +133,12 @@ it never accesses the microphone, speech model, or network.
     audio file.
   - Phone/FaceTime/Siri audio interruptions finalize captures `>= 300 ms` so
     spoken words are not lost, cancel shorter taps cleanly out of `Listening`,
-    and resume warm keepalive when iOS signals `.shouldResume`. Bluetooth HFP
-    input is opt-in (**Use Bluetooth headphones**, default off) so AirPods stay
-    in full-fidelity output by default.
+    and resume warm keepalive when iOS signals `.shouldResume`. **Always use
+    iPhone microphone** (on by default) records from the built-in microphone in
+    `playAndRecord` with `mixWithOthers` and A2DP output, in the app and in
+    in-keyboard dictation, so music in a car or headphones keeps playing and the
+    route never drops into call audio. Turning it off allows Bluetooth HFP
+    microphones, which pause other audio.
 - **Action Button, Control Center, Back Tap & Live Activity:**
   - `DictateWithHexIntent` (`AudioRecordingIntent` + `LiveActivityIntent`) and
     `HexDictationControl` (`ControlWidget`) start recording on first press with
@@ -132,6 +176,26 @@ xcodebuild test -project HEXMobile.xcodeproj -scheme HEXMobile -destination "id=
   and unverified on a physical iPhone. Apple documents contextual strings only
   for `DictationTranscriber`, Hex sets them on `SpeechTranscriber`, and
   Parakeet's batch path gets no hint.
+- **Learn how I type:** Dictation edit inference (span location, word diff,
+  outcomes, the learning threshold, and applying fixes) is covered by unit
+  tests only. How much `documentContextBeforeInput` and
+  `documentContextAfterInput` each host app shows, and whether it calls
+  `textDidChange` after the keyboard's own edits, varies by app and is
+  unverified on a physical iPhone; when the context is cut short or missing,
+  the dictation is settled on where it was last seen or not learned from.
 - **No iOS CI:** Custom vocabulary is covered by unit tests only. No CI job
   compiles or tests the iOS targets, so these checks run only in a local
   `xcodebuild test`.
+
+## Internal TestFlight releases
+
+[Hex Mobile in App Store Connect](https://appstoreconnect.apple.com/apps/6836837368/testflight/ios)
+uses Anomaly's signing team. The GitHub **Release Hex Mobile** workflow checks
+`dev` at noon and 6 p.m. Chicago time, or on manual dispatch, and cuts an
+`ios-beta-*` prerelease when iOS inputs have changed. These tags are separate
+from desktop releases. The marketing version stays fixed across beta builds.
+
+The Xcode Cloud workflow needs a tag start condition with prefix `ios-beta-`,
+container `ios/HEXMobile.xcodeproj`, shared scheme `HEXMobile`, an iOS Archive
+action, and a TestFlight post-action for **Hex Internal**. Cloud owns the build
+number. Verify the run's source tag and the processed build in that group.

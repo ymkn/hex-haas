@@ -376,15 +376,85 @@ Windows keyboard hook re-arm                             // dictate.windows-rear
   │   -> Covers an app that shows its window first and installs its hook only then
   ├── The new hook fails -> The old one stays; one warning, later failures quiet
   ├── The foreground watcher fails -> The listener runs as before
-  └── Known gap: such an app installs its hook while already in front, more than
-      ~1.5 s after it came to the front
-      -> The shortcut works again at the next foreground change
+  └── An app that installs its hook while already in front, more than ~1.5 s
+      after it came to the front, used to wait for the next foreground change
+      -> The watchdog below re-arms once input keeps arriving unseen
 ```
 
 Proof limit: a C# harness reimplementing the swap, with its own window and a
 message loop that dispatches, ran on a GitHub Windows runner with injected
 input. Hex's Rust listener, a real Tauri app and a physical keyboard were not
 exercised, and no automated check covers the re-arm.
+
+**Fixed November 19, 2026:** a Toggle-mode Alt+Windows chord started recording,
+then for 50 minutes every shortcut press and Escape did nothing and wrote
+nothing to `process.log`; one later press finally ended the capture. The likely
+cause is the keyboard hook stopping: Windows removes a low-level hook that
+exceeds `LowLevelHooksTimeout`, and an app with raw keyboard input in front can
+silence every keyboard hook. Nothing was logged, so that was not proved. The
+fix that ends a stuck Toggle capture is the watchdog's re-arm: once the hooks
+are back, the next press finishes it. The lost-release heal matters mainly for
+Hold mode, where the capture is still recording, and keeps the hook state
+consistent in Toggle. It covers only a keyless normal dictation chord; a
+keyless raw, Terminal-paste, or second-shortcut capture with a lost release
+still relies on the re-arm and its next press. The hook thread now keeps a
+repeating timer and checks both:
+
+```ts
+Windows hook watchdog                                  // dictate.windows-hook-watchdog
+  ├── Every 1 s on the hook thread, as a thread timer the message loop handles
+  │   ├── Session input within 1 s but neither hook stamped an event for 3 s,
+  │   │   and Hex is not in front
+  │   │   -> Install fresh WH_KEYBOARD_LL and WH_MOUSE_LL hooks; one info line
+  │   │      when a silent streak starts, one with its count when a longer
+  │   │      streak ends (both count successful re-arms; a failed re-arm logs
+  │   │      the one-time warning instead)
+  │   │   -> The wait doubles after each silent re-arm: 3, 6, 12, ... 60 s
+  │   │   -> Only a keyboard event resets the wait; a mouse move proves the
+  │   │      mouse hook runs, not the keyboard hook, so it cannot reset it
+  │   │   -> A lock screen, a UAC secure desktop, or an elevated window, where
+  │   │      no non-elevated hook sees input, just backs off instead of looping
+  │   ├── The keyboard hook has been quiet past Windows' auto-repeat delay plus
+  │   │   250 ms, and a keyless normal dictation chord is active with its
+  │   │   modifiers reading up (GetAsyncKeyState)
+  │   │   -> Release it as the missing event would: Toggle locks, Hold finishes;
+  │   │      the tick stamps the release, so Hold keeps up to ~1 s more audio
+  │   │   -> A held key that another hook hides from GetAsyncKeyState still
+  │   │      repeats into Hex's hook, so that recent keyboard event blocks this
+  │   └── Its info line is written by this tick after it drops the hook state
+  ├── Every keyboard and mouse hook event stamps the shared tick first, injected
+  │   included; the keyboard hook also stamps a keyboard-only tick
+  ├── Toggle only: "dictation cancelled by the cancel key", or "Escape ignored
+  │   while recording" with the reason; the hook records each as an atomic and
+  │   the next tick writes it
+  └── Limits: Hex in front is skipped; a mouse moved without pause can keep a
+      dead keyboard hook from being noticed until it stops, though it no longer
+      resets the wait
+```
+
+No hook callback writes a log line, and nothing logs while the hook state lock
+is held. The tick writes at most a few rare lines on the hook thread (streak
+start/end, a cancel, an ignored Escape, a heal), so a stalled log writer can
+delay pending hook calls there, but never blocks a callback.
+
+Checks: `silence_is_judged_from_the_session_and_the_hooks`,
+`a_silent_streak_backs_off_and_only_a_keyboard_event_resets_it`,
+`a_single_rearm_streak_ends_quietly`, `a_recent_keyboard_event_blocks_the_heal`,
+`the_repeat_delay_maps_and_clamps`, and
+`distances_survive_the_tick_count_wrapping` in
+[windows/input/watchdog.rs](../../src/windows/input/watchdog.rs),
+`a_lost_release_forgets_sides_now_up` in
+[windows/input/modifiers.rs](../../src/windows/input/modifiers.rs), and
+`a_keyless_chord_whose_release_never_arrived_resynchronizes` and
+`the_release_heal_leaves_other_captures_alone` in
+[windows/input.rs](../../src/windows/input.rs). Proof limit: the unit tests run
+natively on the Windows x64 and ARM64 CI runners; nothing has run on a real PC
+with a hook-killing app or a long stuck capture.
+
+Apps that grab the keyboard with their own low-level hook (VMs and remote
+desktop clients often do) may now get Hex's hook re-installed ahead of theirs
+after 3 s of silence. A fresh install has always done that at a foreground
+change; the watchdog only makes it happen without one.
 
 ### Shortcuts Under Secure Input (macOS)
 
@@ -734,6 +804,59 @@ Paste last dictation's own shortcut has no runtime filter beside dictation's,
 so one saved on the dictation shortcut's chord is cleared (logged) when
 settings load or save.
 
+### Windows Paste Target
+
+A Windows dictation sends Ctrl+V to whichever window is in front. The desktop
+and the taskbars belong to Explorer and take no paste, so a chord sent there is
+lost with no error. Before sending it, the listener reads the foreground
+window, its class, its process, and the keyboard-focused child, and logs one
+line per paste (`Windows paste target`, with the process stem and class; never
+the words). The desktop and taskbar classes (`Progman`, `WorkerW`,
+`Shell_TrayWnd`, `Shell_SecondaryTrayWnd`) owned by `explorer` count as the
+shell; an Explorer window that is not one of them (`CabinetWClass`) pastes as
+usual, and a desktop rename box (`Edit`) still takes the paste.
+
+```ts
+Windows paste                                     // dictate.windows-paste-target
+├── Capture starts -> The window in front is remembered, with its process
+├── Target is an app -> Ctrl+V goes there
+├── Target is the shell
+│   ├── The remembered window is still its process's, alive, visible, not
+│   │   minimized, not Hex's, not the shell
+│   │   -> Bring it forward, poll GetForegroundWindow 10 ms up to 200 ms
+│   │      (Windows may refuse; the log's `returned` field says if it arrived)
+│   └── Still the shell -> No chord; the plain transcript stays on the
+│       clipboard with the usual history/cloud exclusion, the job reports
+│       "copied" (never "pasted"), and History and Paste Last still keep it
+└── Tray Paste Last -> The tracker skips the desktop and taskbars, so it never
+    brings one forward; the listener applies the same rule per paste
+```
+
+The fallback keeps the marking a default paste has: the transcript is left out
+of Windows clipboard history (Win+V) and cloud sync (#851) unless Labs › Keep
+dictation on clipboard or Copy dictation only is on, which writes it as an
+ordinary entry. It is the plain transcript, without the continuation's join.
+
+As a known gap, a copied dictation currently looks and sounds the same as a
+paste: the HUD plays the same done state, the done tone plays, and no notice
+appears. The visible difference is the `copied` phase in `live.ndjson`, the
+Activity line (`Dictation copied to the clipboard`), and the words left on the
+clipboard. Returning to the capture window is best effort: Windows can refuse
+`SetForegroundWindow`, and the paste line's `returned` field shows whether it
+arrived. The onboarding practice treats a copied dictation as a finished one,
+so its step completes even when its field couldn't receive the text.
+
+Checks: `the_desktop_and_taskbars_take_no_paste`,
+`no_foreground_window_takes_no_paste`,
+`a_desktop_rename_box_still_takes_a_paste`,
+`explorer_windows_that_are_not_the_shell_still_take_a_paste`, and
+`another_process_using_a_shell_class_is_not_the_shell` in
+[paste_target.rs](../../src/dictation/paste_target.rs), and
+`a_copied_dictation_completes_the_practice_like_a_paste` in
+[practice.rs](../../src/rune_ui/practice.rs). Proof limits: the classification
+and the practice mapping are unit-tested only; the foreground read, the return
+attempt, and the copy fallback have not run on a real Windows PC.
+
 ### Copy Recent Dictation (Labs, macOS)
 
 Paste Last Dictation reaches only the newest dictation. With Labs › Copy
@@ -783,8 +906,8 @@ Shortcut dictation (hold, lock, or Toggle)            // dictate.yolo-mode
 │   └── Escape after the release (macOS) -> No Return; History records Dictation
 └── Another app -> Paste as usual, without Return
 Never: Dictate without processing, `hex dictation`, the local API,
-printing stops, Copy dictation only, Live typing, meetings, captures,
-Paste last dictation
+printing stops, Live typing, meetings, captures, Paste last dictation
+Copy dictation only on -> YOLO mode still pastes and sends in its apps
 ```
 
 Details and checks in [labs.md](labs.md).
@@ -1641,7 +1764,7 @@ Model advertises streaming, GPU device             // dictate.streaming
   └── Owner already claimed the commit -> Wait up to 750 ms; never paste over it
   Picker -> "Streams" tag on catalog models whose artifact streams   // setup.model-card
   Picker -> The saved language's Recommended/Fastest/Most accurate cards first  // setup.model-routing
-  ├── el: Cohere; tr, ms, fil, fa, mk, ar, ja, fi, sv, da: Whisper turbo first
+  ├── el: Cohere; tr, ms, fil, fa, mk, ar, ja, fi, da: Whisper turbo first
   ├── auto, yue, ko: no SenseVoice; mt: Parakeet v3 only (Whisper fails Maltese)
   ├── en: Underdog Bark 3.0 Pro and Clean (Parakeet v3 fine-tunes; Clean
   │   drops filler words) follow without a badge
@@ -1658,6 +1781,11 @@ Model advertises streaming, GPU device             // dictate.streaming
   │   only, always with the `no` hint, 539 MB; 6.68% WER on FLEURS Norwegian
   │   test against Whisper turbo's 8.94%, Hex's run), then Whisper turbo for
   │   Vocabulary (#1150)
+  ├── sv: KB-Whisper Medium Recommended (National Library of Sweden, Swedish
+  │   only, always with the `sv` hint, 539 MB; 6.6% WER on FLEURS Swedish
+  │   test, the model card's figure for its default checkpoint and not Hex's
+  │   run), then Parakeet v3 as Fastest and Whisper turbo for Vocabulary
+  │   (#1991)
   ├── en, fr, de, es, pt, it, ja: Granite Speech 5.0 (IBM's TurboCTC, 506 MB,
   │   no hint, also offered under Auto) follows without a badge: on FLEURS
   │   test it trailed Parakeet Unified/v3 in every European language and tied
@@ -1666,6 +1794,10 @@ Model advertises streaming, GPU device             // dictate.streaming
   │   under Auto) follows without a badge; 1.86% WER on LibriSpeech test-clean
   │   from transcribe.cpp's published conversion benchmark, with its FLEURS
   │   figures in Details
+  ├── Fluid Speech Pro: FluidVoice's Parakeet v3 retrain (742 MB, no hint, also
+  │   offered under Auto) follows without a badge; its card publishes no
+  │   LibriSpeech figure, so it carries no single rate, and its FLEURS figures
+  │   are in Details
   └── Every other available model follows without a badge, selectable and
       deletable; never auto-switched or auto-downloaded (setup.language-select)
 ```
@@ -2594,10 +2726,16 @@ the pump (`rune_hud::rehome`, `rune_hud::macos`):
   active Space. When a Space switch or a full-screen exit left it behind, Hex
   orders the panel out, clears the mask, sets the mask Rune intends (never the
   panel's read-back), and orders it back in. That reorders the panel but leaves
-  Rune's presence state and alpha alone. One stranding gets at most three
-  attempts, at least 150 ms apart, and the budget resets when the panel is seen
-  on the active Space or the HUD hides, so a repair that did not take cannot
-  loop.
+  Rune's presence state and alpha alone. The window server applies that
+  asynchronously, so an attempt counts only once a later tick confirms it:
+  seen on the active Space, it took; still elsewhere after its wait, it failed,
+  and that tick tries again. The waits double from 150 ms to at most 3 s
+  (150, 300, 600, 1200, 2400, 3000 ms), for at most eight attempts per
+  stranding, and the budget resets when the panel is seen on the active Space
+  or the HUD hides, so a repair that did not take cannot loop. The log line
+  comes from the confirming tick (on the active Space again after N attempts,
+  still on another Space with the next wait, or giving up), never from a read
+  right after the reorder.
 - Every change of the Dock icon's activation policy (the policy follows
   Settings; an open Settings window forces the icon on) marks the panel for one
   repair. A call that leaves the policy as it was, which is the usual case when

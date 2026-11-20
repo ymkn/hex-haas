@@ -162,6 +162,8 @@ struct CompletedTranscript {
     /// Corrected local transcript before mode processing.
     raw: String,
     application: Option<String>,
+    /// [`crate::dictation::context::ContextSnapshot::bundle_name`].
+    bundle_name: Option<String>,
     /// Labs › Return to app: the app the capture started in, which the
     /// paste returns to (macOS).
     return_to: Option<i32>,
@@ -670,6 +672,7 @@ fn run_processor_worker(
                     nothing: processed.nothing,
                     raw: job.text,
                     application: job.context.application,
+                    bundle_name: job.context.bundle_name,
                     return_to: job.return_to,
                     timings: job.timings,
                     processing: processed.observation,
@@ -895,12 +898,14 @@ fn run_inference_worker(
             }
             result => {
                 let application = job.context.application;
+                let bundle_name = job.context.bundle_name;
                 let recording = job.recording;
                 let result = result.map(|text| CompletedTranscript {
                     raw: text.clone(),
                     text,
                     nothing: false,
                     application,
+                    bundle_name,
                     return_to: job.return_to,
                     timings,
                     processing: None,
@@ -1056,20 +1061,25 @@ fn finish_output(
                         | TranscriptionTarget::CopyOnlyPaste
                         | TranscriptionTarget::RawCopyOnlyPaste
                         | TranscriptionTarget::RawPaste => {
+                            // A rescued microphone-loss dictation is always
+                            // copied: the disruption may have taken focus.
+                            let rescued = matches!(
+                                target,
+                                TranscriptionTarget::CopyOnlyPaste
+                                    | TranscriptionTarget::RawCopyOnlyPaste
+                            );
+                            let send_gate = completed.timings.send_gate.filter(|_| {
+                                !rescued && crate::dictation::yolo_mode::sends(
+                                    completed.application.as_deref(),
+                                    completed.bundle_name.as_deref(),
+                                )
+                            });
                             // Labs › Copy dictation only, read as the output
                             // commits: dictations go to the clipboard
                             // unpasted; Paste last dictation still pastes.
-                            // A rescued microphone-loss dictation is always
-                            // copied: the disruption may have taken focus.
-                            let copy_only = crate::labs::copy_only()
-                                || matches!(
-                                    target,
-                                    TranscriptionTarget::CopyOnlyPaste
-                                        | TranscriptionTarget::RawCopyOnlyPaste
-                                );
-                            let send_gate = completed.timings.send_gate.filter(|_| {
-                                !copy_only && crate::dictation::yolo_mode::sends(completed.application.as_deref())
-                            });
+                            // A dictation YOLO mode sends is pasted anyway.
+                            let copy_only =
+                                rescued || (crate::labs::copy_only() && send_gate.is_none());
                             let mode = if copy_only {
                                 PasteMode::CopyOnly
                             } else if send_gate.is_some() {
@@ -1619,6 +1629,7 @@ mod tests {
                     text: text.into(),
                     nothing: false,
                     application: Some(app.into()),
+                    bundle_name: None,
                     return_to: None,
                     timings: JobTimings {
                         audio_ms: 1_000,
@@ -1663,7 +1674,12 @@ mod tests {
         }
         labs.copy_only = true;
         crate::labs::apply(&labs);
-        assert_eq!(deliver(Ok("yep"), "Messages", true), ["copy yep"]);
+        assert_eq!(
+            deliver(Ok("yep"), "Messages", true),
+            ["paste yep", "Return"],
+            "YOLO mode's apps paste and send through Copy dictation only"
+        );
+        assert_eq!(deliver(Ok("yep"), "Notes", true), ["copy yep"]);
         crate::labs::apply(&LabsSettings::default());
         assert_eq!(deliver(Ok("yep"), "Messages", true), ["paste yep"]);
     }
@@ -1682,6 +1698,7 @@ mod tests {
                     nothing: false,
                     raw: text.into(),
                     application: None,
+                    bundle_name: None,
                     return_to: None,
                     timings: JobTimings {
                         total_started: Instant::now(),
@@ -1739,6 +1756,7 @@ mod tests {
                         nothing: false,
                         raw: text.into(),
                         application: Some("Call".into()),
+                        bundle_name: None,
                         return_to: None,
                         timings: JobTimings {
                             total_started: Instant::now(),
@@ -1828,6 +1846,7 @@ mod tests {
                 nothing: false,
                 raw: "a long message".into(),
                 application: None,
+                bundle_name: None,
                 return_to: None,
                 timings: JobTimings {
                     total_started: Instant::now(),

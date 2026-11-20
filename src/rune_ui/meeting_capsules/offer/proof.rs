@@ -118,7 +118,7 @@ fn the_offer_keeps_its_corner_controls_and_clear_input_margin() {
                         60 => tap(&mut rt, "offer-cancel"),
                         _ => (),
                     }
-                    advance_offer(&mut rt, frame as f64 / 60.);
+                    advance_offer(&mut rt);
                     let els = rt.elements();
                     let get =
                         |key: &str| els.iter().find(|e| e.key.as_deref() == Some(key)).unwrap();
@@ -251,8 +251,7 @@ fn detected_offer_sheet() {
                     tx.instant()
                 });
                 rt.frame(0.);
-                rt.settle_all();
-                rt.frame(0.);
+                landed(&mut rt);
                 let w = (size.0 * 2.0) as u32;
                 let h = (size.1 * 2.0) as u32;
                 let target = offscreen::target(&gpu.device, w, h);
@@ -264,7 +263,7 @@ fn detected_offer_sheet() {
                     } else if frame == 60 {
                         tap(&mut rt, "offer-cancel");
                     }
-                    advance_offer(&mut rt, frame as f64 / 60.0);
+                    advance_offer(&mut rt);
                     let bytes = offscreen::paint(&gpu, &mut renderer, &target, &mut rt);
                     rune::render::write_png(
                         &dir.join(format!("{lang}-{theme}-{slug}-{frame:03}.png")),
@@ -280,3 +279,134 @@ fn detected_offer_sheet() {
     }
     std::fs::write(dir.join("providers.tsv"), report).unwrap();
 }
+// Replay Record (not More) with the worker's Started event 500 ms later.
+#[test]
+fn a_record_click_keeps_its_corner_until_the_worker_is_live() {
+    use MeetingIndicatorCorner::*;
+    for corner in [TopRight, BottomRight, TopLeft, BottomLeft] {
+        for reduced in [false, true] {
+            for started_frame in [1, 75] {
+                let (mut rt, commands, _) = runtime(offer(slack_huddle()), false, false, PANEL);
+                rt.update(move |c, tx| {
+                    c.corner = corner;
+                    tx.instant()
+                });
+                rt.set_system_reduced_motion(reduced);
+                rt.frame(0.);
+                let size = rt.state.presentation.window();
+                let (x, y) = rt.find("record").unwrap();
+                rt.pointer_move(x, y);
+                tap(&mut rt, "record");
+                let Ok(ControllerCommand::Record(_, Some(id))) = commands.try_recv() else {
+                    panic!("no Record")
+                };
+                let mut host = offer::Host::Offered(id);
+                assert_eq!(
+                    host.route(&ControllerEvent::Starting(Some(id))),
+                    offer::Route::Keep
+                );
+                assert_eq!(
+                    host.route(&ControllerEvent::OfferWithdrawn(id)),
+                    offer::Route::Ordinary
+                );
+                rt.update(|c, _| c.expire_offer());
+                let mut last = (f32::MAX, 44.);
+                for frame in 0..started_frame + 70 {
+                    if frame == started_frame {
+                        let event = started("fixture");
+                        assert_eq!(host.route(&event), offer::Route::Inherit);
+                        let mut model = PillModel::default();
+                        model.apply(&event, Instant::now());
+                        let r = model.pill(true).unwrap().clone();
+                        rt.update(move |c, tx| c.start_recording(r, tx));
+                    }
+                    if [1, started_frame + 50].contains(&frame) {
+                        rt.pointer_down(x, y);
+                        rt.pointer_up(x, y);
+                    }
+                    advance_offer(&mut rt);
+                    let elements = rt.elements();
+                    let [x, y, w, h] = elements
+                        .iter()
+                        .find(|e| e.key.as_deref() == Some("pill"))
+                        .unwrap()
+                        .rect;
+                    let near = |x: f32, y: f32| (x - y).abs() < 0.03;
+                    assert!(near(
+                        if corner.is_right() { size.0 - x - w } else { x },
+                        CAPSULE_INSET
+                    ));
+                    assert!(near(
+                        if corner.is_top() { y } else { size.1 - y - h },
+                        CAPSULE_INSET
+                    ));
+                    assert!(w <= last.0 + 0.02 && h <= last.1 + 0.02);
+                    assert!(rt.hit_regions().iter().all(|[l, t, r, b]| *l >= x - 0.03
+                        && *r <= x + w + 0.03
+                        && *t >= y - 0.03
+                        && *b <= y + h + 0.03));
+                    if reduced {
+                        assert!(near(h, 44.) || near(h, 36.));
+                    }
+                    if frame < started_frame {
+                        assert!(
+                            rt.state.waveform.is_none()
+                                && rt.find("elapsed").is_none()
+                                && rt.find("meeting-listening-field").is_none()
+                        );
+                        if frame == 60 {
+                            assert!(texts(&rt).contains(&tr("Starting…").to_owned()));
+                        }
+                    }
+                    assert!(rt.find("stop").is_none() && !rt.state.hovered);
+                    assert!(commands.try_recv().is_err());
+                    last = (w, h);
+                }
+                assert_eq!(last, (REST_WIDTH, REST_HEIGHT));
+                assert!(rt.find("elapsed").is_some());
+                rt.pointer_leave();
+                rt.frame(0.);
+                open_recording(&mut rt);
+                assert!(rt.find("stop").is_some());
+            }
+        }
+    }
+}
+
+#[test]
+fn pending_offers_never_mask_a_failure_or_adopt_another_start() {
+    use offer::{Host, Route};
+    let id = OfferId::at(Instant::now());
+    let other = OfferId::at(Instant::now() + Duration::from_secs(1));
+    let failed = ControllerEvent::Failed {
+        title: "Fixture".into(),
+        error: "Permission denied".into(),
+    };
+    let mut host = Host::Offered(id);
+    assert_eq!(
+        host.route(&ControllerEvent::OfferWithdrawn(other)),
+        Route::Ordinary
+    );
+    assert_eq!(
+        host.route(&ControllerEvent::OfferWithdrawn(id)),
+        Route::Close
+    );
+    assert_eq!(host.route(&ControllerEvent::Starting(None)), Route::Close);
+    assert_eq!(
+        host.route(&ControllerEvent::Starting(Some(other))),
+        Route::Close
+    );
+    assert_eq!(
+        host.route(&ControllerEvent::Starting(Some(id))),
+        Route::Keep
+    );
+    assert_eq!(host.route(&failed), Route::Close);
+    assert_eq!(host.route(&ControllerEvent::Transcribing), Route::Close);
+    assert_eq!(Host::Panel.route(&started("manual")), Route::Ordinary);
+    let (mut rt, rx, _) = runtime(offer(slack_huddle()), false, false, PANEL);
+    drop(rx); // A rejected send is still an offer, not a pending recording.
+    tap(&mut rt, "record");
+    assert!(!rt.state.presentation.inherits_offer_window());
+    assert!(rt.find("record").is_some() && rt.find("elapsed").is_none());
+}
+

@@ -49,6 +49,7 @@ fn settings_rows_follow_each_os() {
     assert!(present(&linux, "toggle-listening"));
     assert!(present(&linux, "enable-on-launch"));
     assert!(present(&linux, "launch-at-login"));
+    assert!(present(&linux, "speech-engine"));
     assert!(!present(&linux, "dock-icon"));
     assert!(!present(&linux, "meetings-enabled"));
 
@@ -69,11 +70,18 @@ fn settings_rows_follow_each_os() {
     ] {
         assert!(!present(&mac, key), "macOS General has no {key}");
     }
+    // macOS runs its models on Metal or Apple's speech engine: no Speech
+    // engine row, and no GPU fallback to explain.
+    assert!(
+        !present(&mac, "speech-engine"),
+        "macOS has no Speech engine row"
+    );
 
     let mut windows = runtime("windows-settings", true, TALL_SIZE);
     open_advanced(&mut windows, Pane::General);
     assert!(present(&windows, "launch-at-login"));
     assert!(present(&windows, "toggle-listening"));
+    assert!(present(&windows, "speech-engine"));
     assert!(!present(&windows, "dock-icon"));
     assert!(
         !present(&windows, "terminal-paste"),
@@ -3391,6 +3399,36 @@ fn a_managed_lock_holds_the_cleanup_lab_off() {
             .iter()
             .any(|text| text.starts_with("Turn on Apple Intelligence")),
         "the Apple Intelligence note would replace the lock's words"
+    );
+}
+
+/// An organization's lock keeps the drop card off and saying so; the formats
+/// line its copy is built from must not replace the lock's words.
+#[test]
+fn a_managed_lock_holds_the_drop_transcribe_lab_off() {
+    use crate::policy::{Lock, Policy};
+    let describe = |rt: &Runtime<Ui>| {
+        rt.elements()
+            .into_iter()
+            .find(|e| {
+                e.path.contains("lab-card-drop-transcribe") && e.path.ends_with("/description")
+            })
+            .and_then(|e| e.text)
+    };
+    let locked = Policy::forced_for_test(Policy::default().with(Lock::Labs));
+    let mut rt = runtime("mac-labs", true, (980.0, 2400.0));
+    open_labs(&mut rt);
+    assert_eq!(
+        describe(&rt).as_deref(),
+        Some("Managed by your organization"),
+        "its row says why"
+    );
+
+    drop(locked);
+    refresh(&mut rt);
+    assert!(
+        describe(&rt).is_some_and(|text| text.starts_with("Drop a ")),
+        "unlocked, the card names the formats the drop target offers"
     );
 }
 

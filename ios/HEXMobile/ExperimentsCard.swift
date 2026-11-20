@@ -7,6 +7,8 @@ struct ExperimentsCard: View {
     @State private var appleIntelligenceCleanup = AppleIntelligenceCleanupSettings().isEnabled
     @State private var customVocabulary = CustomVocabularySettings().isEnabled
     @State private var cleanupAvailability = AppleIntelligenceCleanupAvailability.current
+    @State private var autocorrect = FullKeyboardSettings().autocorrect
+    @State private var learnTyping = TypingJournalSettings().isEnabled
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -15,19 +17,76 @@ struct ExperimentsCard: View {
                 .foregroundStyle(HexTheme.textMuted)
                 .padding(.leading, 16)
 
-            Toggle(isOn: $fullKeyboard) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Full keyboard")
-                        .font(.system(size: 15, weight: .regular))
-                        .foregroundStyle(HexTheme.textBase)
-                    Text("Type with Hex, with a Hex key to dictate")
-                        .font(.system(size: 12))
-                        .foregroundStyle(HexTheme.textMuted)
+            VStack(spacing: 0) {
+                Toggle(isOn: $fullKeyboard) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Full keyboard")
+                            .font(.system(size: 15, weight: .regular))
+                            .foregroundStyle(HexTheme.textBase)
+                        Text("Type with Hex, with a Hex key to dictate")
+                            .font(.system(size: 12))
+                            .foregroundStyle(HexTheme.textMuted)
+                    }
+                }
+                .tint(HexTheme.success)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .onChange(of: fullKeyboard) { _, enabled in
+                    FullKeyboardSettings().isEnabled = enabled
+                }
+
+                if fullKeyboard {
+                    Divider()
+                        .overlay(HexTheme.borderWeak)
+                        .padding(.leading, 16)
+
+                    Toggle(isOn: $autocorrect) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Autocorrect")
+                                .font(.system(size: 15, weight: .regular))
+                                .foregroundStyle(HexTheme.textBase)
+                            Text("Fix contractions, shortcuts, and one-edit typos on space")
+                                .font(.system(size: 12))
+                                .foregroundStyle(HexTheme.textMuted)
+                        }
+                    }
+                    .tint(HexTheme.success)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .onChange(of: autocorrect) { _, enabled in
+                        FullKeyboardSettings().autocorrect = enabled
+                    }
+                }
+
+                Divider()
+                    .overlay(HexTheme.borderWeak)
+                    .padding(.leading, 16)
+
+                // Not only for the full keyboard: it also learns from dictations the
+                // dictation bar inserts.
+                Toggle(isOn: $learnTyping) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Learn how I type")
+                            .font(.system(size: 15, weight: .regular))
+                            .foregroundStyle(HexTheme.textBase)
+                        Text("Keeps where you tap and the words you fix, typed or dictated, on this iPhone, never what you write")
+                            .font(.system(size: 12))
+                            .foregroundStyle(HexTheme.textMuted)
+                    }
+                }
+                .tint(HexTheme.success)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .onChange(of: learnTyping) { _, enabled in
+                    TypingJournalSettings().isEnabled = enabled
+                }
+
+                if learnTyping {
+                    TypingInsightsView()
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 12)
                 }
             }
-            .tint(HexTheme.success)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
             .background(
                 HexTheme.bgBase,
                 in: RoundedRectangle(cornerRadius: HexTheme.cardRadius, style: .continuous)
@@ -84,6 +143,14 @@ struct ExperimentsCard: View {
                 CustomVocabularySettings().isEnabled = enabled
             }
 
+            TranslateDictationRow()
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(
+                    HexTheme.bgBase,
+                    in: RoundedRectangle(cornerRadius: HexTheme.cardRadius, style: .continuous)
+                )
+
             if customVocabulary {
                 CustomVocabularyEditor()
                     .padding(12)
@@ -101,6 +168,8 @@ struct ExperimentsCard: View {
             appleIntelligenceCleanup = AppleIntelligenceCleanupSettings().isEnabled
             customVocabulary = CustomVocabularySettings().isEnabled
             cleanupAvailability = AppleIntelligenceCleanupAvailability.current
+            autocorrect = FullKeyboardSettings().autocorrect
+            learnTyping = TypingJournalSettings().isEnabled
         }
     }
 }

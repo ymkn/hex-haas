@@ -74,7 +74,7 @@ Transcription (Parakeet: RNN-T and TDT, Underdog Bark and Nemotron 3.5 ASR too) 
 │   ("Kip" -> Kit)
 └── SenseVoice, Cohere, GigaAM, Granite, Apple Speech -> no vocabulary in transcription
 
-Context prompt (Whisper incl. ivrit.ai and NB-Whisper, Qwen3-ASR, QwenCleo)  // vocabulary.prompt-transcription; transcription::gguf_session::with_vocabulary
+Context prompt (Whisper incl. ivrit.ai, NB-Whisper and KB-Whisper, Qwen3-ASR, QwenCleo)  // vocabulary.prompt-transcription; transcription::gguf_session::with_vocabulary
 ├── Always on (not Labs): replaced the per-model Recognition hints box (#129)
 ├── Every whole-clip run reads the list at its start: dictation, meetings,
 │   captures, the local API; live streams run without it
@@ -260,8 +260,11 @@ trip in control.rs; `vocabulary_lists_terms_with_their_spellings` in
 `a_reload_retires_the_old_rows` in
 [rune_ui/vocabulary.rs](../../src/rune_ui/vocabulary.rs);
 `the_vocabulary_row_opens_its_sheet`,
-`add_term_scrolls_the_new_row_into_view`, and
-`the_vocabulary_row_says_when_the_model_ignores_the_list` in [rune_ui/tests.rs](../../src/rune_ui/tests.rs);
+`add_term_scrolls_the_new_row_into_view`,
+`the_vocabulary_row_says_when_the_model_ignores_the_list`, and
+`an_outside_press_on_a_settle_frame_still_exits_the_vocabulary_sheet` (an
+outside press on the first frame after the window comes back still plays the
+sheet's exit) in [rune_ui/tests.rs](../../src/rune_ui/tests.rs);
 `only_parakeet_based_models_use_the_vocabulary` in
 [transcription/models.rs](../../src/transcription/models.rs); transcribe.cpp's
 `tests/parakeet_vocabulary_unit.cpp` (fork branch

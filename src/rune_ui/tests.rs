@@ -1361,7 +1361,9 @@ fn history_clear_removes_a_usage_rollup_with_no_entries() {
     let check = history.clone();
     let mut rt = runtime("history-empty", true, PANE_SIZE);
     rt.state.history = history::HistoryPane::shared(Some(history));
-    rt.state.history.reload();
+    rt.state
+        .history
+        .reload(rt.state.settings.labs.history_stats);
     rt.state.pane = Pane::History;
     rt.invalidate();
     settle(&mut rt);
@@ -1410,7 +1412,9 @@ fn history_delete_confirmation_stops_when_the_pane_moves_on() {
     let mut rt = runtime("history-empty", true, PANE_SIZE);
     rt.state.history = history::HistoryPane::shared(Some(history));
     rt.state.history.selected = Some(first);
-    rt.state.history.reload();
+    rt.state
+        .history
+        .reload(rt.state.settings.labs.history_stats);
     rt.invalidate();
     settle(&mut rt);
     // Choosing another entry answers Delete… and leaves the first entry be.
@@ -2142,7 +2146,9 @@ fn history_search_without_matches_says_so() {
         .unwrap();
     let mut rt = runtime("history-empty", true, PANE_SIZE);
     rt.state.history = history::HistoryPane::shared(Some(history));
-    rt.state.history.reload();
+    rt.state
+        .history
+        .reload(rt.state.settings.labs.history_stats);
     rt.invalidate();
     settle(&mut rt);
     assert!(texts(&rt).iter().all(|text| text != "No dictations match."));
@@ -2235,7 +2241,9 @@ fn transcribe_again_shows_only_with_its_lab_and_replace_updates_the_entry() {
         .unwrap();
     let mut rt = runtime("history-empty", true, GOLDEN_SIZE);
     rt.state.history = history::HistoryPane::shared(Some(history.clone()));
-    rt.state.history.reload();
+    rt.state
+        .history
+        .reload(rt.state.settings.labs.history_stats);
     rt.state.history.selected = Some(id);
     rt.invalidate();
     settle(&mut rt);
@@ -2340,7 +2348,9 @@ fn copy_audio_shows_only_with_its_lab_and_keep_recordings() {
         .unwrap();
     let mut rt = runtime("history-empty", true, GOLDEN_SIZE);
     rt.state.history = history::HistoryPane::shared(Some(history.clone()));
-    rt.state.history.reload();
+    rt.state
+        .history
+        .reload(rt.state.settings.labs.history_stats);
     rt.state.history.selected = Some(id);
     rt.invalidate();
     settle(&mut rt);
@@ -2884,6 +2894,35 @@ fn the_vocabulary_row_opens_its_sheet() {
     key(&mut rt, Key::Escape, Mods::default());
     settle(&mut rt);
     assert!(!rt.state.vocabulary.open);
+}
+
+/// A settle frame plus an outside press closes the sheet with its exit: the runtime lands the
+/// tree the press found, so both layers fade instead of vanishing.
+#[test]
+fn an_outside_press_on_a_settle_frame_still_exits_the_vocabulary_sheet() {
+    let mut rt = runtime("mac-settings-vocabulary", true, GOLDEN_SIZE);
+    let bounds = element(&rt, "vocabulary-layer").rect;
+    let (x, y) = (bounds[0] + 8.0, bounds[1] + bounds[3] / 2.0);
+    rt.settle_all();
+    rt.pointer_down(x, y);
+    rt.pointer_up(x, y);
+    rt.frame(1.0 / 60.0);
+    for key in ["vocabulary-scrim", "vocabulary-layer"] {
+        let layer = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some(key))
+            .unwrap_or_else(|| panic!("{key} vanished in the settle frame"));
+        assert!(layer.exiting, "{key} is not exiting");
+        assert!(
+            layer.opacity > 0.0 && layer.opacity < 1.0,
+            "{key} opacity {}",
+            layer.opacity
+        );
+    }
+    settle(&mut rt);
+    assert!(rt.find("vocabulary-scrim").is_none());
+    assert!(rt.find("vocabulary-layer").is_none());
 }
 
 /// Add term on a list longer than the sheet scrolls the new row into view.
@@ -3700,6 +3739,10 @@ fn goldens() {
             "modes-picker",
             "modes-speech",
             "picker-downloading",
+            // Labs › Transcribe dropped audio: the hint a file drag shows and
+            // the toast of the file running with its progress.
+            "drop-hover",
+            "drop-running",
         ] {
             check_golden(scene, dark, PANE_SIZE);
         }
@@ -3719,6 +3762,7 @@ fn goldens() {
 }
 
 mod application_picker;
+mod drop_transcribe;
 mod onboarding_check;
 mod panes;
 
@@ -3821,4 +3865,24 @@ fn output_fixes_show_only_with_their_lab_and_fix_this_copies_for_the_sentence() 
     );
     tap(&mut on, "output-vocabulary");
     assert!(on.state.vocabulary.open);
+}
+
+#[test]
+fn fluid_speech_pros_details_list_only_the_fleurs_rows_its_card_publishes() {
+    let mut state = Ui::with(AppSettings::default(), Service::Fixture(Vec::new()));
+    super::picker::all_fixture(&mut state);
+    state.picker.details =
+        super::model_details::DetailsState::open_with_table(TranscriptionModelId::FluidSpeechPro);
+    let rt = runtime_for(state, false, GOLDEN_SIZE);
+    assert!(rt.find("published-bg").is_some());
+    assert!(rt.find("published-de").is_some());
+    // The card publishes no FLEURS English figure, so the table has no
+    // English row; the conditions say so in its place.
+    assert!(rt.find("published-en").is_none());
+    assert!(
+        texts(&rt)
+            .iter()
+            .any(|text| text.contains("publishes no FLEURS English figure"))
+    );
+    assert!(rt.find("published-toggle").is_some());
 }

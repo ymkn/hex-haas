@@ -163,7 +163,7 @@ fn offer_unshown(window: &rune::AppHandle<Ui>, reason: String) {
 fn follow(event: &ControllerEvent, window: &rune::AppHandle<Ui>) {
     let mut state = STATE.lock().unwrap_or_else(|error| error.into_inner());
     match event {
-        ControllerEvent::Starting => *state = MeetingMenuState::Starting,
+        ControllerEvent::Starting(_) => *state = MeetingMenuState::Starting,
         ControllerEvent::RecordingStarted { id, title, .. } => {
             *state = MeetingMenuState::Recording {
                 started: Instant::now(),
@@ -187,6 +187,7 @@ fn follow(event: &ControllerEvent, window: &rune::AppHandle<Ui>) {
                 shown.clone_from(chapters);
             }
         }
+        ControllerEvent::Stopping => {}
         ControllerEvent::Transcribing => *state = MeetingMenuState::Transcribing,
         ControllerEvent::Finished(manifest) => {
             tracing::info!(id = %manifest.id, "meeting transcript ready");
@@ -219,7 +220,7 @@ fn follow(event: &ControllerEvent, window: &rune::AppHandle<Ui>) {
         | ControllerEvent::Reminder { .. }
         | ControllerEvent::ReminderWithdrawn { .. }
         | ControllerEvent::CallEndedWithdrawn
-        | ControllerEvent::NotesStarted
+        | ControllerEvent::NotesProgress(_)
         | ControllerEvent::NotesFinished(_) => {}
     }
 }

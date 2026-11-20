@@ -99,8 +99,11 @@ Install on Windows                        // setup.windows-installer
 ├── Setup.exe, per user, no admin -> managed versions\<version>\hex.exe
 │   ├── x64 without a Vulkan 1.2 driver -> installs; speech on the CPU + Settings note (#1240)
 │   ├── another version installed (e.g. self-updated) -> install this one over it
+│   ├── the setup engine is signed -> Smart App Control runs the copy extracted to %TEMP%
+│   │   (unsigned, it blocks setup: "Unable to execute file in the temporary directory", error 4551)
 │   └── finish -> Open Hex -> the first run downloads a model
 └── Settings › Apps -> uninstall every version, shortcut, Launch at login; keep data
+    └── the installed uninstaller is that same signed engine
 
 Install on Linux                          // setup.linux-installer
 └── curl … | sh -> signed feed -> verified artifact -> launcher + hex.service
@@ -130,8 +133,11 @@ frame. These checks do not exercise real speakers or a physical phone.
 
 The Windows installer is silently installed, reinstalled, installed over
 another version, and uninstalled on x64 and ARM64 runners by
-[test-windows-installer.ps1](../../scripts/test-windows-installer.ps1); no
-interactive install, SmartScreen prompt, or first launch on a real PC has been
+[test-windows-installer.ps1](../../scripts/test-windows-installer.ps1); with
+`-SignedEngine` it also checks that the installed uninstaller (the same engine
+bytes Setup extracts to `%TEMP%`) has a valid, timestamped Authenticode
+signature, and Release runs it that way. No interactive install, Smart App
+Control decision, SmartScreen prompt, or first launch on a real PC has been
 observed. The Linux library diagnosis has no automated check. The site's
 platform states were captured once in headless Chromium with `?platform=`.
 
@@ -383,12 +389,13 @@ Language row is unexercised.
 
 ```ts
 Choose a supported language              // setup.language-conditioning; macOS + Linux picker
-├── Parakeet v3, Orukeet, and Parakeet Ultra -> Detect language from audio;
-│   also offered under Auto; the selected language does not constrain output
+├── Parakeet v3, Orukeet, Fluid Speech Pro, and Parakeet Ultra -> Detect
+│   language from audio; also offered under Auto; the selected language does
+│   not constrain output
 ├── Granite Speech 5.0 -> No language input; transcribes whichever of en, fr,
 │   de, es, pt, it, ja it hears, so it is offered under Auto too (#1252)
 ├── Whisper -> Use selected language to guide decoding; accuracy is not guaranteed
-├── Whisper (ivrit.ai's and NB-Whisper too), Qwen3-ASR 0.6B, QwenCleo-ASR 1.7B -> Vocabulary ->
+├── Whisper (ivrit.ai's, NB-Whisper's, and KB-Whisper's too), Qwen3-ASR 0.6B, QwenCleo-ASR 1.7B -> Vocabulary ->
 │   context prompt (vocabulary.md); output that only repeats it is dropped
 ├── Hebrew -> ivrit.ai Whisper large-v3-turbo, always with the `he` hint (it
 │   lost Whisper's language detection); stock Whisper turbo also offers it
@@ -396,6 +403,10 @@ Choose a supported language              // setup.language-conditioning; macOS +
 │   Whisper turbo also offer it
 ├── Norwegian -> NB-Whisper Medium, always with the `no` hint (Bokmål is all
 │   Hex measured); stock Whisper turbo also offers it (#1150)
+├── Swedish -> KB-Whisper Medium, always with the `sv` hint; its 6.6% WER on
+│   FLEURS Swedish is the model card's figure for its default checkpoint, not
+│   Hex's run; Parakeet v3 is Fastest there, and stock Whisper turbo also
+│   offers it (#1991)
 ├── Bangla -> Whisper only, with the `bn` hint; Auto lets Whisper guess per clip
 ├── Khmer -> Whisper only, with the `km` hint; Auto lets Whisper guess per clip
 └── Azerbaijani -> Whisper only, with the `az` hint; Auto lets Whisper guess per clip
@@ -470,6 +481,13 @@ Settings picker > Every model row          // fixed height; scrolls
 │   "not measured in Hex"; never recommended or badged. Checks:
 │   `orukeet_is_offered_for_exactly_parakeet_v3s_languages_and_never_badged`,
 │   `orukeets_details_credit_its_base_and_cover_its_languages_once`
+├── Fluid Speech Pro -> ordinary row with Details: languages, the CC BY 4.0  // setup.fluid-speech-pro
+│   credit and notice, Source/License links, folded published benchmarks "not
+│   measured in Hex": the card's FLEURS figures for 24 of its 25 languages
+│   (greedy decoding, the reference NeMo model; no English figure); never
+│   recommended or badged. Checks:
+│   `fluid_speech_pro_is_offered_for_exactly_parakeet_v3s_languages_and_never_badged`,
+│   `fluid_speech_pros_details_credit_its_bases_and_cover_its_languages_once`
 ├── "Add model file…" in the header -> imported cards after the catalog:  // setup.custom-models
 │   Imported · family · languages · Not benchmarked · file · licence · SHA-256
 │   prefix; Rename, Remove (not the active
@@ -506,9 +524,10 @@ macOS (Metal), Windows, and Japanese, Korean, Chinese, or Vietnamese audio.
 Parakeet v3 remains available for Portuguese and its other existing language
 choices. Its card explains the limitation and suggests Whisper for
 language-guided transcription. It is also offered under Auto: it detects the
-language from the audio and takes no hint, as do Orukeet, Parakeet Ultra, and
-Granite Speech 5.0. A hint-taking model without `stt.capability.lang_detect`
-stays out of Auto. Multilingual audio support is not language conditioning:
+language from the audio and takes no hint, as do Orukeet, Fluid Speech Pro,
+Parakeet Ultra, and Granite Speech 5.0. A hint-taking model without
+`stt.capability.lang_detect` stays out of Auto. Multilingual audio support is
+not language conditioning:
 the pinned v3 GGUF has no `stt.parakeet.prompt.num_prompts` metadata, which gates
 language prompting in `transcribe-cpp-sys` 0.1.3.
 
@@ -914,6 +933,8 @@ Completed output                         // output
 │   │   -> joined with a space and sentence-aware capitalization (macOS, Windows)
 │   ├── Previous clipboard restored 500 ms later, unless something newer replaced it
 │   ├── Windows -> the transcript is marked out of clipboard history (Win+V) and cloud sync (#851)
+│   ├── Windows -> a paste only goes to a window that can take it: the desktop
+│   │   and taskbars keep the words on the clipboard and report "copied" (dictation.md)
 │   ├── Labs > Keep dictation on clipboard (every OS, off) -> the dictation stays on the clipboard (labs.md)
 │   │   └── Windows -> kept as an ordinary entry, in history too
 │   └── Labs > Copy dictation only (macOS, Windows, off) -> clipboard only: no paste, typing, or restore (labs.md)
@@ -1611,6 +1632,20 @@ rewrites already persisted activations on load, checked by
 `application_matching_ignores_finder_bundle_extensions` and
 `loading_strips_finder_bundle_extensions_from_mode_applications`.
 
+The picker saves the name Finder shows for the bundle's file, which can differ
+from the name the running app reports (`Rex Beta.app` runs as `Rex`,
+`Visual Studio Code.app` as `Code`). The macOS frontmost read also keeps
+Finder's name for the frontmost bundle (`ContextSnapshot::bundle_name`, set
+only when it differs), and `application_is` accepts either, so Modes,
+Labs › YOLO mode, and Labs › Switch model with app match an app under both
+names. Checked by
+`an_application_selector_matches_the_bundles_finder_name_too` (context.rs),
+`a_picked_app_sends_under_its_finder_name_or_its_own` (yolo_mode.rs), and
+`a_mode_picked_under_its_finder_name_switches` (app_model_switching.rs).
+**Fixed on dev, Nov 19 2026:** before, a picked app whose file name differs
+from its own name never activated its Mode, YOLO mode never sent in it, and
+Switch model with app never switched to its mode's model.
+
 **Fixed in 2.1.14:** through 2.1.13, a mode saved with that Finder
 preference enabled never activates and every dictation falls back to Global.
 Update to repair saved selections automatically. For older builds, the workaround
@@ -2065,8 +2100,11 @@ Linux beta                               // not macOS feature parity
 │   │   (kernel + Vulkan driver libraries), then another GPU, then the CPU;
 │   │   the row says which GPU stopped responding
 │   ├── A GPU load, prewarm or run that fails with a device error (hang,
-│   │   reset, lost device, out of memory) -> reloads on the CPU; once the CPU
-│   │   works, that GPU is recorded
+│   │   reset, lost device) -> reloads on the CPU; once the CPU works, that
+│   │   GPU is recorded
+│   ├── A run that fails out of memory (status 7) -> reloads on the CPU and is
+│   │   not recorded (another copy can fill the GPU, #1165); the dictation
+│   │   model says so in the row until a GPU load works or Hex restarts (#1984)
 │   ├── An integrated GPU whose warm 1.5 s run takes over 300 ms -> Auto times
 │   │   the CPU too and keeps the faster; a slower GPU is recorded (slow), so
 │   │   later loads go straight to the CPU (#484: UHD 620, Iris Plus 655)
@@ -2403,6 +2441,8 @@ Windows beta                             // x64 (Vulkan GPU) and ARM64 (CPU)
 ├── Transcription GPU -> ggml's Vulkan, discrete before integrated, CPU last;
 │   a failed GPU load retries on the CPU; the GPU record and Settings ›
 │   Speech engine work as on Linux (#856)
+│   ├── A run that fails out of memory -> CPU for this process, said in
+│   │   Speech engine until Hex restarts (#1984; not run on Windows)
 │   └── A launch that crashed starting the GPU (gpu-start.pending left in the
 │       data folder, same version) -> CPU only, warned in process.log, until
 │       Hex updates or the file is deleted (#662; not run on Windows)
@@ -2847,6 +2887,11 @@ macOS debug runtime                      // not release navigation
 `hex app -- --snap OUT --scene NAME` -> Rendered fixtures    // not proof capture/download/update happened
 Linux `hex` -> the Linux window on Rune, in the Hex process // dev.rune-ui
 ├── Calls the host directly: saves settings through it; woken on host changes
+├── Wayland frame: where winit draws the client-side frame (GNOME), a floating
+│   decorated window's bottom corners round with the frame's headerbar, and are
+│   square when maximized, tiled or fullscreen, as the frame is; a compositor that
+│   draws the decorations itself (KDE, sway, Hyprland) keeps its square content
+│   // Rune #1188, checked in a nested weston and under sway, not on a real GNOME session
 ├── Sidebar: General, Modes, History
 ├── Transcription picker -> ChooseModel / CancelModel; progress from the snapshot
 ├── First run -> the onboarding story; Microphone only while the privacy switch is off
