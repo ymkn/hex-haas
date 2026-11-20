@@ -465,6 +465,8 @@ pub enum FallbackReason {
     /// Parakeet Ultra, or an import with K-quant weights, with its Labs
     /// toggle off.
     LabsOff,
+    /// This fork's Cloud API model, with no endpoint configured yet.
+    NotConfigured,
 }
 
 /// Why `selection` can't run now, if it can't.
@@ -487,6 +489,11 @@ fn fallback_reason_where(
         },
         TranscriptionModelId::ParakeetUltra => {
             (!crate::labs::parakeet_ultra()).then_some(FallbackReason::LabsOff)
+        }
+        // The saved choice stays; the listener runs the fallback until
+        // an endpoint is configured on the model's card.
+        TranscriptionModelId::CloudApi => {
+            (!crate::app_settings::cloud_api_configured()).then_some(FallbackReason::NotConfigured)
         }
         _ => None,
     }

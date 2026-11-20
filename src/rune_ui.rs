@@ -45,6 +45,7 @@ pub(crate) use self::meetings::meeting_import_failed;
 mod captures;
 mod meetings_host;
 pub(crate) use meetings_host::{meeting_failed, meeting_settings_saved};
+mod cloud_setup;
 mod model_details;
 mod model_import;
 mod models;

@@ -16,10 +16,14 @@ use crate::transcription::{pad_gguf_samples, requires_closing_mark, trailing_sil
 #[cfg(target_os = "windows")]
 mod speech_cpp;
 
+mod cloud_api;
+
 enum LocalSession {
     Gguf(OfflineGgufSession),
     #[cfg(target_os = "windows")]
     SpeechCpp(speech_cpp::SpeechCpp),
+    /// This fork's cloud API backend: no local model at all.
+    CloudApi(cloud_api::CloudSession),
 }
 
 impl LocalSession {
@@ -48,6 +52,33 @@ impl LocalSession {
                 for (index, part) in samples.chunks(chunk).enumerate() {
                     let offset = (index * chunk / 16) as i64;
                     let text = worker
+                        .transcribe(part)
+                        .wrap_err("transcription failed")?;
+                    let text = text.trim().to_owned();
+                    if text.is_empty() {
+                        continue;
+                    }
+                    timed.segments.push(TranscriptSegment {
+                        start_ms: offset,
+                        end_ms: offset + (part.len() / 16) as i64,
+                        text: text.clone(),
+                    });
+                    texts.push(text);
+                }
+                timed.text = texts.join(" ");
+                Ok(timed)
+            }
+            LocalSession::CloudApi(session) => {
+                use crate::transcription::transcript::TranscriptSegment;
+                const CHUNK: usize = 30 * 16_000;
+                let chunk = max_audio_samples
+                    .map_or(CHUNK, |max| max.min(CHUNK))
+                    .max(1);
+                let mut timed = crate::transcription::transcript::Transcript::default();
+                let mut texts = Vec::new();
+                for (index, part) in samples.chunks(chunk).enumerate() {
+                    let offset = (index * chunk / 16) as i64;
+                    let text = session
                         .transcribe(part)
                         .wrap_err("transcription failed")?;
                     let text = text.trim().to_owned();
@@ -337,6 +368,34 @@ impl LocalTranscriber {
                 out_of_memory: None,
             });
         }
+        if selection.model == crate::transcription::models::TranscriptionModelId::CloudApi {
+            // This fork's cloud backend: nothing to verify or warm; the
+            // endpoint in Settings is all it needs. Failing here with a
+            // clear message beats a first transcription failing later.
+            let definition = validate(selection)?;
+            if !crate::app_settings::cloud_api_configured() {
+                return Err(eyre!(
+                    "the Cloud API model has no endpoint yet; add one on its card in the model picker"
+                ));
+            }
+            let session = cloud_api::CloudSession::new(
+                definition.runtime_language(&selection.language).to_owned(),
+            );
+            return Ok(Self {
+                session: LocalSession::CloudApi(session),
+                selection: selection.clone(),
+                options: RunOptions::default(),
+                device_label: "Cloud API".into(),
+                max_audio_samples: None,
+                stream: None,
+                finest_timestamps: TimestampKind::None,
+                gpu: None,
+                preference: device(),
+                warm_ms: 0,
+                gpu_full: false,
+                out_of_memory: None,
+            });
+        }
         let loaded = Self::load_where(selection)?;
         gpu_health::set_auto_on_cpu(
             loaded.preference == TranscriptionDevice::Auto && loaded.gpu.is_none(),
@@ -499,6 +558,7 @@ impl LocalTranscriber {
             }
             #[cfg(target_os = "windows")]
             LocalSession::SpeechCpp(_) => None,
+            LocalSession::CloudApi(_) => None,
         };
         // Warm now, so this times the device rather than its first run's
         // shader compiles.
@@ -526,6 +586,8 @@ impl LocalTranscriber {
                 LocalSession::SpeechCpp(worker) => worker
                     .transcribe(&vec![0.0; PREWARM_SAMPLES])
                     .map(drop),
+                // Warming the cloud model would send silence to the API.
+                LocalSession::CloudApi(_) => Ok(()),
             }
         };
         let result = match run(self) {
@@ -582,6 +644,9 @@ impl LocalTranscriber {
             LocalSession::SpeechCpp(_) => Err(transcribe_cpp::Error::Unsupported(
                 "Haas supports whole-clip transcription only".into(),
             )),
+            LocalSession::CloudApi(_) => Err(transcribe_cpp::Error::Unsupported(
+                "the Cloud API supports whole-clip transcription only".into(),
+            )),
         }
     }
 
@@ -609,6 +674,9 @@ impl LocalTranscriber {
             LocalSession::Gguf(session) => session.ran_recently(),
             #[cfg(target_os = "windows")]
             LocalSession::SpeechCpp(_) => false,
+            // Nothing local to warm, and a warm-up request would send
+            // silence to the API: the cloud model is always warm.
+            LocalSession::CloudApi(_) => true,
         };
         if ran_recently {
             return Ok(());
@@ -824,6 +892,14 @@ impl LocalTranscriber {
                         .collect();
                     (text, segments, Vec::new())
                 }
+                LocalSession::CloudApi(session) => {
+                    // The cloud API gives text only: one segment spans the chunk.
+                    let text = session.transcribe(part).wrap_err("transcription failed")?;
+                    let segments = span(offset, 0, (part.len() / 16) as i64, text.clone())
+                        .into_iter()
+                        .collect();
+                    (text, segments, Vec::new())
+                }
             };
             if !text.is_empty() {
                 texts.push(text);
@@ -842,6 +918,7 @@ impl LocalTranscriber {
             }
             #[cfg(target_os = "windows")]
             LocalSession::SpeechCpp(worker) => worker.transcribe(samples),
+            LocalSession::CloudApi(session) => session.transcribe(samples),
         };
         match run(self) {
             Err(error) if self.gpu_failed(&error) => {

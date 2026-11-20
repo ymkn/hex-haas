@@ -106,6 +106,8 @@ pub(super) struct Picker {
     /// Your own speech models: the file dialog, the import
     /// worker, and the name being edited.
     pub(super) import: super::model_import::ImportState,
+    /// This fork's Cloud API setup: the field being edited on its card.
+    pub(super) cloud: super::cloud_setup::CloudSetupState,
     /// The card whose details are open (Parakeet Ultra's credit and
     /// published benchmarks).
     pub(super) details: super::model_details::DetailsState,

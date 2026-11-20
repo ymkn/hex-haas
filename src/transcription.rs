@@ -35,7 +35,7 @@ pub(crate) mod subtitle_credits;
 pub(crate) mod transcript;
 
 #[cfg(target_os = "macos")]
-use color_eyre::eyre::Result;
+use color_eyre::eyre::{Result, eyre};
 
 #[cfg(target_os = "macos")]
 use crate::apple_speech::AppleSpeech;
@@ -80,6 +80,9 @@ impl Transcriber {
                 .map(Box::new)
                 .map(Self::Gguf),
             ModelRuntime::AppleSpeech => AppleSpeech::load(selection).map(Self::AppleSpeech),
+            ModelRuntime::CloudApi => Err(eyre!(
+                "the Cloud API model is not supported on macOS in this fork"
+            )),
         }
     }
 

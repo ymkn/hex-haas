@@ -334,6 +334,7 @@ pub(super) fn human_status(report: &StatusReport) -> String {
             FallbackReason::Missing => "it is missing",
             FallbackReason::Changed => "it changed since it was added",
             FallbackReason::LabsOff => "its Labs toggle is off",
+            FallbackReason::NotConfigured => "it has no endpoint configured yet",
         };
         model_line.push_str(&format!(
             "; using {} ({}) because {reason}",

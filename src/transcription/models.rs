@@ -54,6 +54,7 @@ pub enum TranscriptionModelId {
     KbWhisperMedium,
     GraniteSpeech5,
     AppleSpeech,
+    CloudApi,
     Custom(CustomModelId),
 }
 
@@ -94,6 +95,7 @@ impl TranscriptionModelId {
             Self::KbWhisperMedium => "kb_whisper_medium",
             Self::GraniteSpeech5 => "granite_speech_5",
             Self::AppleSpeech => "apple_speech",
+            Self::CloudApi => "cloud_api",
             Self::Custom(id) => id.as_str(),
         }
     }
@@ -136,6 +138,7 @@ impl FromStr for TranscriptionModelId {
             "kb_whisper_medium" => Ok(Self::KbWhisperMedium),
             "granite_speech_5" => Ok(Self::GraniteSpeech5),
             "apple_speech" => Ok(Self::AppleSpeech),
+            "cloud_api" => Ok(Self::CloudApi),
             _ => CustomModelId::parse(value)
                 .map(Self::Custom)
                 .ok_or_else(|| eyre!("unknown transcription model: {value}")),
@@ -235,6 +238,9 @@ pub enum VocabularyUse {
 pub enum ModelRuntime {
     Gguf(&'static GgufArtifact),
     AppleSpeech,
+    /// This fork's cloud backend: no model file; transcription is an HTTP
+    /// call to the endpoint in Settings (see `local_transcriber::cloud_api`).
+    CloudApi,
 }
 
 pub struct GgufArtifact {
@@ -284,8 +290,18 @@ impl ModelDefinition {
             #[cfg(not(target_os = "windows"))]
             return false;
         }
+        if self.id == TranscriptionModelId::CloudApi {
+            // This fork's cloud backend. Availability is only the platform
+            // gate (macOS's transcriber has no arm for it); whether an
+            // endpoint is configured is an install state (`is_installed`),
+            // so the picker always lists it and can offer setup.
+            return cfg!(not(target_os = "macos"));
+        }
         match (self.runtime, self.id) {
             (ModelRuntime::AppleSpeech, _) => false,
+            // Unreachable: the CloudApi id returns above. Kept so the match
+            // stays exhaustive without a wildcard.
+            (ModelRuntime::CloudApi, _) => false,
             (ModelRuntime::Gguf(_), TranscriptionModelId::Custom(id)) => {
                 super::custom_models::usable(id)
                     && (!super::custom_models::uses_k_quants(id) || k_quants)
@@ -308,6 +324,7 @@ impl ModelDefinition {
     pub fn runtime_language<'a>(&self, language: &'a str) -> &'a str {
         match self.id {
             TranscriptionModelId::WhisperLargeV3Turbo if language == "fil" => "tl",
+            TranscriptionModelId::CloudApi if language == "fil" => "tl",
             // Its prompt and advertised languages are locales: `de-DE`.
             TranscriptionModelId::Nemotron35Asr => NEMOTRON_3_5_LOCALES
                 .iter()
@@ -370,6 +387,7 @@ impl ModelDefinition {
     pub fn size_label(&self) -> String {
         match self.runtime {
             ModelRuntime::AppleSpeech => "Managed".into(),
+            ModelRuntime::CloudApi => "API".into(),
             ModelRuntime::Gguf(artifact) if artifact.bytes >= 1_000_000_000 => {
                 format!("{:.1} GB", artifact.bytes as f64 / 1_000_000_000.0)
             }
@@ -416,6 +434,7 @@ impl ModelDefinition {
         match self.runtime {
             ModelRuntime::Gguf(artifact) => Some(artifact.bytes),
             ModelRuntime::AppleSpeech => None,
+            ModelRuntime::CloudApi => None,
         }
     }
 }
@@ -730,6 +749,17 @@ pub const MODELS: &[ModelDefinition] = &[
         accepts_language_hint: false,
         supports_language_detection: false,
     },
+    ModelDefinition {
+        id: TranscriptionModelId::CloudApi,
+        name: "Cloud API (OpenAI-compatible)",
+        realtime: "Cloud",
+        word_error_rate: None,
+        streams: false,
+        runtime: ModelRuntime::CloudApi,
+        languages: &["*"],
+        accepts_language_hint: true,
+        supports_language_detection: true,
+    },
 ];
 
 pub const AUTO_LANGUAGE: &str = "auto";
@@ -977,6 +1007,9 @@ pub fn max_audio_chunk_samples(architecture: &str, max_audio_ms: i64) -> Option<
 
 pub fn model_path(model: &ModelDefinition) -> Result<PathBuf> {
     let ModelRuntime::Gguf(artifact) = model.runtime else {
+        if matches!(model.runtime, ModelRuntime::CloudApi) {
+            bail!("{} runs in the cloud and has no model path", model.name);
+        }
         bail!("{} is managed by macOS and has no model path", model.name);
     };
     let managed = models_dir()?.join(artifact.local_name());
@@ -1013,6 +1046,8 @@ pub fn is_installed(model: &ModelDefinition, language: &str) -> bool {
         ModelRuntime::AppleSpeech => crate::apple_speech::AppleSpeech::is_ready(language),
         #[cfg(not(target_os = "macos"))]
         ModelRuntime::AppleSpeech => false,
+        // "Installed" for the cloud model means an endpoint is configured.
+        ModelRuntime::CloudApi => crate::app_settings::cloud_api_configured(),
     }
 }
 
@@ -2011,6 +2046,7 @@ mod tests {
             (TranscriptionModelId::NbWhisperMedium, "nb_whisper_medium"),
             (TranscriptionModelId::KbWhisperMedium, "kb_whisper_medium"),
             (TranscriptionModelId::AppleSpeech, "apple_speech"),
+            (TranscriptionModelId::CloudApi, "cloud_api"),
         ] {
             assert_eq!(id.as_str(), name);
             assert_eq!(name.parse::<TranscriptionModelId>().unwrap(), id);

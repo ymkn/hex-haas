@@ -258,6 +258,21 @@ pub(super) const KEYS: &[Key] = &[
         "Hex records these as you switch models",
     ),
     key(
+        "cloud_api.endpoint",
+        Kind::Text,
+        "This fork: the cloud transcription endpoint URL (an Azure OpenAI deployment or another OpenAI-compatible endpoint)",
+    ),
+    key(
+        "cloud_api.key_header",
+        Kind::Text,
+        "This fork: the header the cloud API key is sent under; Authorization sends it as Bearer",
+    ),
+    key(
+        "cloud_api.model_name",
+        Kind::Text,
+        "This fork: the cloud transcription model field; empty when the URL names the deployment (Azure)",
+    ),
+    key(
         "vocabulary_boost",
         Kind::Choice(&["off", "light", "normal", "strong"]),
         "How readily transcription swaps heard words for a vocabulary term",

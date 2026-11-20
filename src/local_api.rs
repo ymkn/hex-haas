@@ -875,6 +875,9 @@ fn transcription_action(
         crate::transcription::models::ModelRuntime::AppleSpeech => {
             crate::transcription::models::is_installed(model, &selection.language)
         }
+        crate::transcription::models::ModelRuntime::CloudApi => {
+            crate::transcription::models::is_installed(model, &selection.language)
+        }
     };
     if !prepared {
         return RequestAction::Respond(HttpResponse::code(409, "model-not-ready"));

@@ -82,6 +82,31 @@ static MEETING_NOTES_FILE: AtomicBool = AtomicBool::new(false);
 const RETENTION_UNSET: u8 = u8::MAX;
 static MEETING_OUTPUT_FOLDER: OnceLock<RwLock<Option<PathBuf>>> = OnceLock::new();
 static MEETING_PROVIDERS: OnceLock<RwLock<Vec<MeetingProviderChoice>>> = OnceLock::new();
+static CLOUD_API_CONFIG: OnceLock<RwLock<CloudApiConfig>> = OnceLock::new();
+
+/// The saved cloud transcription API configuration. Applying settings
+/// publishes a snapshot; a cold process that has not applied any yet (the
+/// CLI) reads the settings file once instead.
+pub fn cloud_api_config() -> CloudApiConfig {
+    let cell = match CLOUD_API_CONFIG.get() {
+        Some(cell) => cell,
+        None => {
+            let loaded = AppSettings::read()
+                .map(|settings| settings.cloud_api)
+                .unwrap_or_default();
+            let _ = CLOUD_API_CONFIG.set(RwLock::new(loaded));
+            CLOUD_API_CONFIG.get().expect("cloud API config cell")
+        }
+    };
+    cell.read()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone()
+}
+
+/// Whether a cloud transcription endpoint has been configured.
+pub fn cloud_api_configured() -> bool {
+    cloud_api_config().configured()
+}
 static CALENDAR_SETTINGS: OnceLock<RwLock<CalendarSettings>> = OnceLock::new();
 static MICROPHONE_POLICY: AtomicU8 = AtomicU8::new(0);
 static CUSTOM_TRANSFORMATIONS_SELECTED: AtomicBool = AtomicBool::new(false);
@@ -251,6 +276,61 @@ impl RecordingAudioBehavior {
     }
 }
 
+/// This fork's cloud transcription API settings, edited from the model
+/// picker's Cloud API card. The endpoint is any OpenAI-compatible
+/// transcription endpoint, e.g. an Azure OpenAI deployment URL.
+#[derive(Clone, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default)]
+pub struct CloudApiConfig {
+    /// The full transcription URL, including any path and query (an Azure
+    /// deployment path and its `api-version`).
+    pub endpoint: String,
+    pub api_key: String,
+    /// The header the key is sent under. `Authorization` sends
+    /// `Bearer <key>`; any other name (e.g. `api-key` for Azure OpenAI)
+    /// sends the key as-is.
+    pub key_header: String,
+    /// Sent as the multipart `model` field when not empty. Azure selects
+    /// the model by deployment in the URL instead, so it stays empty there.
+    pub model_name: String,
+    /// Extra request headers, one `Name: Value` per line.
+    pub extra_headers: String,
+}
+
+impl CloudApiConfig {
+    /// Whether an endpoint has been configured at all.
+    pub fn configured(&self) -> bool {
+        !self.endpoint.trim().is_empty()
+    }
+
+    /// The header name the key is sent under, defaulting to Authorization.
+    pub fn key_header_name(&self) -> &str {
+        let name = self.key_header.trim();
+        if name.is_empty() {
+            "Authorization"
+        } else {
+            name
+        }
+    }
+}
+
+impl std::fmt::Debug for CloudApiConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The key and the extra headers can both carry credentials; never
+        // print their values.
+        f.debug_struct("CloudApiConfig")
+            .field("endpoint", &self.endpoint)
+            .field("api_key", &(!self.api_key.is_empty()).then_some("<set>"))
+            .field("key_header", &self.key_header)
+            .field("model_name", &self.model_name)
+            .field(
+                "extra_headers",
+                &(!self.extra_headers.trim().is_empty()).then_some("<set>"),
+            )
+            .finish()
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(default)]
 pub struct AppSettings {
@@ -317,6 +397,8 @@ pub struct AppSettings {
     pub terminal_paste_hotkey: Option<HotkeyBinding>,
     pub show_dock_icon: bool,
     pub transcription: TranscriptionSelection,
+    /// This fork's cloud transcription API configuration.
+    pub cloud_api: CloudApiConfig,
     /// Where the speech model runs (Linux and Windows).
     pub transcription_device: TranscriptionDevice,
     pub transcription_recents: Vec<TranscriptionSelection>,
@@ -474,6 +556,7 @@ impl Default for AppSettings {
             terminal_paste_hotkey: None,
             show_dock_icon: true,
             transcription: default_transcription(),
+            cloud_api: CloudApiConfig::default(),
             transcription_device: TranscriptionDevice::Auto,
             transcription_recents: Vec::new(),
             keyboard_model_switching: KeyboardModelSwitching::default(),
@@ -537,6 +620,7 @@ impl KeyboardModelChoice {
         let model = crate::transcription::models::validate(&selection)?;
         match model.runtime {
             crate::transcription::models::ModelRuntime::Gguf(_) => Ok(()),
+            crate::transcription::models::ModelRuntime::CloudApi => Ok(()),
             crate::transcription::models::ModelRuntime::AppleSpeech => {
                 Err(eyre!("{} can't be switched to by input source", model.name))
             }
@@ -876,6 +960,10 @@ impl AppSettings {
             .get_or_init(Default::default)
             .write()
             .unwrap_or_else(|error| error.into_inner()) = self.meetings.providers.clone();
+        *CLOUD_API_CONFIG
+            .get_or_init(Default::default)
+            .write()
+            .unwrap_or_else(|error| error.into_inner()) = self.cloud_api.clone();
         *CALENDAR_SETTINGS
             .get_or_init(Default::default)
             .write()

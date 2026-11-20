@@ -299,6 +299,9 @@ fn model_row(ui: &Ui, p: Paint, entry: &Entry, language: &str) -> El {
     if let Some(details) = crate::rune_ui::model_details::section(ui, p, def) {
         copy = copy.child(details);
     }
+    if let Some(cloud) = crate::rune_ui::cloud_setup::section(ui, p, def) {
+        copy = copy.child(cloud);
+    }
 
     let mut actions = row().key("actions").gap(8.0).center_y();
     if let Some(toggle) = crate::rune_ui::model_details::toggle(ui, p, def) {

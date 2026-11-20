@@ -201,6 +201,10 @@ pub(super) fn reads_vocabulary(ui: &Ui, def: &ModelDefinition) -> bool {
 pub(super) fn size_text(def: &ModelDefinition) -> String {
     match def.runtime {
         ModelRuntime::AppleSpeech => tr("Managed by macOS").into(),
+        ModelRuntime::CloudApi => match crate::app_settings::cloud_api_config().endpoint.trim() {
+            "" => tr("Not set up").into(),
+            endpoint => crate::net::host(endpoint),
+        },
         ModelRuntime::Gguf(_) => def.size_label(),
     }
 }
@@ -238,6 +242,9 @@ pub(super) fn blurb(def: &ModelDefinition) -> &'static str {
         M::AppleSpeech => tr("Apple's speech recognition, kept up to date by macOS"),
         // Haas has no measured speed/error figure or extra marketing copy.
         M::HaasJaV1 | M::Custom(_) => "",
+        M::CloudApi => {
+            tr("Sends your voice to the endpoint you configure; nothing is downloaded")
+        }
     }
 }
 
