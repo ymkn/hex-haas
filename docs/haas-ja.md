@@ -214,3 +214,11 @@ Windows logs and models to Local AppData (#1432) added a Local folder that
 the fork's `hex-haas` rename had not covered, so a Haas build would have
 mixed its models into the installed Hex's `%LOCALAPPDATA%\hex`; the rename
 now covers the Local folder (`%LOCALAPPDATA%\hex-haas`) with a test.
+
+## Cloud API model (OpenAI-compatible endpoints)
+
+For GPU-less environments such as VDI, where local recognition is heavy, this fork adds a `Cloud API (OpenAI-compatible)` picker model (`cloud_api`) that sends audio to an OpenAI-compatible transcription endpoint — primarily a company Azure OpenAI deployment. It is unavailable on macOS and, like Haas, uses the whole-clip path only (no live streaming).
+
+Setup lives on the model's card in the picker: endpoint URL (full URL; for Azure, the deployment URL including `api-version`, with the model field left empty — the deployment names the model; for api.openai.com the model field, e.g. `gpt-transcribe`, is required), the API key (stored in the settings file in plain text, like the jev key), the header the key is sent under (`Authorization` sends `Bearer <key>`; any other name, such as Azure's `api-key`, sends the value as-is), and extra headers in `Name: Value` form (one per line, or `;`-separated on the card; a `;` inside a value is not a separator). Transport-owned headers cannot be overridden.
+
+Model selection is global in Hex, so choosing this model routes dictation, meetings, file transcription and the local API to the endpoint; the card shows the configured host. While the endpoint is missing or invalid, a saved selection stays in place and the listener runs the fallback model, returning automatically once the configuration validates; the cloud model is never itself chosen as an automatic fallback. Changing the endpoint's host clears the key and extra headers in the same save. Audio is sent as 30-second 16 kHz mono WAV chunks; redirects are disabled, HTTPS is required (loopback HTTP uses a direct, proxy-free agent), requests go through the shared `net::agent` (system proxy and OS trust store), and neither the key nor extra header values appear in logs or error text.
