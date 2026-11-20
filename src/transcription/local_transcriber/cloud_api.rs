@@ -95,12 +95,25 @@ fn language_hint(language: &str) -> Option<&str> {
 /// the credentials to another host, and a transcription endpoint never
 /// needs one.
 fn agent_for(endpoint: &str) -> ureq::Agent {
-    crate::net::agent(endpoint, |config| {
+    let configure = |config: crate::net::Config| {
         config
             .timeout_global(Some(REQUEST_TIMEOUT))
             .max_redirects(0)
             .http_status_as_error(false)
-    })
+    };
+    if is_loopback(endpoint) {
+        // A plaintext loopback endpoint must not be routed through a
+        // system proxy: the direct agent also refuses any resolution
+        // that leaves this computer.
+        crate::net::loopback_agent(configure)
+    } else {
+        crate::net::agent(endpoint, configure)
+    }
+}
+
+fn is_loopback(endpoint: &str) -> bool {
+    let host = crate::net::host(endpoint);
+    host == "localhost" || host == "127.0.0.1" || host == "::1"
 }
 
 /// HTTPS is required, except for loopback, which is how the local mock
@@ -110,7 +123,7 @@ fn check_endpoint(endpoint: &str) -> Result<()> {
         return Ok(());
     }
     let host = crate::net::host(endpoint);
-    if endpoint.starts_with("http://") && (host == "localhost" || host == "127.0.0.1" || host == "::1") {
+    if endpoint.starts_with("http://") && is_loopback(endpoint) {
         return Ok(());
     }
     Err(eyre!(
@@ -118,13 +131,53 @@ fn check_endpoint(endpoint: &str) -> Result<()> {
     ))
 }
 
+/// Everything that must hold for the configuration to be usable,
+/// checked when the model reports itself ready and again before a
+/// request: a well-formed HTTPS (or loopback) endpoint, a usable key
+/// header, and parseable extra headers.
+pub(crate) fn validate_config(config: &CloudApiConfig) -> Result<()> {
+    if !config.configured() {
+        return Err(eyre!("the Cloud API endpoint is not configured"));
+    }
+    check_endpoint(&config.endpoint)?;
+    url::Url::parse(&config.endpoint)
+        .map_err(|_| eyre!("the Cloud API endpoint is not a valid URL"))?;
+    request_headers(config).map(|_| ())
+}
+
+fn valid_header_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "!#$%&'*+-.^_`|~".contains(c))
+}
+
+/// Headers the transport owns and a setting may never override.
+fn is_transport_header(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "content-type" | "content-length" | "host"
+    )
+}
+
 /// The headers a request carries: the API key under its configured
 /// header, plus the parsed extra headers.
 fn request_headers(config: &CloudApiConfig) -> Result<Vec<(String, String)>> {
     let extra = parse_extra_headers(&config.extra_headers)?;
     let mut headers = Vec::new();
+    // The key header comes from a setting too: it gets the same
+    // validation as an extra header, so it can never become a
+    // transport-owned header carrying the key.
+    let key_name = config.key_header_name();
+    if !config.key_header.trim().is_empty()
+        && (!valid_header_name(key_name) || is_transport_header(key_name))
+    {
+        return Err(eyre!(
+            "the key header name cannot be used; name a header the request does not own"
+        ));
+    }
     if !config.api_key.is_empty() {
-        let name = config.key_header_name();
+        let name = key_name;
         if extra
             .iter()
             .any(|(extra_name, _)| extra_name.eq_ignore_ascii_case(name))
@@ -144,6 +197,41 @@ fn request_headers(config: &CloudApiConfig) -> Result<Vec<(String, String)>> {
     Ok(headers)
 }
 
+/// Splits the extra-headers text into entries: one per line, or
+/// several on one line separated by `;` — but a `;` only separates
+/// where a new `Name:` entry follows it, so a value that contains
+/// `;` (a Cookie header) survives.
+pub(crate) fn split_entries(text: &str) -> Vec<&str> {
+    fn is_name_byte(byte: u8) -> bool {
+        byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte)
+    }
+    let mut entries = Vec::new();
+    for line in text.lines() {
+        let bytes = line.as_bytes();
+        let mut start = 0;
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b';' {
+                let mut j = i + 1;
+                while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\t') {
+                    j += 1;
+                }
+                let name_start = j;
+                while j < bytes.len() && is_name_byte(bytes[j]) {
+                    j += 1;
+                }
+                if j > name_start && j < bytes.len() && bytes[j] == b':' {
+                    entries.push(&line[start..i]);
+                    start = i + 1;
+                }
+            }
+            i += 1;
+        }
+        entries.push(&line[start..]);
+    }
+    entries
+}
+
 /// Parses the `Name: Value` entries of the extra-headers setting,
 /// separated by lines or `;`. A malformed entry is an error, never
 /// silently dropped: a missing header on an internal endpoint fails
@@ -151,7 +239,7 @@ fn request_headers(config: &CloudApiConfig) -> Result<Vec<(String, String)>> {
 /// owns (Content-Type, Content-Length, Host) cannot be overridden.
 fn parse_extra_headers(text: &str) -> Result<Vec<(String, String)>> {
     let mut headers = Vec::new();
-    for (index, line) in text.split(['\n', ';']).enumerate() {
+    for (index, line) in split_entries(text).into_iter().enumerate() {
         let line = line.trim();
         if line.is_empty() {
             continue;
@@ -164,11 +252,7 @@ fn parse_extra_headers(text: &str) -> Result<Vec<(String, String)>> {
         };
         let name = name.trim();
         let value = value.trim();
-        if name.is_empty()
-            || !name
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || "!#$%&'*+-.^_`|~".contains(c))
-        {
+        if !valid_header_name(name) {
             return Err(eyre!("extra header {} has an invalid name", index + 1));
         }
         if value.contains(['\r', '\n']) {
@@ -177,10 +261,7 @@ fn parse_extra_headers(text: &str) -> Result<Vec<(String, String)>> {
                 index + 1
             ));
         }
-        if matches!(
-            name.to_ascii_lowercase().as_str(),
-            "content-type" | "content-length" | "host"
-        ) {
+        if is_transport_header(name) {
             return Err(eyre!(
                 "the extra headers cannot set {name}; the request sets it itself"
             ));
@@ -221,7 +302,7 @@ fn transcribe_chunk(
     let status = response.status().as_u16();
     if status != 200 {
         let body = read_capped(&mut response, MAX_ERROR_BYTES);
-        return Err(api_error(&host, status, &body));
+        return Err(api_error(config, status, &body));
     }
     let body = response
         .body_mut()
@@ -241,7 +322,8 @@ fn transcribe_chunk(
 /// An HTTP error, from the API's own error code and message only. The
 /// raw body is never quoted: a gateway can echo request headers or the
 /// URL into it.
-fn api_error(host: &str, status: u16, body: &[u8]) -> color_eyre::eyre::Report {
+fn api_error(config: &CloudApiConfig, status: u16, body: &[u8]) -> color_eyre::eyre::Report {
+    let host = crate::net::host(&config.endpoint);
     let parsed = serde_json::from_slice::<serde_json::Value>(body).ok();
     let error = parsed.as_ref().and_then(|value| value.get("error"));
     let code = error
@@ -252,18 +334,39 @@ fn api_error(host: &str, status: u16, body: &[u8]) -> color_eyre::eyre::Report {
             _ => String::new(),
         })
         .unwrap_or_default();
-    let code = code.as_str();
     let message = error
         .and_then(|error| error.get("message"))
         .and_then(serde_json::Value::as_str)
         .unwrap_or("");
+    // An endpoint can echo the credentials it was sent (a gateway
+    // naming the bad key, say): scrub the configured secrets from
+    // whatever is quoted, then cap the length.
+    let code = redact_secrets(code, config);
+    let message = redact_secrets(message, config);
     let message: String = message.chars().take(200).collect();
+    let code = code.as_str();
     match (code.is_empty(), message.is_empty()) {
         (false, false) => eyre!("{host} answered HTTP {status} ({code}): {message}"),
         (false, true) => eyre!("{host} answered HTTP {status} ({code})"),
         (true, false) => eyre!("{host} answered HTTP {status}: {message}"),
         (true, true) => eyre!("{host} answered HTTP {status}"),
     }
+}
+
+/// Replaces the configured secrets in `text`: the API key and every
+/// extra header value long enough to be distinctive.
+fn redact_secrets(text: &str, config: &CloudApiConfig) -> String {
+    let mut out = text.to_owned();
+    let mut secrets: Vec<&str> = vec![config.api_key.as_str()];
+    if let Ok(headers) = parse_extra_headers(&config.extra_headers) {
+        secrets.extend(headers.iter().map(|(_, value)| value.as_str()));
+    }
+    for secret in secrets {
+        if secret.len() >= 4 {
+            out = out.replace(secret, "***");
+        }
+    }
+    out
 }
 
 fn read_capped(response: &mut ureq::http::Response<ureq::Body>, cap: u64) -> Vec<u8> {
@@ -292,11 +395,8 @@ fn multipart_body(
     language: Option<&str>,
 ) -> Vec<u8> {
     let mut body = Vec::with_capacity(wav.len() + 512);
-    let mut field = |name: &str, value: &str| {
-        body.extend_from_slice(
-            format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n").as_bytes(),
-        );
-    };
+    // The file part first: the `field` closure below borrows `body`
+    // mutably for the rest of the function.
     body.extend_from_slice(
         format!(
             "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\nContent-Type: audio/wav\r\n\r\n"
@@ -305,13 +405,20 @@ fn multipart_body(
     );
     body.extend_from_slice(wav);
     body.extend_from_slice(b"\r\n");
-    if let Some(model) = model {
-        field("model", model);
+    {
+        let mut field = |name: &str, value: &str| {
+            body.extend_from_slice(
+                format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n").as_bytes(),
+            );
+        };
+        if let Some(model) = model {
+            field("model", model);
+        }
+        if let Some(language) = language {
+            field("language", language);
+        }
+        field("response_format", "json");
     }
-    if let Some(language) = language {
-        field("language", language);
-    }
-    field("response_format", "json");
     body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
     body
 }
@@ -424,14 +531,33 @@ mod tests {
     }
 
     #[test]
-    fn error_text_never_quotes_the_body() {
-        let body = br#"{"error":{"code":"401","message":"bad key hunter2"}}"#;
-        let error = api_error("example.com", 401, body);
+    fn error_text_never_quotes_the_body_or_the_key() {
+        // The endpoint echoes the key it rejected: the message is
+        // quoted only after the configured secrets are scrubbed.
+        let body = br#"{"error":{"code":"401","message":"bad key secret"}}"#;
+        let error = api_error(&config(""), 401, body);
         let text = format!("{error}");
         assert!(text.contains("401"), "{text}");
-        // The API's own message is allowed; the point is only that the
-        // raw body (which could echo headers) is not embedded wholesale.
-        assert!(!text.contains("hunter2\")"), "{text}");
+        assert!(!text.contains("secret"), "{text}");
+        assert!(text.contains("***"), "{text}");
+    }
+
+    #[test]
+    fn semicolons_inside_a_value_are_not_separators() {
+        assert_eq!(
+            parse_extra_headers("Cookie: a=1; b=2\nX-Trace: on").unwrap(),
+            vec![
+                ("Cookie".to_owned(), "a=1; b=2".to_owned()),
+                ("X-Trace".to_owned(), "on".to_owned()),
+            ]
+        );
+        assert_eq!(
+            parse_extra_headers("X-One: 1; X-Two: 2").unwrap(),
+            vec![
+                ("X-One".to_owned(), "1".to_owned()),
+                ("X-Two".to_owned(), "2".to_owned()),
+            ]
+        );
     }
 
     #[test]

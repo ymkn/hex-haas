@@ -519,6 +519,12 @@ pub fn fallback() -> TranscriptionSelection {
     let language = crate::desktop::i18n::preferred_language();
     let recommended = super::models::recommended_selection(&language);
     let installed = |selection: &TranscriptionSelection| {
+        // Never the cloud model: a fallback runs because the chosen
+        // model can't, and sending audio to an endpoint the person did
+        // not choose is not a fallback, it's a surprise.
+        if selection.model == TranscriptionModelId::CloudApi {
+            return false;
+        }
         let model = super::models::definition(selection.model);
         model.available() && super::models::is_installed(model, &selection.language)
     };

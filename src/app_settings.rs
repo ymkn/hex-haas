@@ -105,7 +105,20 @@ pub fn cloud_api_config() -> CloudApiConfig {
 
 /// Whether a cloud transcription endpoint has been configured.
 pub fn cloud_api_configured() -> bool {
-    cloud_api_config().configured()
+    let config = cloud_api_config();
+    config.configured()
+        && crate::transcription::local_transcriber::cloud_api::validate_config(&config).is_ok()
+}
+
+/// Publishes the cloud API snapshot. The cell is initialized with the
+/// value itself, so a concurrent reader never observes an empty
+/// snapshot from a half-finished publish.
+fn publish_cloud_api_config(config: &CloudApiConfig) {
+    if let Some(cell) = CLOUD_API_CONFIG.get() {
+        *cell.write().unwrap_or_else(|error| error.into_inner()) = config.clone();
+    } else {
+        let _ = CLOUD_API_CONFIG.set(RwLock::new(config.clone()));
+    }
 }
 static CALENDAR_SETTINGS: OnceLock<RwLock<CalendarSettings>> = OnceLock::new();
 static MICROPHONE_POLICY: AtomicU8 = AtomicU8::new(0);
@@ -319,7 +332,9 @@ impl std::fmt::Debug for CloudApiConfig {
         // The key and the extra headers can both carry credentials; never
         // print their values.
         f.debug_struct("CloudApiConfig")
-            .field("endpoint", &self.endpoint)
+            // The host only: an endpoint can carry userinfo or a token
+            // in its query, and Debug output reaches logs.
+            .field("endpoint", &crate::net::host(&self.endpoint))
             .field("api_key", &(!self.api_key.is_empty()).then_some("<set>"))
             .field("key_header", &self.key_header)
             .field("model_name", &self.model_name)
@@ -960,10 +975,7 @@ impl AppSettings {
             .get_or_init(Default::default)
             .write()
             .unwrap_or_else(|error| error.into_inner()) = self.meetings.providers.clone();
-        *CLOUD_API_CONFIG
-            .get_or_init(Default::default)
-            .write()
-            .unwrap_or_else(|error| error.into_inner()) = self.cloud_api.clone();
+        publish_cloud_api_config(&self.cloud_api);
         *CALENDAR_SETTINGS
             .get_or_init(Default::default)
             .write()

@@ -20,6 +20,8 @@ pub(super) struct CloudSetupState {
     /// The field being edited, with its text field (the rename pattern
     /// from `model_import`): one editor at a time.
     editing: Option<(Field, TextEdit)>,
+    /// Why the saved configuration is not usable yet, after a save.
+    error: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -99,9 +101,11 @@ impl Field {
                 }
             }
             Field::ExtraHeaders => {
-                let count = config
-                    .extra_headers
-                    .split(['\n', ';'])
+                let count =
+                    crate::transcription::local_transcriber::cloud_api::split_entries(
+                        &config.extra_headers,
+                    )
+                    .into_iter()
                     .filter(|line| !line.trim().is_empty())
                     .count();
                 if count == 0 {
@@ -129,12 +133,13 @@ impl Field {
             Field::ModelName => config.model_name = value.trim().to_owned(),
             // Store one per line, however they were typed.
             Field::ExtraHeaders => {
-                config.extra_headers = value
-                    .split(';')
-                    .map(str::trim)
-                    .filter(|line| !line.is_empty())
-                    .collect::<Vec<_>>()
-                    .join("\n")
+                config.extra_headers =
+                    crate::transcription::local_transcriber::cloud_api::split_entries(&value)
+                        .into_iter()
+                        .map(str::trim)
+                        .filter(|line| !line.is_empty())
+                        .collect::<Vec<_>>()
+                        .join("\n")
             }
         }
     }
@@ -167,6 +172,17 @@ pub(super) fn section(ui: &Ui, p: Paint, def: &ModelDefinition) -> Option<El> {
     for field in Field::ALL {
         section = section.child(field_row(ui, p, field, &config));
     }
+    if let Some(error) = &ui.picker.cloud.error {
+        section = section.child(
+            row().key("cloud-error").child(
+                text(error.clone())
+                    .key("label")
+                    .font(p.k.ty.small)
+                    .color(p.warning())
+                    .wrap(),
+            ),
+        );
+    }
     Some(section)
 }
 
@@ -174,26 +190,28 @@ fn field_row(ui: &Ui, p: Paint, field: Field, config: &CloudApiConfig) -> El {
     if let Some((editing, editor)) = &ui.picker.cloud.editing
         && *editing == field
     {
+        let mut input = TextInput::new(editor)
+            .placeholder(tr(field.placeholder()))
+            .width(Some(280.0))
+            .on_edit(edit_access(move |ui: &mut Ui| {
+                &mut ui
+                    .picker
+                    .cloud
+                    .editing
+                    .get_or_insert_with(|| (field, TextEdit::default()))
+                    .1
+            }))
+            .on_submit(move |ui: &mut Ui, _| save(ui));
+        // The key and the extra headers can both carry credentials:
+        // their editors mask the text and refuse copy.
+        if matches!(field, Field::ApiKey | Field::ExtraHeaders) {
+            input = input.secure();
+        }
         return row()
             .key(field.key())
             .gap(8.0)
             .center_y()
-            .child(
-                TextInput::new(editor)
-                    .placeholder(tr(field.placeholder()))
-                    .width(Some(280.0))
-                    .on_edit(edit_access(move |ui: &mut Ui| {
-                        &mut ui
-                            .picker
-                            .cloud
-                            .editing
-                            .get_or_insert_with(|| (field, TextEdit::default()))
-                            .1
-                    }))
-                    .on_submit(move |ui: &mut Ui, _| save(ui))
-                    .build(p.k)
-                    .key("field"),
-            )
+            .child(input.build(p.k).key("field"))
             .child(button(
                 p,
                 "cloud-save",
@@ -218,6 +236,9 @@ fn field_row(ui: &Ui, p: Paint, field: Field, config: &CloudApiConfig) -> El {
             tr("Edit"),
             ButtonKind::Secondary,
             move |ui: &mut Ui, _| {
+                // Switching fields commits the draft in progress rather
+                // than dropping it.
+                save(ui);
                 let config = crate::app_settings::cloud_api_config();
                 ui.picker.cloud.editing = Some((field, TextEdit::new(field.value(&config))));
             },
@@ -225,12 +246,41 @@ fn field_row(ui: &Ui, p: Paint, field: Field, config: &CloudApiConfig) -> El {
 }
 
 fn save(ui: &mut Ui) {
-    let Some((field, editor)) = ui.picker.cloud.editing.take() else {
-        return;
-    };
     if !ui.live() {
         return;
     }
+    let Some((field, editor)) = ui.picker.cloud.editing.take() else {
+        return;
+    };
     let value = editor.text.clone();
-    ui.update(|settings| field.set(&mut settings.cloud_api, value));
+    // Credentials belong to the endpoint they were entered for: moving
+    // to a different host clears the key and the extra headers in the
+    // same save, so the next transcription cannot send them to the new
+    // host before they are replaced.
+    let clear_credentials = field == Field::Endpoint && {
+        let current = crate::app_settings::cloud_api_config();
+        crate::net::host(&current.endpoint) != crate::net::host(&value)
+    };
+    ui.update(|settings| {
+        field.set(&mut settings.cloud_api, value.clone());
+        if clear_credentials {
+            settings.cloud_api.api_key.clear();
+            settings.cloud_api.extra_headers.clear();
+        }
+    });
+    // Say on the card when what is saved cannot be used yet; an empty
+    // endpoint mid-setup is not an error, just unfinished.
+    let mut candidate = crate::app_settings::cloud_api_config();
+    field.set(&mut candidate, value);
+    if clear_credentials {
+        candidate.api_key.clear();
+        candidate.extra_headers.clear();
+    }
+    ui.picker.cloud.error = if candidate.configured() {
+        crate::transcription::local_transcriber::cloud_api::validate_config(&candidate)
+            .err()
+            .map(|error| format!("{error:#}"))
+    } else {
+        None
+    };
 }

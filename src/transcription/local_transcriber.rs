@@ -16,7 +16,7 @@ use crate::transcription::{pad_gguf_samples, requires_closing_mark, trailing_sil
 #[cfg(target_os = "windows")]
 mod speech_cpp;
 
-mod cloud_api;
+pub(crate) mod cloud_api;
 
 enum LocalSession {
     Gguf(OfflineGgufSession),
