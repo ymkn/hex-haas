@@ -334,6 +334,7 @@ impl LocalTranscriber {
                 warm_ms: 0,
                 // The worker holds its own backend; transcribe.cpp never runs.
                 gpu_full: false,
+                out_of_memory: None,
             });
         }
         let loaded = Self::load_where(selection)?;
