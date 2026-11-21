@@ -65,6 +65,7 @@ impl Feature {
     pub const fn group(self) -> Group {
         match self {
             Self::LiveText
+            | Self::FasterLiveText
             | Self::FailureNotices
             | Self::LiveTyping
             | Self::NotchIndicator
@@ -80,12 +81,14 @@ impl Feature {
             | Self::ReleaseNotesLink
             | Self::SpeakersOnly
             | Self::Playground
-            | Self::StopPhrase => Group::Dictation,
+            | Self::StopPhrase
+            | Self::VocabularyFiles => Group::Dictation,
             Self::SmartSpacing
             | Self::SpokenFormatting
             | Self::SpokenSymbols
             | Self::FillerWords
             | Self::CleanUpWithAppleIntelligence
+            | Self::NeutralVoice
             | Self::KeepOnClipboard
             | Self::CopyOnly
             | Self::ReturnToApp
@@ -106,7 +109,8 @@ impl Feature {
             Self::KeepRecordings
             | Self::HistoryStats
             | Self::RecentDictations
-            | Self::CopyDictationAudio => Group::History,
+            | Self::CopyDictationAudio
+            | Self::PasteLastPicker => Group::History,
             Self::Meetings
             | Self::LiveChapters
             | Self::GnomeMeetingCapsules
@@ -116,6 +120,7 @@ impl Feature {
             Self::Screenshots
             | Self::AnnotateReplay
             | Self::GnomeAnnotate
+            | Self::AnnotatePointerScreen
             | Self::CopyCaptureZip => Group::Annotate,
             Self::MouseShortcuts
             | Self::SecondDictationShortcut

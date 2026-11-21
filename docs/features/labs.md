@@ -23,9 +23,10 @@ feedback and Run setup again. A card's title and line are
 `labs::Feature::title` and `summary` (`src/labs/card.rs`), translated by the
 window, and its OSes `labs::Feature::oses`.
 
-**On the web.** Every `Everyone` lab (not Dev ones, nor Screenshots, Annotate
-last 15 seconds, or Copy a capture as one file, which only builds with the capture
-build option have) has a page at `anoma.ly/hex/labs/<id>` (`dev.anoma.ly` for
+**On the web.** Every `Everyone` lab (not Dev ones, nor the labs that only
+matter once Annotate is on: Screenshots, Annotate last 15 seconds, Record the
+screen under the pointer, Copy a capture as one file) has a page at
+`anoma.ly/hex/labs/<id>` (`dev.anoma.ly` for
 the dev site), listed newest first at `/hex/labs`, with a 1200 × 630 social
 card. The pages come from `site/src/labs.json`, which only the registry
 writes:
@@ -58,6 +59,10 @@ Feature             Pane  Toggle (settings.json, hex settings)   On: what it doe
 │                                        did before Output replaced it; off, `hex window show --pane modes` opens Output
 │                                        // checks: the_modes_editor_lab_brings_modes_back_to_the_sidebar (rune_ui/tests.rs)
 ├── Live text       no    labs.live_text                         provisional words beside the HUD while dictating; its card says when the selected speech model can't stream (Linux: or Speech engine is CPU), so no words would show
+├── Faster live text no    labs.faster_live_text                 live words sooner, and the final text from the same shorter
+│                                        lookahead for Parakeet buffered streaming, chosen from the model's own menus
+│                                        (Unified English 70/7/7: 1.12 s instead of 2.08 s), at about 1.6 times the
+│                                        encoder work; a change re-probes while idle, and an off-menu env value falls back
 ├── Stop phrase     no    labs.stop_phrase + labs.stop_phrase_text ("stop dictation", every OS)
 │                                        saying the phrase at the end of a hands-free dictation finishes it, as if the
 │                                        shortcut were pressed again, and the phrase never reaches the pasted text;
@@ -113,6 +118,14 @@ Feature             Pane  Toggle (settings.json, hex settings)   On: what it doe
 │                                        left alone, and an unavailable, late, refused, or over-reaching answer pastes the
 │                                        corrected text; its card says why Apple Intelligence can't run here, and the
 │                                        switch still turns off
+├── Neutral voice   no    labs.neutral_voice             (macOS)
+│                                        a mode that turns it on gets each dictation rewritten into plain, standard, neutral
+│                                        wording on this Mac, instead of the OpenCode rewrite and the Apple Intelligence
+│                                        cleanup, so the neutral pass itself never sends the text to OpenCode; the mode's
+│                                        transformations still run afterwards and may use the network if you wrote them that
+│                                        way, and Voice Action still uses OpenCode. Numbers, code, links, paths, and quoted
+│                                        text must survive verbatim or the corrected transcript is pasted; Modes shows the
+│                                        per-mode switch while on
 ├── Second dictation shortcut no labs.second_dictation_shortcut + second_dictation_hotkey
 │                                        another shortcut dictates like the main one (#627); General shows its recorder while on
 ├── More dictation shortcuts no labs.more_dictation_shortcuts + extra_dictation_hotkeys (macOS)
@@ -307,6 +320,12 @@ Feature             Pane  Toggle (settings.json, hex settings)   On: what it doe
 │                                        held Annotate key (a tap of it stops the recording)
 │                                        // checks: gnome_annotate_is_its_own_bit_* (labs.rs), meeting capsule xwayland decision reused
 │                                        // (linux/meeting_capsules.rs); Rune's xwayland tests; not run on a GNOME session
+├── Record the screen under the pointer no labs.annotate_pointer_screen (Linux) on Wayland, a Screen capture asks the compositor which output
+│                                        the pointer is on (ext-image-copy-capture-v1 pointer cursor sessions, no surface, no frames) and remembers a
+│                                        screen-cast choice per output (`screencast-token-<output>`), so each monitor is asked once; off, one
+│                                        remembered screen for all, as before. See capture.linux
+│                                        // checks: entered (linux/pointer_output.rs), token_file_name and
+│                                        // recorded_output (crates/capture/src/linux/portal.rs); not run on a compositor exporting the protocol
 ├── Screenshots     no    labs.screenshots + screenshots.hotkey (default ⌘⇧4) + screenshots.record_hotkey (unbound) + screenshots.folder (macOS)
 │                                        the shortcut picks an area (Space: a window); the PNG goes on the clipboard, into the folder (Desktop), and into a corner thumbnail;
 │                                        a saved record shortcut and Annotate's capture shortcuts never share a key, on or off
@@ -334,7 +353,9 @@ Feature             Pane  Toggle (settings.json, hex settings)   On: what it doe
 │                                         // check: terminal_paste_sends_plain_control_v_to_java_games (windows/paste.rs)
 ├── OpenCode in WSL no    labs.opencode_in_wsl          (Windows) Modes rewriting, the Modes model picker, and Annotate's capture sends
                                          use an OpenCode service running in the default WSL distribution
-                                         when no Windows registration answers; looking for it can start WSL
+                                         ahead of a Windows one when it answers; every lookup also looks in WSL
+                                         even when a Windows service is healthy, waiting up to 3 s, and that can
+                                         start WSL; the Windows service is used when WSL answers nothing
                                          // checks: the_passwd_line_for_the_uid_names_its_home, both_wsl_prefixes_name_the_distribution,
                                          // a_distribution_or_home_windows_cant_reach_is_refused, a_zero_budget_or_cancellation_skips_the_lookup,
                                          // the_cache_follows_the_default_distribution_and_uid, one_lookup_serves_every_caller_and_a_short_wait_stops,
@@ -345,10 +366,22 @@ Feature             Pane  Toggle (settings.json, hex settings)   On: what it doe
                                          // a_capture_folder_follows_the_automount_read_with_the_home,
                                          // a_wsl_service_gets_the_workspace_its_linux_server_can_use,
                                          // a_wsl_service_maps_a_capture_folder_into_its_distribution,
-                                         // a_wsl_service_is_a_fallback_only_without_a_windows_one,
+                                         // a_wsl_service_wins_with_the_lab_on_and_the_windows_one_is_the_fallback,
+                                         // a_wsl_lookup_is_capped_only_when_windows_already_answered,
                                          // a_failed_wsl_request_forgets_the_workspace, a_not_found_wsl_request_forgets_the_workspace,
                                          // a_wsl_request_failure_reads_as_the_capsule_expects,
                                          // opencode_in_wsl_is_its_own_bit_and_windows_only; not run on a real Windows PC with WSL
+├── Vocabulary files no  labs.vocabulary_files           (every OS) the Vocabulary sheet offers Import… and Export…
+│                                        beside Add term; Import merges a CSV or TXT file's terms (Teams' custom dictionary
+│                                        columns) into the list and saves it, and Export writes the list as a CSV file. Off,
+│                                        the sheet is exactly as before
+│                                        // checks: dictation::vocabulary::csv tests (header, quotes and embedded newlines,
+│                                        // an unclosed quote, BOM, CRLF, blank rows, merge, duplicate terms, dropped
+│                                        // spellings, caps, a folder, export→import round trip), merge_status and the
+│                                        // sheet's import and export in rune_ui/vocabulary.rs,
+│                                        // the_vocabulary_sheet_offers_files_only_with_its_lab_on (rune_ui/tests.rs),
+│                                        // vocabulary_files_is_its_own_switch_and_everywhere (labs.rs); the native
+│                                        // dialogs were not opened in a desktop session
 └── Only on speakers no   labs.speakers_only            (every OS) While dictating (Mute, Lower audio, Pause
                                          media) applies only while the default output is speakers; wired or Bluetooth
                                          headphones leave the output and media alone for that recording or capture, and
@@ -1346,6 +1379,123 @@ dictation on a Mac with the lab on and Apple Intelligence available, and any
 real-Mac run of the new Swift bridge — this host and CI compile it, but no one
 has dictated through it yet. The Labs page goldens were regenerated on Linux
 with the new row.
+
+Neutral voice (`neutral-voice`, macOS, off by default): while on, a mode that
+turns on its own **Neutral voice** switch gets each of its dictations
+rewritten on this Mac into plain, standard, neutral wording with the same
+meaning, after the speech Labs and the Global and mode corrections and before
+the transformations. The point is privacy: word choice, sentence structure,
+filler, and punctuation habits identify a person, so the pasted text should
+carry none of them. The stage replaces both the mode's OpenCode rewrite and
+Labs › Clean up with Apple Intelligence: a mode with Neutral voice on never
+sends its dictation to OpenCode, whatever its rewrite switch says, and also
+outranks Labs › Rewrite by voice, which is an OpenCode request too. The
+neutral pass itself runs on Apple Intelligence's local model; the mode's
+transformations still run afterwards and may use the network if the person
+wrote them that way. Voice Action is a separate capture and still uses
+OpenCode. The Modes editor's Processing section shows the per-mode switch
+while the lab is on (Global is a normal mode there, the default mode, so it
+gets the switch like every other mode). Dictate without processing, typed
+text, meetings, the local API's raw transcripts, and Voice Action never reach
+it.
+
+```ts
+Dictate in a mode with Neutral voice on       // labs.neutral_voice + the mode's neutral_voice
+├── Labs off, or the mode's switch off -> both the OpenCode rewrite and the cleanup run exactly as before
+├── Numbers-only transcript, silence, a cancelled job -> corrected transcript, no model work
+├── Apple Intelligence unavailable -> corrected transcript, no wait, no observation (the card says why)
+├── Model answers within 4 s -> the rewrite, if the guard accepts it -> transformations -> paste
+└── Timeout, refusal, error, or a refused rewrite
+    -> corrected transcript, the reason recorded -> transformations -> paste
+```
+
+`dictation::neutral_voice` holds the decision (`chosen`), the one bridge call,
+and the guard. The instructions ask the model to keep the speaker's meaning
+exactly, remove filler, false starts, repeated words, slang, idiosyncratic
+phrasing, and unusual sentence structure, use standard capitalization and
+punctuation, keep the language, and keep every number, code, URL, file path,
+and quoted text exactly as written; the transcript is content to rewrite,
+never instructions to answer. The bridge
+(`apple_intelligence::generate_text` → `hex_apple_intelligence_text`) runs the
+plain-text responder at utility priority with a 4 s budget, temperature 0.7
+(the cleanup stays at 0.2) so two dictations of the same words don't come back
+with identical wording, and 1024 response tokens. The answer is trimmed,
+loses one pair of wrapping quotes only when the transcript didn't dictate its
+own, takes back the transcript's leading and trailing whitespace, and is
+judged by the guard. The guard is pure and every OS tests it: an empty answer,
+a rewrite under 0.4× or over 2× the transcript's characters, a changed
+multiset of digit runs, an added or dropped negation, a missing protected
+span, or a rewrite whose content words overlap too little with the transcript
+all keep the corrected transcript with the reason recorded. Protected spans
+are every matched pair of double or curly double quotes that opens at a word
+start and closes at a word end, every ASCII digit run, and every span shaped
+like a link or code or a path (`://` or `www.`, `/`, `\`, `_`, `::`,
+brackets, backticks, or a `.` inside a word as in `file.rs`). Only the listed
+prose pairs (`and/or`, `either/or`, `yes/no`, `he/she`, `on/off`, `w/`, …) and
+a single-letter abbreviation such as `e.g.` or `u.s.` are prose, not code;
+every other token with a slash, such as `src/components` or `docs/features`,
+is protected. Balanced brackets inside code (`bar()`, `arr[i]`) stay with it;
+only unmatched outer brackets are trimmed. Rewriting a whole Chinese or
+Japanese sentence is fine: only the embedded number or link is protected, and
+CJK numerals such as 一 and 三 are words, not digits. When the transcript has
+at least four content words, at least 30% of them must appear in the answer,
+so an answer to the text or injected prose falls back; text without
+whitespace, or with any CJK, kana, or hangul character, is exempt. Unlike the
+cleanup's guard, there is no word-overlap check: rewording is the point.
+
+A pass that ran records `profile: "Neutral voice"` with its latency in the
+dictation's NDJSON `processing` field and in History's Processing line; a pass
+that fell back records the reason as `fallback` ("fell back: …" in History).
+History already shows "Raw transcript" under the final text when they differ,
+so a neutral rewrite is visible there, and History itself is unchanged. The
+card shows the same reason Summaries shows when this Mac can't run Apple
+Intelligence, and only locks the switch while it is off, so it can always be
+turned back off (an organization's Labs lock keeps the managed row and its
+words instead). Checks: `a_reworded_sentence_is_accepted`,
+`a_rewrite_that_keeps_the_protected_words_is_accepted`,
+`a_dropped_link_file_or_quote_is_rejected`, `a_changed_number_is_rejected`,
+`a_lost_or_added_negation_is_rejected`,
+`a_runaway_or_empty_answer_is_rejected`,
+`a_short_answer_inside_the_length_window_is_accepted`,
+`only_heard_speech_in_an_opted_in_mode_takes_the_pass`,
+`quotes_go_only_when_the_transcript_did_not_dictate_them`,
+`the_transcripts_own_whitespace_comes_back`,
+`an_unmatched_quote_protects_nothing`,
+`only_a_quote_at_word_boundaries_pairs`,
+`a_curly_quote_pair_protects_its_text`,
+`a_failed_close_leaves_the_quote_open`,
+`quotes_pair_only_with_their_own_kind`,
+`brackets_around_a_path_are_not_part_of_it`,
+`balanced_brackets_stay_in_the_token`,
+`common_abbreviations_are_not_code`,
+`a_slash_between_words_is_not_a_path`,
+`folder_paths_stay_protected`,
+`a_chinese_rewrite_keeps_or_drops_its_ascii_number`,
+`cjk_text_skips_the_content_floor`,
+`a_moved_number_is_accepted`,
+`an_unrelated_answer_is_rejected_but_a_rewording_is_accepted`,
+`protected_tokens_keep_code_and_quotes`,
+`a_cancelled_stage_starts_nothing`,
+`a_mode_switch_alone_never_reaches_the_stage` (Linux and Windows), and
+`a_stage_with_the_lab_off_changes_nothing` in
+[dictation/neutral_voice.rs](../../src/dictation/neutral_voice.rs);
+`only_a_mode_that_asks_for_neutral_voice_carries_it` in
+[processor.rs](../../src/dictation/processor.rs);
+`numbers_and_number_words_are_numbers` in
+[dictation/numbers.rs](../../src/dictation/numbers.rs);
+`a_mode_without_neutral_voice_loads_it_off`,
+`a_mode_keeps_its_neutral_voice_choice`, and
+`an_off_mode_serializes_without_neutral_voice` in
+[dictation_processing.rs](../../src/app_settings/dictation_processing.rs);
+`neutral_voice_is_its_own_atomic_and_macos_only` in [labs.rs](../../src/labs.rs);
+`neutral_voice_says_why_apple_intelligence_cannot_run` in
+[tests/panes.rs](../../src/rune_ui/tests/panes.rs); and
+`neutral_voice_shows_in_modes_only_with_its_lab_and_toggles_the_mode`
+(macOS) in [tests.rs](../../src/rune_ui/tests.rs).
+Not yet observed: a real dictation on a Mac with the lab on and Apple
+Intelligence available, and any real-Mac run of the new Swift bridge
+parameter — this host and CI compile it, but no one has dictated through it.
+The Labs page goldens were regenerated on Linux with the new card.
 
 Second dictation shortcut (`second-dictation-shortcut`, issue 627, macOS, Linux
 and Windows): for a Globe/Fn shortcut on the laptop keyboard and another key on
@@ -3223,6 +3373,62 @@ vocabulary list itself (rewriting and search), and Linux's Terminal paste.
 
 ## Features
 
+- Vocabulary files: the Vocabulary sheet gains **Import…** and **Export…**
+  beside Add term (every OS; off by default, `labs.vocabulary_files`). Off,
+  the sheet is exactly as before. Import opens one CSV or TXT file, refuses
+  one over 1 MiB or not UTF-8, and reads Microsoft Teams' custom dictionary
+  columns: column 1 is the term and column 2 its comma-separated "sounds
+  like" spellings, with a first header row naming the column "Term" or
+  "Term (required)" (any case) left out; further columns are ignored.
+  Quoted fields keep commas, quotes, and line breaks, and CRLF or LF ends a
+  row. Blank rows and rows without a term are left out. A file that isn't a
+  regular file (a folder, a device, a FIFO), is over 1 MiB, isn't UTF-8, or
+  ends inside a quoted field is refused with that reason, so nothing opens a
+  FIFO and stalls the window.
+  Lines split and merge as the sheet's own fields do: a term already listed
+  in any case keeps its entry and gains the spellings it lacks, and new terms
+  append in file order. A term this file added never also counts as updated,
+  and a term counts as updated once however many rows name it. Skipped counts
+  each refused term once, whether it is over 64 characters or a new term
+  past the list's 500, and each spelling the limits drop, whether it is over
+  64 characters or past the 16th for its term. The merged rows then save
+  through the same draft path typing uses; a failed save says so instead of
+  reporting success. The sheet says "Added 12 terms", "Added 3 terms,
+  updated 2", "Updated 2 terms", "Added 3 terms, updated 2, skipped 1", "No
+  new terms in that file" only when nothing changed at all, "No terms found
+  in that file", or what failed.
+  Export opens a save dialog named `hex-vocabulary.csv` (starting in
+  Downloads), appends `.csv` only when the name has no extension and
+  `<name>.csv` doesn't already exist, and writes the header plus one row per
+  entry, its spellings joined by ", " and two empty cells, quoting what needs
+  it. The file is written atomically
+  (`durable::write`), and the sheet says "Exported N terms" or the error.
+  The CSV parser, merge, and writer are `dictation::vocabulary::csv`, with
+  no new dependency; the save dialog is the same native
+  `desktop::file_dialog` wrapper as open, over Rune's
+  `FileDialogs::save`.
+- Paste Last picker: tapping Paste Last pastes the newest ready dictation or
+  finished annotation, and holding it (⌥⇧V) opens a picker of recent rows, or
+  all of History; History then lists dictations, annotations, screenshots and
+  recordings together with one search and a type filter (macOS; Dev-audience,
+  off by default). Its switch is `labs.paste_last_picker`, and the gate,
+  `labs::paste_last_picker()`, is where the work starts: the picker and its
+  gesture, History's unified list and the rows it reads, and the words a
+  deliberate cancel keeps. Off, Paste Last and History behave exactly as
+  before. Checks: `paste_last_picker_is_its_own_switch_and_macos_only` in
+  [labs.rs](../../src/labs.rs); the picker's `paste::browse`,
+  `paste::recent`, `paste::gesture` and `paste::capture` tests; History's
+  `history::` tests; `one_history_filters_and_searches_the_real_owners_without_enlarging_paste_last`
+  in [history/unified/proof.rs](../../src/rune_ui/history/unified/proof.rs);
+  and `a_held_shortcut_browses_real_rows_and_clicks_choose_the_original_item`
+  in [paste_picker/proof.rs](../../src/rune_ui/paste_picker/proof.rs), a native
+  Mac proof that needs a login session and an explicit `--ignored` run. The
+  unified History exists only in macOS builds, so its `--snap` scenes
+  (`mac-history`, `mac-history-capture`, `mac-history-filtered`,
+  `mac-history-types`, `mac-history-search`, `mac-history-search-empty`,
+  `mac-history-empty`) render on a Mac and have no Linux golden. Not yet
+  observed: a real held shortcut in a desktop login, a receiving app's paste
+  of every row kind, and the picker over a real display.
 - Live chapters: chapter a meeting's transcript live while it records
   (macOS, Apple Intelligence; see
   [Live Chapters](meetings.md#live-chapters-labs)). Its own switch is
@@ -3528,15 +3734,19 @@ vocabulary list itself (rewriting and search), and Linux's Terminal paste.
   is `labs.terminal_paste_shortcut`, and General shows its recorder while on.
 - OpenCode in WSL (Windows): Modes rewriting, the Modes model picker, and
   Annotate's capture sends use an OpenCode service running inside the default
-  WSL distribution. WSL2 forwards
-  loopback, so Hex dials the registered URL as usual; what it cannot see
-  without this lab is the registration, which lives in the distribution's
+  WSL distribution. With the lab on, a WSL service that answers is used ahead
+  of a Windows one; the Windows service is used when WSL answers nothing. WSL2
+  forwards loopback, so Hex dials the registered URL as usual; what it cannot
+  see without this lab is the registration, which lives in the distribution's
   home.
 
 ```ts
 Settings › Labs › OpenCode in WSL on            // labs.opencode_in_wsl
-├── a Windows registration answers /api/info -> it wins, exactly as before
-├── none answers -> read HKCU\…\Lxss\DefaultDistribution, DistributionName and DefaultUid on every lookup
+├── a WSL registration answers /api/info -> it wins over a Windows one; the Windows service
+│   is used when the WSL wait answers nothing, so Windows comes back only after that wait
+├── Windows already confirmed a service -> the WSL lookup waits at most min(the caller's
+│   remaining budget, WSL_LOOKUP_CAP 3 s), so a cold WSL can't hold a rewrite or Annotate's send
+├── each search -> read HKCU\…\Lxss\DefaultDistribution, DistributionName and DefaultUid on every lookup
 │   ├── a cached home is reused only when DistributionName and DefaultUid still match; otherwise
 │   │   rebuild it from passwd: \\wsl.localhost\<distribution>\etc\passwd, else \\wsl$\<distribution>\etc\passwd
 │   │   on older Windows 10 (at most 1 MiB) -> the line whose uid is DefaultUid -> its (one trailing / trimmed) home
@@ -3552,10 +3762,12 @@ Settings › Labs › OpenCode in WSL on            // labs.opencode_in_wsl
 │   Each wait checks Escape in WAIT_SLICE slices; a timeout or cancel never aborts the others
 ├── a lookup that ran into its cap without a service pauses new lookups for 10 s, so a hung WSL
 │   doesn't make every rewrite wait out its deadline; a later try finds it once it starts
-├── no registration or no home -> OpenCode isn't running, or the update notice when one answered /api/info with 404
+├── no WSL registration, no home, or a wait that ran into its cap -> the Windows service when one
+│   already answered; with neither, OpenCode isn't running, or the update notice when one answered
+│   /api/info with 404
 ├── Annotate's capture send asks the same lookup first (src/capture_host/routing/opencode.rs)
-│   ├── a WSL service answers the router's local requests; a native Windows one leaves the router's own
-│   │   registration path unchanged
+│   ├── a WSL service answers the router's local requests; when WSL answers nothing, a native Windows
+│   │   one leaves the router's own registration path unchanged
 │   └── the prompt's "Recorded at" line names the capture folder as the WSL server sees it:
 │       X:\a\b -> /mnt/x/a/b, following [automount] root = (one trailing /, else /mnt/);
 │       enabled = false, a UNC share, or a relative path leaves the Windows text. The
@@ -3594,7 +3806,8 @@ Checks: `the_passwd_line_for_the_uid_names_its_home`,
 [wsl.rs](../../src/desktop/opencode_service/wsl.rs);
 `a_wsl_service_gets_the_workspace_its_linux_server_can_use`,
 `a_wsl_service_maps_a_capture_folder_into_its_distribution`,
-`a_wsl_service_is_a_fallback_only_without_a_windows_one`,
+`a_wsl_service_wins_with_the_lab_on_and_the_windows_one_is_the_fallback`,
+`a_wsl_lookup_is_capped_only_when_windows_already_answered`,
 `a_failed_wsl_request_forgets_the_workspace`, and
 `a_not_found_wsl_request_forgets_the_workspace` in
 [opencode_service.rs](../../src/desktop/opencode_service.rs);

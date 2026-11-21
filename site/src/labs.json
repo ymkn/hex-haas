@@ -25,6 +25,19 @@
       "title": "Live text"
     },
     {
+      "added": "2026-11-20",
+      "group": "dictation",
+      "groupTitle": "Dictation",
+      "id": "faster-live-text",
+      "oses": [
+        "macos",
+        "windows",
+        "linux"
+      ],
+      "summary": "Show live words sooner, and paste text from the same shorter lookahead, at a little more GPU work",
+      "title": "Faster live text"
+    },
+    {
       "added": "2026-11-07",
       "group": "dictation",
       "groupTitle": "Dictation",
@@ -250,6 +263,17 @@
       ],
       "summary": "Fix clearly misheard words and things you correct out loud in each dictation, using Apple Intelligence on this Mac",
       "title": "Clean up with Apple Intelligence"
+    },
+    {
+      "added": "2026-11-20",
+      "group": "output",
+      "groupTitle": "Output",
+      "id": "neutral-voice",
+      "oses": [
+        "macos"
+      ],
+      "summary": "Rewrite dictations in chosen modes into plain, neutral wording on this Mac, so your writing style doesn't show",
+      "title": "Neutral voice"
     },
     {
       "added": "2026-10-31",
@@ -876,6 +900,19 @@
       ],
       "summary": "Drop a WAV, MP3, AAC, M4A, MP4, MOV, AIFF, CAF, FLAC, OGG, Opus, WebM, or MKV file on the Hex window to save its transcript as a text file next to it",
       "title": "Transcribe dropped audio"
+    },
+    {
+      "added": "2026-11-20",
+      "group": "dictation",
+      "groupTitle": "Dictation",
+      "id": "vocabulary-files",
+      "oses": [
+        "macos",
+        "windows",
+        "linux"
+      ],
+      "summary": "Import terms from a CSV file in the Vocabulary sheet, or save the whole list as one",
+      "title": "Vocabulary files"
     }
   ]
 }

@@ -127,6 +127,26 @@ On Linux                                 // capture.linux
 │   desktop's picker every time (the capsule's Window chip goes straight to
 │   it) and names no output, so the pen keeps its old placement; the cursor
 │   is embedded
+├── Labs › Record the screen under the pointer (`labs.annotate_pointer_screen`,
+│   off) -> each Screen capture first asks the compositor for the output the
+│   pointer is on, with no surface and no frame: one
+│   `ext_image_copy_capture_manager_v1.create_pointer_cursor_session` per
+│   output source, and the session that reports `enter` names its `wl_output`
+│   (`src/linux/pointer_output.rs`; two round trips, everything destroyed
+│   after). Its screen then has its own token file,
+│   `<support>/screencast-token-<output>` (output sanitized to [A-Za-z0-9_-]),
+│   so each monitor is asked once; a monitor without one shows the picker
+│   once. After Start the token is saved for the output the desktop actually
+│   recorded: `mapping_id`, else the output whose xdg-output logical geometry
+│   holds the stream's position (`src/linux/output.rs`), else the pointer's.
+│   The refused-token retry removes and forgets whichever file it read. Off,
+│   or when the lookup fails (no seat, no staging protocols, no session
+│   entering, an output below wl_output v4), the single file above is used
+│   exactly as before. Needs the compositor to export ext-image-copy-capture
+│   to ordinary clients (COSMIC does only for non-sandboxed ones) and, on
+│   wlroots, a hardware cursor (a software cursor reports nothing, read from
+│   wlroots' source rather than observed); not observed on real COSMIC
+│   hardware
 ├── Frames -> the portal's PipeWire stream, libpipewire-0.3 loaded at run
 │   time (`maxFramerate` 60/1); 32-bit RGB as a linear DMA-BUF (niri, GNOME,
 │   KDE) or shared memory. A stream that ends or fails before its first frame
@@ -186,8 +206,10 @@ On Linux                                 // capture.linux
 │   unlike the Mac, a guess doesn't open its suggestions by itself
 │   (Flow::suggesting_on_route(false)): Send to… is a click away
 ├── Shortcuts -> F9 (tap to start and stop, hold to draw) through the
-│   GlobalShortcuts portal ("Annotate") or X11 grabs. There is no separate
-│   draw shortcut and no send-to list shortcut on any OS
+│   GlobalShortcuts portal ("Annotate") or X11 grabs. Without the portal,
+│   General's commands list and this pane's Shortcut row give
+│   `hex annotate toggle` to bind in the desktop instead. There is no
+│   separate draw shortcut and no send-to list shortcut on any OS
 ├── GNOME Wayland -> no layer-shell, so Rune can't show the capsule or ink
 │   until Labs › Annotate on GNOME (`labs.gnome_annotate`, off by default)
 │   opens them on XWayland (`OverlayOptions::xwayland_input`): override-redirect
@@ -254,7 +276,9 @@ Settings › Annotate                      // capture.pane
 │   input, retention, or folder
 │   └── On while the shortcut collides -> refused, the shortcut row says why
 ├── Shortcut (capture.hotkey, default ⌥⇧S, F9 on Linux and Windows) -> same keycap and recorder as dictation;
-│   a key is required; refused when it overlaps dictation or paste
+│   a key is required; refused when it overlaps dictation or paste. On a Linux desktop with no
+│   GlobalShortcuts portal (the `commands` fallback) the row is the `hex annotate toggle` command
+│   to bind in the desktop instead, as General's commands list has it
 ├── How it works (on) -> start (tap), draw (hold, no click; Shift too on
 │   macOS), the capsule's pen with Esc, stop (tap again), and send, each
 │   with its keys. Check: rune_ui::scrawl tests
@@ -273,7 +297,11 @@ Settings › Annotate                      // capture.pane
 │   │   (`ScreenCapture` reset on running bundle + retired IDs, re-prompt + guide)
 │   └── Allow -> clears retired Hex IDs, rechecks, then opens the permission
 │       guide over System Settings' list (PermissionKind::ScreenRecording); flips
-│       on the next read. Never part of onboarding (macOS also asks at the first
+│       on the next read. The guide's own preflight caches the launch answer,
+│       so it reads the grant from TCC and the host closes it as soon as the
+│       watched read says granted or needs a restart; it hides while another
+│       app is in front of System Settings and returns when System Settings
+│       does. Never part of onboarding (macOS also asks at the first
 │       capture). Check: rune_ui::scrawl tests
 ├── Show in screen recordings (capture.show_overlays_in_recordings, default
 │   off) -> see capture.own-windows; applies at once, to open windows and a recording capture
@@ -731,7 +759,10 @@ Hex's own windows                        // capture.own-windows
 │   │   still never in the window log or the target. Rune's
 │   │   OverlayHandle::set_exclude_from_capture flips open windows, and the
 │   │   sampler rebuilds its filter mid-recording (OwnWindows::recorded) and
-│   │   the recording's (capture-core's Recording::set_exclusions)
+│   │   the recording's (capture-core's Recording::set_exclusions). macOS's
+│   │   pump and Windows' runtime thread follow the setting while Hex runs
+│   │   (CaptureOverlays::follow_recordings), so it applies live on both, not
+│   │   only to windows made after it changed
 │   └── Rune's presence tests check ordering and sharing together, including
 │       stale fade completions and setting changes. Its native `spaces_probe`
 │       checks this process's WindowServer ordering. A native Hex smoke on
@@ -908,8 +939,9 @@ What a send carries                      // capture.send (router opencode::send_
 │   server on another machine reads it; the text only names where it was recorded
 ├── Every request goes to the running local service over HTTP
 │   (service.json); a service that isn't up is never started. On Windows with
-│   Labs › OpenCode in WSL on, a service in the default WSL distribution
-│   answers instead (capture.route). The prompt's "Recorded at" line names the
+│   Labs › OpenCode in WSL on, a WSL service that answers is used ahead of a
+│   Windows one; the Windows service is used when WSL answers nothing
+│   (capture.route). The prompt's "Recorded at" line names the
 │   capture folder as its Linux `/mnt/…` path; the summary header keeps the
 │   Windows path
 ├── With an agent host (routing's agentHost), the request body travels on SSH
@@ -1337,3 +1369,13 @@ clipboard handoff populated) via `hex capture replay`, an `⌥⇧R` tap, and a
 display sleep/wake, and rejected a 16 s request with
 `SCStreamErrorDomain -3812`. The menu-bar screen-recording indicator stays lit
 for the entire lifetime of the rolling buffer.
+# Paste Last provenance on macOS
+
+A successful Annotate finish marks its own bundle with `.hex-annotate-v1`
+(owner-only identity and ready time, no words or images). Failed, cancelled,
+and Screenshots recordings do not publish this mark. Existing ambiguous
+bundles, including captures made by standalone Scrawl, are not backfilled
+from a folder name. They remain available through their existing actions.
+The [Mac picker](dictation.md#paste-last-picker-labs-macos) (Labs › Paste Last
+picker) reads the mark; failure to write it does not fail the capture or affect
+its send.

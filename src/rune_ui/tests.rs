@@ -876,6 +876,42 @@ fn the_modes_editor_lab_brings_modes_back_to_the_sidebar() {
     assert!(rt.find("nav-modes").is_none());
 }
 
+/// Labs › Neutral voice's Modes row follows the saved switch, not the
+/// process-wide gate, and toggles the selected mode.
+#[cfg(target_os = "macos")]
+#[test]
+fn neutral_voice_shows_in_modes_only_with_its_lab_and_toggles_the_mode() {
+    let mut rt = runtime("mac-labs", true, (980.0, 2000.0));
+    crate::labs::Feature::ModesEditor.set(&mut rt.state.settings, true);
+    rt.invalidate();
+    settle(&mut rt);
+    tap(&mut rt, "nav-modes");
+    settle(&mut rt);
+    assert_eq!(rt.state.pane, Pane::Modes);
+    assert!(rt.find("neutral-voice").is_none(), "off, no row");
+
+    crate::labs::Feature::NeutralVoice.set(&mut rt.state.settings, true);
+    rt.invalidate();
+    settle(&mut rt);
+    assert!(rt.find("neutral-voice").is_some(), "on, the row shows");
+    tap(&mut rt, "neutral-voice");
+    assert!(
+        rt.state
+            .settings
+            .dictation_processing
+            .default_mode
+            .neutral_voice
+    );
+    tap(&mut rt, "neutral-voice");
+    assert!(
+        !rt.state
+            .settings
+            .dictation_processing
+            .default_mode
+            .neutral_voice
+    );
+}
+
 #[test]
 fn the_sidebar_switches_panes_and_keeps_settings() {
     let mut rt = runtime("portal", true, PANE_SIZE);
@@ -2880,6 +2916,24 @@ fn a_modes_language_menu_opens_on_its_chosen_language() {
         row[1] >= menu[1] - 0.5 && row[1] + row[3] <= menu[1] + menu[3] + 0.5,
         "row {row:?} outside menu {menu:?}"
     );
+}
+
+/// Labs › Vocabulary files adds Import and Export to the sheet, and only
+/// then: off, the sheet is exactly as before.
+#[test]
+fn the_vocabulary_sheet_offers_files_only_with_its_lab_on() {
+    let mut rt = runtime("mac-settings-vocabulary", true, GOLDEN_SIZE);
+    settle(&mut rt);
+    assert!(rt.find("add-term").is_some());
+    assert!(rt.find("import-vocabulary").is_none());
+    assert!(rt.find("export-vocabulary").is_none());
+    rt.state.settings.labs.vocabulary_files = true;
+    rt.invalidate();
+    settle(&mut rt);
+    assert!(rt.find("import-vocabulary").is_some());
+    assert!(rt.find("export-vocabulary").is_some());
+    assert!(rt.find("add-term").is_some());
+    assert!(rt.find("close-vocabulary").is_some());
 }
 
 /// General's Vocabulary row opens the sheet, and Escape closes it.

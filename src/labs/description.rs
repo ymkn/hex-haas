@@ -16,6 +16,9 @@ impl Feature {
             Self::LiveText => {
                 "Show your words next to the small recording indicator (Dictation HUD) as you dictate, before the text is pasted"
             }
+            Self::FasterLiveText => {
+                "Show live words sooner, and paste the text from the same shorter lookahead, at a little more GPU work"
+            }
             Self::FailureNotices => {
                 "When a dictation fails, show the reason next to the small recording indicator (Dictation HUD)"
             }
@@ -60,6 +63,9 @@ impl Feature {
             }
             Self::CleanUpWithAppleIntelligence => {
                 "Fix clearly misheard words and things you correct out loud in each dictation, using Apple Intelligence on this Mac"
+            }
+            Self::NeutralVoice => {
+                "Rewrite dictations in chosen modes into plain, neutral wording on this Mac, so your writing style doesn't show"
             }
             Self::SecondDictationShortcut => {
                 "Another shortcut that dictates like the main one (second_dictation_hotkey), such as a key on an external keyboard"
@@ -148,6 +154,9 @@ impl Feature {
             Self::GnomeMeetingCapsules => {
                 "On GNOME, float the recording offer and the small recording indicator over your call, through XWayland while XWayland is running"
             }
+            Self::AnnotatePointerScreen => {
+                "On Wayland, a screen capture records the monitor the pointer is on, and each monitor keeps its own ScreenCast choice (Linux)"
+            }
             Self::GnomeAnnotate => {
                 "On GNOME, show Annotate's recording controls and drawing over your screen, through XWayland while XWayland is running; Esc can't stop drawing there, so use the pen button or let go of a held Annotate key"
             }
@@ -174,6 +183,9 @@ impl Feature {
             }
             Self::DropTranscribe => {
                 "Drop a WAV, MP3, AAC, M4A, MP4, MOV, AIFF, CAF, FLAC, OGG, Opus, WebM, or MKV file on the Hex window to save its transcript as a text file next to it"
+            }
+            Self::PasteLastPicker => {
+                "Tap Paste Last for the newest dictation or annotation, hold it to pick another, and see dictations, annotations, screenshots, and recordings together in History (macOS)"
             }
             Self::ApiProcessing => {
                 "Let apps using Hex's local API ask for text with Global mode's replacements, corrections, rewriting, and transformations applied"
@@ -225,6 +237,9 @@ impl Feature {
             }
             Self::ModesEditor => {
                 "Edit each mode's apps and websites, corrections, OpenCode rewrite (on or off, and its model), and transformations in a Modes pane; Output stays the read-only view"
+            }
+            Self::VocabularyFiles => {
+                "Import terms from a CSV file into the vocabulary sheet, merging them into the list, and export the list as a CSV file"
             }
         }
     }

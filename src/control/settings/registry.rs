@@ -303,6 +303,11 @@ pub(super) const KEYS: &[Key] = &[
         "Labs: provisional words beside the HUD while dictating",
     ),
     key(
+        "labs.faster_live_text",
+        Kind::Bool,
+        "Labs: live words with a shorter lookahead, so they appear sooner at a little more GPU work",
+    ),
+    key(
         "labs.failure_notices",
         Kind::Bool,
         "Labs: when a dictation fails, show why for a few seconds beside the HUD",
@@ -331,6 +336,11 @@ pub(super) const KEYS: &[Key] = &[
         "labs.vocabulary_biasing",
         Kind::Bool,
         "Labs: bias Parakeet transcription toward the vocabulary",
+    ),
+    key(
+        "labs.vocabulary_files",
+        Kind::Bool,
+        "Labs: import vocabulary terms from a CSV file in the Vocabulary sheet, and export the list as one",
     ),
     key(
         "labs.screen_vocabulary",
@@ -401,6 +411,11 @@ pub(super) const KEYS: &[Key] = &[
         "labs.clean_up_with_apple_intelligence",
         Kind::Bool,
         "Labs: fix clearly misheard words and spoken self-corrections in each dictation, on this Mac with Apple Intelligence",
+    ),
+    key(
+        "labs.neutral_voice",
+        Kind::Bool,
+        "Labs: rewrite dictations in chosen modes into plain, neutral wording on this Mac, so your writing style doesn't show (macOS)",
     ),
     key(
         "labs.second_dictation_shortcut",
@@ -588,6 +603,11 @@ pub(super) const KEYS: &[Key] = &[
         "Labs: on Wayland desktops without layer-shell, such as GNOME, Annotate's capsule and ink float over the screen through XWayland while it is already running; Esc can't stop drawing there, so use the capsule's pen button or let go of a held Annotate key (Linux)",
     ),
     key(
+        "labs.annotate_pointer_screen",
+        Kind::Bool,
+        "Labs: on Wayland, a screen capture records the monitor under the pointer, and each monitor keeps its own screen-cast choice (Linux)",
+    ),
+    key(
         "labs.meeting_import",
         Kind::Bool,
         "Labs: Meetings offers Import audio…, so a local audio file is transcribed and kept as a meeting (macOS)",
@@ -640,6 +660,12 @@ pub(super) const KEYS: &[Key] = &[
         "Labs: a WAV, MP3, AAC, M4A, MP4, MOV, AIFF, CAF, FLAC, OGG, Opus, WebM, or MKV file \
          dropped on the Hex window is transcribed with the selected dictation model and saved \
          as a text file next to it",
+    ),
+    key(
+        "labs.paste_last_picker",
+        Kind::Bool,
+        "Labs: holding Paste Last opens a picker of recent dictations and annotations, and History \
+         lists dictations, annotations, screenshots, and recordings together (macOS)",
     ),
     key(
         "labs.api_processing",

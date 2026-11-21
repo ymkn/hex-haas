@@ -52,6 +52,13 @@ byte unchanged. Its Clean up with Apple Intelligence toggle (off by default,
 macOS) gives each dictation its mode does not rewrite one short on-device pass
 that fixes clearly misheard words and spoken self-corrections, pasting the
 corrected text whenever Apple Intelligence is unavailable, slow, or refuses.
+Its Neutral voice toggle (off by default, macOS) rewrites a chosen mode's
+dictations into plain, neutral wording on this Mac instead of that mode's
+OpenCode rewrite and the cleanup, so the neutral pass never sends the text to
+OpenCode; the mode's transformations still run afterwards and may use the
+network if you wrote them that way, and Voice Action still uses OpenCode. A
+number, negation, or protected number run, link, path, code, or quote that
+does not survive verbatim keeps the corrected transcript.
 General › Advanced › Interface language offers Português (Brasil), and Hex
 uses it for any Portuguese system language (#867); it also offers Français,
 used for any French system language (#892), and Русский, used for any
@@ -62,7 +69,9 @@ Taiwan-usage phrase converter (`desktop/i18n/traditional_chinese.rs`), not yet
 reviewed by a native speaker. Meeting times in the Meetings pane, the macOS
 calendar card, and the exported transcript and notes are 12-hour ("2:30 PM")
 in English and 24-hour ("14:30") in every other interface language.
-The [vocabulary](vocabulary.md) biases transcription toward names you list.
+The [vocabulary](vocabulary.md) biases transcription toward names you list; its
+Labs › Vocabulary files toggle (off by default, every OS) imports terms from a
+CSV file into the Vocabulary sheet and exports the list as one.
 [Your own speech models](own-models.md) covers adding a GGUF file and using
 models another app already downloaded; its Labs › Smaller model files toggle
 (off by default, macOS) also accepts imports quantized to Q6_K, Q5_K, or Q4_K.
@@ -586,7 +595,11 @@ background download, practice outcomes, one-relaunch guard), fed by
 [rune_ui/onboarding.rs](../../src/rune_ui/onboarding.rs); what the person sees
 is the story in [rune_ui/onboarding_kit](../../src/rune_ui/onboarding_kit.rs),
 opened at launch by `Ui::new` and replayed by Run setup again. The guide
-beside System Settings is [permission_guide.m](../../native/permission_guide.m).
+beside System Settings is [permission_guide.m](../../native/permission_guide.m):
+it reads the Screen Recording grant from TCC, because the CoreGraphics
+preflight keeps the answer it read at launch, closes that guide once the
+watched read says granted or needs a restart, and stays out of the way while
+another app is in front of System Settings.
 On Windows the Microphone row shows only while the microphone switch in
 Settings › Privacy & security is off (device, user, or desktop apps;
 `CapabilityAccessManager\ConsentStore\microphone` says `Deny`); setup
@@ -1441,6 +1454,7 @@ Selected mode                            // replaces Global's rewrite and transf
   -> Its vocabulary, then the shared one   // features/vocabulary.md (vocabulary.modes)
   -> Speech Labs preparation              // formatting, symbols, English filler removal
   -> Global's corrections, then the mode's  // every OS
+  -> Labs > Neutral voice, in a mode that opts in  // macOS; replaces the rewrite and cleanup; transformations still run
   -> Labs > Rewrite by voice's phrase          // Labs off, or no phrase, processes as before
      -> one spoken instruction replaces the rewrite, with the mode's model and deadline (labs.md)
   -> OpenCode transformation             // optional provider-backed rewrite; an unset model is Hex's ranked pick, shown Automatic
@@ -1558,7 +1572,9 @@ script transformation (it receives the address)
 (`dictation::config::reads_browser` on macOS, `ModeRuntime::reads_page` on
 Windows and Linux; a dictation without processing never reads it). On macOS,
 dictation's page reads then never prompt (Meetings and media pause still ask
-browsers when on). Windows starts no UI Automation walk of the browser, and
+browsers when on). Windows starts no UI Automation walk of the browser for a
+dictation without processing (meeting detection reads a microphone-holding
+browser's windows itself, see [Meetings](meetings.md)), and
 Linux asks AT-SPI only for the process of a window the display server names no
 other way. Check: `the_page_is_read_only_when_processing_uses_it` in
 [dictation/modes.rs](../../src/dictation/modes.rs); not run against a live
@@ -1604,10 +1620,11 @@ OpenCode transformation talks only to an already running OpenCode service,
 found through its registration file ([desktop/opencode_service.rs](../../src/desktop/opencode_service.rs));
 Hex runs no OpenCode executable and starts nothing. On Windows, Labs › OpenCode
 in WSL adds the default WSL distribution's registration and a Linux
-`x-opencode-directory` workspace when no Windows registration answers; off,
-only the Windows registration is read. The catalog loads only while
-the Modes pane shows. Without a service, "OpenCode isn't running" shows beside
-the switch and the setup/retry notice below;
+`x-opencode-directory` workspace; with the lab on, a WSL service that answers
+is used ahead of a Windows one, and the Windows service is the fallback when
+WSL answers nothing. Off, only the Windows registration is read. The catalog
+loads only while the Modes pane shows. Without a service, "OpenCode isn't
+running" shows beside the switch and the setup/retry notice below;
 `unavailable_opencode_is_explained_beside_each_switch` covers it headlessly, and
 the `desktop/opencode_service` tests cover registration, stale-PID, loopback, chunked,
 deadline, and cancellation handling against a local fixture, not a live
@@ -2945,13 +2962,17 @@ iOS prototype (`HEXMobile`) -> Record/transcribe/copy and keyboard handoff
 │   Apple documents them only for DictationTranscriber, and Parakeet's batch
 │   path receives none
 └── Proof limits: unit tests only; no CI compiles the iOS targets
+Android keyboard -> English, Spanish, German and Bokmål typing assistance
+├── Keyboard > Suggest swear words (off) -> opt in to profanity; listed slurs never offered
+└── Type a listed word in full -> keep its spelling on space or tap its literal chip
 Unmerged Windows / deferred features -> Not part of this map
 ```
 
 Sources: [meeting.rs](../../src/meeting.rs),
 [meeting/watcher.rs](../../src/meeting/watcher.rs),
 [control/developer_control.rs](../../src/control/developer_control.rs),
-`SCENES` in [rune_ui.rs](../../src/rune_ui.rs), [iOS guide](../../ios/README.md).
+`SCENES` in [rune_ui.rs](../../src/rune_ui.rs), [iOS guide](../../ios/README.md),
+[Android typing and checks](../../android/benchmark/typing/README.md).
 The iOS custom vocabulary experiment stays off by default and keeps its list in
 the App Group. Apple Speech also receives it as a best-effort recognition hint,
 unverified on a physical iPhone; Apple documents contextual strings only for

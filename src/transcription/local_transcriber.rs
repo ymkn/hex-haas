@@ -27,6 +27,28 @@ enum LocalSession {
 }
 
 impl LocalSession {
+    /// The live-stream geometry the GGUF session probe found; the
+    /// speech.cpp and Cloud API backends never stream.
+    fn stream_options(&self) -> Option<&transcribe_cpp::StreamOptions> {
+        match self {
+            LocalSession::Gguf(session) => session.stream_options(),
+            #[cfg(target_os = "windows")]
+            LocalSession::SpeechCpp(_) => None,
+            LocalSession::CloudApi(_) => None,
+        }
+    }
+
+    /// Re-probes the GGUF session live stream; the other backends have
+    /// no stream to refresh.
+    fn refresh_stream(&mut self, options: &RunOptions) {
+        match self {
+            LocalSession::Gguf(session) => session.refresh_stream(options),
+            #[cfg(target_os = "windows")]
+            LocalSession::SpeechCpp(_) => {}
+            LocalSession::CloudApi(_) => {}
+        }
+    }
+
     /// [`OfflineGgufSession::transcribe_chunked_timed`] for a GGUF session.
     /// Haas (speech.cpp) gives text only, so its chunks mirror
     /// [`LocalTranscriber::timed_here`]: one segment spans each chunk.
@@ -108,7 +130,6 @@ pub struct LocalTranscriber {
     options: RunOptions,
     device_label: String,
     max_audio_samples: Option<usize>,
-    stream: Option<transcribe_cpp::StreamOptions>,
     /// The finest timestamps the model gives, for a capture's or a
     /// meeting's word times.
     finest_timestamps: TimestampKind,
@@ -358,7 +379,6 @@ impl LocalTranscriber {
                 options: RunOptions::default(),
                 device_label: "speech.cpp (automatic Vulkan / CPU)".into(),
                 max_audio_samples: None,
-                stream: None,
                 finest_timestamps: TimestampKind::None,
                 gpu: None,
                 preference: device(),
@@ -387,7 +407,6 @@ impl LocalTranscriber {
                 options: RunOptions::default(),
                 device_label: "Cloud API".into(),
                 max_audio_samples: None,
-                stream: None,
                 finest_timestamps: TimestampKind::None,
                 gpu: None,
                 preference: device(),
@@ -531,7 +550,6 @@ impl LocalTranscriber {
                 &architecture,
                 capabilities.max_audio_ms,
             ),
-            stream: None,
             finest_timestamps: match capabilities.max_timestamp_kind {
                 TimestampKind::Word | TimestampKind::Token => TimestampKind::Word,
                 kind => kind,
@@ -552,14 +570,14 @@ impl LocalTranscriber {
             prewarm_ms = started.elapsed().as_millis(),
             "prewarmed local transcription model"
         );
-        transcriber.stream = match &mut transcriber.session {
+        match &mut transcriber.session {
             LocalSession::Gguf(session) => {
-                session.probe_stream(&transcriber.options, &architecture)
+                session.probe_stream(&transcriber.options, &path)
             }
             #[cfg(target_os = "windows")]
-            LocalSession::SpeechCpp(_) => None,
-            LocalSession::CloudApi(_) => None,
-        };
+            LocalSession::SpeechCpp(_) => {}
+            LocalSession::CloudApi(_) => {}
+        }
         // Warm now, so this times the device rather than its first run's
         // shader compiles.
         let started = Instant::now();
@@ -609,7 +627,13 @@ impl LocalTranscriber {
     }
 
     pub(crate) fn stream_options(&self) -> Option<&transcribe_cpp::StreamOptions> {
-        self.stream.as_ref()
+        self.session.stream_options()
+    }
+
+    /// Re-probes the live stream when Labs › Faster live text or an env
+    /// override changed, so the next capture streams with it.
+    pub(crate) fn refresh_stream(&mut self) {
+        self.session.refresh_stream(&self.options);
     }
 
     /// Silence a live stream of this model hears before it finalizes, the

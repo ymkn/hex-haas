@@ -547,6 +547,7 @@ fn rows(ui: &Ui) -> Vec<Row> {
         note: live_text_note(ui),
         ..live_text
     });
+    rows.push(row(Feature::FasterLiveText, None));
     rows.push(row(Feature::FailureNotices, None));
     rows.push(row(Feature::StopPhrase, None));
     if caps.os == super::platform::Os::Linux && ui.platform.wayland {
@@ -584,6 +585,7 @@ fn rows(ui: &Ui) -> Vec<Row> {
         }
     }
     rows.push(row(Feature::VocabularyBiasing, Some(&BOOK)));
+    rows.push(row(Feature::VocabularyFiles, Some(&BOOK)));
     // macOS reads the focused window through Accessibility as a capture
     // becomes real.
     if caps.os == super::platform::Os::Macos {
@@ -676,6 +678,9 @@ fn rows(ui: &Ui) -> Vec<Row> {
         rows.push(row(Feature::TypedText, Some(&KEYBOARD)));
         rows.push(row(Feature::GnomeMeetingCapsules, None));
         rows.push(row(Feature::GnomeAnnotate, None));
+        // Wayland's ScreenCast keeps one remembered screen; this one asks for
+        // the monitor under the pointer at each screen capture.
+        rows.push(row(Feature::AnnotatePointerScreen, None));
     }
     // Linux's and Windows' engines transcribe a whole clip on the CPU.
     if caps.os != super::platform::Os::Macos {
@@ -697,10 +702,25 @@ fn rows(ui: &Ui) -> Vec<Row> {
                 ..clean_up
             },
         });
+        // The same local model, in the modes that opt in, instead of the
+        // OpenCode rewrite.
+        let neutral = row(Feature::NeutralVoice, Some(&SPARKLES));
+        rows.push(match Feature::NeutralVoice.managed() {
+            Some(_) => neutral,
+            None => Row {
+                locked: !ui.platform.notes.is_available() && !neutral.on,
+                note: super::platform_settings::clean_up_note(ui.platform.notes),
+                ..neutral
+            },
+        });
     }
     rows.push(row(Feature::HistoryStats, None));
     rows.push(row(Feature::KeepRecordings, None));
     rows.push(row(Feature::CopyDictationAudio, None));
+    // The picker is a Mac gesture and History; elsewhere neither exists.
+    if caps.os == super::platform::Os::Macos {
+        rows.push(row(Feature::PasteLastPicker, None));
+    }
     rows.push(row(Feature::OutputFixes, Some(&BOOK)));
     // The Modes editor's card carries its pane.
     rows.push(row(Feature::ModesEditor, Some(Pane::Modes.icon())));
@@ -870,6 +890,7 @@ fn row_key(lab: Lab) -> &'static str {
         Feature::VoiceFilter => "lab-voice-filter",
         Feature::Playground => "lab-playground",
         Feature::LiveText => "lab-live-text",
+        Feature::FasterLiveText => "lab-faster-live-text",
         Feature::FailureNotices => "lab-failure-notices",
         Feature::LiveTyping => "lab-live-typing",
         Feature::LiveChapters => "lab-live-chapters",
@@ -888,6 +909,7 @@ fn row_key(lab: Lab) -> &'static str {
         Feature::SpokenFormatting => "lab-spoken-formatting",
         Feature::FillerWords => "lab-filler-words",
         Feature::CleanUpWithAppleIntelligence => "lab-clean-up",
+        Feature::NeutralVoice => "lab-neutral-voice",
         Feature::SecondDictationShortcut => "lab-second-dictation-shortcut",
         Feature::MoreDictationShortcuts => "lab-more-dictation-shortcuts",
         Feature::TerminalPasteShortcut => "lab-terminal-paste-shortcut",
@@ -912,6 +934,7 @@ fn row_key(lab: Lab) -> &'static str {
         Feature::MicrophoneKeyAlone => "lab-microphone-key",
         Feature::KeepRecordings => "lab-keep-recordings",
         Feature::CopyDictationAudio => "lab-copy-dictation-audio",
+        Feature::PasteLastPicker => "lab-paste-last-picker",
         Feature::Appearance => "lab-appearance",
         Feature::ReleaseNotesLink => "lab-release-notes-link",
         Feature::HideMenuBarIcon => "lab-hide-menu-bar-icon",
@@ -925,6 +948,7 @@ fn row_key(lab: Lab) -> &'static str {
         Feature::NotchIndicator => "lab-notch-indicator",
         Feature::GnomeMeetingCapsules => "lab-gnome-meeting-capsules",
         Feature::GnomeAnnotate => "lab-gnome-annotate",
+        Feature::AnnotatePointerScreen => "lab-annotate-pointer-screen",
         Feature::Screenshots => "lab-screenshots",
         Feature::AnnotateReplay => "lab-annotate-replay",
         Feature::CopyCaptureZip => "lab-copy-capture-zip",
@@ -944,6 +968,7 @@ fn row_key(lab: Lab) -> &'static str {
         Feature::HoldThroughKeys => "lab-hold-through-keys",
         Feature::ModesEditor => "lab-modes-editor",
         Feature::DropTranscribe => "lab-drop-transcribe",
+        Feature::VocabularyFiles => "lab-vocabulary-files",
     }
 }
 

@@ -13,9 +13,10 @@ impl Feature {
             // Developer tools: the story browser, and the virtual microphone
             // (a stable build keeps only its Uninstall while the driver is
             // installed).
-            Self::VoiceFilter | Self::Playground => Audience::Dev,
+            Self::VoiceFilter | Self::Playground | Self::PasteLastPicker => Audience::Dev,
             Self::Meetings
             | Self::LiveText
+            | Self::FasterLiveText
             | Self::FailureNotices
             | Self::LiveTyping
             | Self::LiveChapters
@@ -35,6 +36,7 @@ impl Feature {
             | Self::SpokenFormatting
             | Self::FillerWords
             | Self::CleanUpWithAppleIntelligence
+            | Self::NeutralVoice
             | Self::SecondDictationShortcut
             | Self::TerminalPasteShortcut
             | Self::SmartSpacing
@@ -63,6 +65,7 @@ impl Feature {
             | Self::GnomeClipboardRestore
             | Self::TypedText
             | Self::GnomeMeetingCapsules
+            | Self::AnnotatePointerScreen
             | Self::Screenshots
             | Self::AnnotateReplay
             | Self::MeetingImport
@@ -89,7 +92,8 @@ impl Feature {
             | Self::CopyDictationAudio
             | Self::StopPhrase
             | Self::HoldThroughKeys
-            | Self::ModesEditor => Audience::Everyone,
+            | Self::ModesEditor
+            | Self::VocabularyFiles => Audience::Everyone,
         }
     }
 
@@ -165,6 +169,11 @@ impl Feature {
             Self::StopPhrase | Self::HoldThroughKeys => 20261116,
             Self::ModesEditor => 20261118,
             Self::CalendarSelectAll => 20261118,
+            Self::PasteLastPicker => 20261119,
+            Self::NeutralVoice
+            | Self::AnnotatePointerScreen
+            | Self::FasterLiveText
+            | Self::VocabularyFiles => 20261120,
         }
     }
 
@@ -253,6 +262,7 @@ impl Feature {
             | Self::TypedText
             | Self::GnomeMeetingCapsules
             | Self::GnomeAnnotate
+            | Self::AnnotatePointerScreen
             | Self::LiveTyping => LINUX,
             Self::StandaloneSpecialKeys | Self::SkipPauses | Self::TerminalPasteShortcut => {
                 WINDOWS_LINUX
@@ -274,8 +284,10 @@ impl Feature {
             | Self::CursorContext
             | Self::MoreDictationShortcuts
             | Self::CalendarMenu
-            | Self::CalendarSelectAll => MACOS,
+            | Self::CalendarSelectAll
+            | Self::PasteLastPicker => MACOS,
             Self::CleanUpWithAppleIntelligence => MACOS,
+            Self::NeutralVoice => MACOS,
             Self::CopyOnly => MACOS_WINDOWS,
             Self::HoldThroughKeys => MACOS_WINDOWS,
             Self::ReturnToApp => MACOS,
@@ -286,6 +298,7 @@ impl Feature {
             Self::Playground
             | Self::KeyboardModelSwitching
             | Self::LiveText
+            | Self::FasterLiveText
             | Self::FailureNotices
             | Self::SecondDictationShortcut
             | Self::VocabularyBiasing
@@ -317,7 +330,8 @@ impl Feature {
             | Self::YoloMode
             | Self::CopyDictationAudio
             | Self::StopPhrase
-            | Self::ModesEditor => EVERY,
+            | Self::ModesEditor
+            | Self::VocabularyFiles => EVERY,
         }
     }
 
@@ -328,6 +342,7 @@ impl Feature {
             Self::VoiceFilter => "voice-filter",
             Self::Playground => "playground",
             Self::LiveText => "live-text",
+            Self::FasterLiveText => "faster-live-text",
             Self::FailureNotices => "failure-notices",
             Self::LiveTyping => "live-typing",
             Self::LiveChapters => "live-chapters",
@@ -347,6 +362,7 @@ impl Feature {
             Self::SpokenFormatting => "spoken-formatting",
             Self::FillerWords => "filler-words",
             Self::CleanUpWithAppleIntelligence => "clean-up-apple-intelligence",
+            Self::NeutralVoice => "neutral-voice",
             Self::SecondDictationShortcut => "second-dictation-shortcut",
             Self::TerminalPasteShortcut => "terminal-paste-shortcut",
             Self::SmartSpacing => "smart-spacing",
@@ -377,6 +393,7 @@ impl Feature {
             Self::NotchIndicator => "notch-indicator",
             Self::GnomeMeetingCapsules => "gnome-meeting-capsules",
             Self::GnomeAnnotate => "gnome-annotate",
+            Self::AnnotatePointerScreen => "annotate-pointer-screen",
             Self::Screenshots => "screenshots",
             Self::AnnotateReplay => "annotate-replay",
             Self::MeetingImport => "meeting-import",
@@ -402,6 +419,8 @@ impl Feature {
             Self::StopPhrase => "stop-phrase",
             Self::HoldThroughKeys => "hold-through-keys",
             Self::ModesEditor => "modes-editor",
+            Self::PasteLastPicker => "paste-last-picker",
+            Self::VocabularyFiles => "vocabulary-files",
         }
     }
 
@@ -412,6 +431,7 @@ impl Feature {
             Self::VoiceFilter => "experimental.hex_microphone",
             Self::Playground => "labs.playground",
             Self::LiveText => "labs.live_text",
+            Self::FasterLiveText => "labs.faster_live_text",
             Self::FailureNotices => "labs.failure_notices",
             Self::LiveTyping => "labs.live_typing",
             Self::LiveChapters => "labs.live_chapters",
@@ -431,6 +451,7 @@ impl Feature {
             Self::SpokenFormatting => "labs.spoken_formatting",
             Self::FillerWords => "labs.filler_words",
             Self::CleanUpWithAppleIntelligence => "labs.clean_up_with_apple_intelligence",
+            Self::NeutralVoice => "labs.neutral_voice",
             Self::SecondDictationShortcut => "labs.second_dictation_shortcut",
             Self::TerminalPasteShortcut => "labs.terminal_paste_shortcut",
             Self::SmartSpacing => "labs.smart_spacing",
@@ -461,6 +482,7 @@ impl Feature {
             Self::NotchIndicator => "labs.notch_indicator",
             Self::GnomeMeetingCapsules => "labs.gnome_meeting_capsules",
             Self::GnomeAnnotate => "labs.gnome_annotate",
+            Self::AnnotatePointerScreen => "labs.annotate_pointer_screen",
             Self::Screenshots => "labs.screenshots",
             Self::AnnotateReplay => "labs.annotate_replay",
             Self::MeetingImport => "labs.meeting_import",
@@ -476,6 +498,7 @@ impl Feature {
             Self::VoicePrompt => "labs.voice_prompt",
             Self::CopyCaptureZip => "labs.copy_capture_zip",
             Self::DropTranscribe => "labs.drop_transcribe",
+            Self::PasteLastPicker => "labs.paste_last_picker",
             Self::ShellCompletions => "labs.shell_completions",
             Self::YoloMode => "labs.yolo_mode",
             Self::CursorContext => "labs.cursor_context",
@@ -486,6 +509,7 @@ impl Feature {
             Self::StopPhrase => "labs.stop_phrase",
             Self::HoldThroughKeys => "labs.hold_through_keys",
             Self::ModesEditor => "labs.modes_editor",
+            Self::VocabularyFiles => "labs.vocabulary_files",
         }
     }
 

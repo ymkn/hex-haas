@@ -12,6 +12,7 @@ impl Feature {
             Self::VoiceFilter => "Voice Filter",
             Self::Playground => "Playground",
             Self::LiveText => "Live text",
+            Self::FasterLiveText => "Faster live text",
             Self::FailureNotices => "Failure notices",
             Self::LiveTyping => "Live typing",
             Self::LiveChapters => "Live chapters",
@@ -31,6 +32,7 @@ impl Feature {
             Self::SpokenFormatting => "Spoken formatting",
             Self::FillerWords => "Remove filler words",
             Self::CleanUpWithAppleIntelligence => "Clean up with Apple Intelligence",
+            Self::NeutralVoice => "Neutral voice",
             Self::SecondDictationShortcut => "Second dictation shortcut",
             Self::TerminalPasteShortcut => "Terminal paste shortcut",
             Self::SmartSpacing => "Smart spacing",
@@ -61,6 +63,7 @@ impl Feature {
             Self::NotchIndicator => "Notch indicator",
             Self::GnomeMeetingCapsules => "Call recording controls on GNOME",
             Self::GnomeAnnotate => "Annotate on GNOME",
+            Self::AnnotatePointerScreen => "Record the screen under the pointer",
             Self::Screenshots => "Screenshots",
             Self::AnnotateReplay => "Annotate last 15 seconds",
             Self::MeetingImport => "Import audio",
@@ -86,6 +89,8 @@ impl Feature {
             Self::HoldThroughKeys => "Hold through other keys",
             Self::ModesEditor => "Modes editor",
             Self::DropTranscribe => "Transcribe dropped audio",
+            Self::PasteLastPicker => "Paste Last picker",
+            Self::VocabularyFiles => "Vocabulary files",
         }
     }
 
@@ -97,6 +102,9 @@ impl Feature {
             Self::Playground => "Browse scenes and stories in a window",
             Self::LiveText => {
                 "Show your words next to the small recording indicator (Dictation HUD) as you speak, before the text is pasted"
+            }
+            Self::FasterLiveText => {
+                "Show live words sooner, and paste text from the same shorter lookahead, at a little more GPU work"
             }
             Self::FailureNotices => {
                 "When a dictation fails, show the reason next to the small recording indicator (Dictation HUD)"
@@ -146,6 +154,9 @@ impl Feature {
             }
             Self::CleanUpWithAppleIntelligence => {
                 "Fix clearly misheard words and things you correct out loud in each dictation, using Apple Intelligence on this Mac"
+            }
+            Self::NeutralVoice => {
+                "Rewrite dictations in chosen modes into plain, neutral wording on this Mac, so your writing style doesn't show"
             }
             Self::SecondDictationShortcut => {
                 "Another shortcut that dictates like the main one, such as a key on an external keyboard"
@@ -234,6 +245,9 @@ impl Feature {
             Self::GnomeAnnotate => {
                 "On GNOME, show Annotate's recording controls and drawing over your screen. Works only while XWayland is already running; Esc can't stop drawing there, so use the pen button or let go of the Annotate key"
             }
+            Self::AnnotatePointerScreen => {
+                "On Wayland, a capture records the monitor you point at, and each monitor remembers its own screen"
+            }
             Self::Screenshots => {
                 "Press ⌘⇧4 to capture an area, or press Space for a window. The shot goes on the clipboard and into a folder"
             }
@@ -311,6 +325,12 @@ impl Feature {
             }
             Self::DropTranscribe => {
                 "Drop a WAV, MP3, AAC, M4A, MP4, MOV, AIFF, CAF, FLAC, OGG, Opus, WebM, or MKV file on the Hex window to save its transcript as a text file next to it"
+            }
+            Self::PasteLastPicker => {
+                "Tap Paste Last to paste the newest dictation or annotation; hold it to pick another"
+            }
+            Self::VocabularyFiles => {
+                "Import terms from a CSV file in the Vocabulary sheet, or save the whole list as one"
             }
         }
     }

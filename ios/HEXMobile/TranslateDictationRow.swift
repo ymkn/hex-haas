@@ -1,16 +1,30 @@
 import SwiftUI
 @preconcurrency import Translation
 
-/// Experiments › Translate what I say: the toggle, the target language, and the
-/// one-time download of Apple's on-device language pack.
+/// Settings › Dictation › Translate what I say: the toggle, the target language, the switch the
+/// keyboard's menus also have (paste translated or as spoken), and the one-time download
+/// of Apple's on-device language pack.
 struct TranslateDictationRow: View {
     @State private var enabled = DictationTranslationSettings().isEnabled
     @State private var target = DictationTranslationSettings().targetLanguage
+    @State private var pastesTranslation = DictationTranslationSettings().pastesTranslation
     @State private var languages: [Locale.Language] = []
     @State private var status: LanguageAvailability.Status?
     @State private var download: TranslationSession.Configuration?
 
-    private var source: Locale.Language { Locale.current.language }
+    /// What you dictate in: Settings › Dictation language, or the language it last resolved.
+    private var source: Locale.Language {
+        LanguageSettings().effectiveDictationLanguage.map { Locale(identifier: $0).language }
+            ?? Locale.current.language
+    }
+
+    /// "Paste in English" for what you dictate in, or nil when that is the target already.
+    private var pasteChoice: TranslationPasteChoice? {
+        TranslationPasteChoice(
+            target: target,
+            source: LanguageSettings().effectiveDictationLanguage ?? Locale.current.identifier
+        )
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -19,7 +33,7 @@ struct TranslateDictationRow: View {
                     Text("Translate what I say")
                         .font(.system(size: 15, weight: .regular))
                         .foregroundStyle(HexTheme.textBase)
-                    Text("Speak your language, insert another, translated on this iPhone")
+                    Text("Speak one language, insert another")
                         .font(.system(size: 12))
                         .foregroundStyle(HexTheme.textMuted)
                 }
@@ -27,6 +41,10 @@ struct TranslateDictationRow: View {
             .tint(HexTheme.success)
             .onChange(of: enabled) { _, value in
                 DictationTranslationSettings().isEnabled = value
+                // Turning it on means translating, whatever the switch said last time.
+                if value {
+                    pastesTranslation = true
+                }
             }
 
             if enabled {
@@ -35,18 +53,47 @@ struct TranslateDictationRow: View {
                         .font(.system(size: 13))
                         .foregroundStyle(HexTheme.textMuted)
                     Spacer()
-                    Picker("Insert in", selection: $target) {
+                    Menu {
                         ForEach(languages, id: \.minimalIdentifier) { language in
-                            Text(name(of: language)).tag(language.minimalIdentifier)
+                            Button {
+                                target = language.minimalIdentifier
+                            } label: {
+                                if target == language.minimalIdentifier {
+                                    Label(name(of: language), systemImage: "checkmark")
+                                } else {
+                                    Text(name(of: language))
+                                }
+                            }
                         }
+                    } label: {
+                        SettingsMenuValue(value: name(of: Locale.Language(identifier: target)))
                     }
-                    .pickerStyle(.menu)
+                    .accessibilityLabel("Insert in")
                 }
                 .onChange(of: target) { _, value in
                     DictationTranslationSettings().targetLanguage = value
                     Task { await refreshStatus() }
                 }
 
+                if let pasteChoice {
+                    Toggle(isOn: $pastesTranslation) {
+                        Text(pasteChoice.translatedTitle)
+                            .font(.system(size: 13))
+                            .foregroundStyle(HexTheme.textMuted)
+                    }
+                    .tint(HexTheme.success)
+                    .onChange(of: pastesTranslation) { _, value in
+                        DictationTranslationSettings().pastesTranslation = value
+                    }
+                }
+
+                if Locale.Language(identifier: target).languageCode == source.languageCode {
+                    // You dictate in the target already: switch the dictation language from the
+                    // keyboard's Hex key to speak another one and paste in this one.
+                    Text("Switch the language from the Hex key to speak another one.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(HexTheme.textMuted)
+                } else {
                 switch status {
                 case .installed:
                     Text("Ready. Works offline.")
@@ -67,16 +114,25 @@ struct TranslateDictationRow: View {
                 default:
                     EmptyView()
                 }
+                }
             }
         }
         .translationTask(download) { session in
             try? await session.prepareTranslation()
             await refreshStatus()
         }
+        .onAppear {
+            // The keyboard's menus change it too.
+            pastesTranslation = DictationTranslationSettings().pastesTranslation
+        }
         .task {
+            // Every language, including the one you dictate in now: you can switch the
+            // dictation language per dictation, so English must be pickable while you
+            // usually dictate in English. A dictation already in the target pastes as spoken.
             let supported = await LanguageAvailability().supportedLanguages
+            var seen = Set<String>()
             languages = supported
-                .filter { $0.languageCode != source.languageCode }
+                .filter { seen.insert($0.minimalIdentifier).inserted }
                 .sorted { name(of: $0) < name(of: $1) }
             await refreshStatus()
         }

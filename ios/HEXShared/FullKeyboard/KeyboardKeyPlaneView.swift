@@ -6,11 +6,21 @@ import UIKit
 @MainActor
 final class KeyboardKeyPlaneView: UIView {
     let engine: FullKeyboardEngine
-    var palette = FullKeyboardPalette(isDark: false) { didSet { if palette != oldValue { setNeedsDisplay() } } }
+    var palette = FullKeyboardPalette(isDark: false) {
+        didSet {
+            guard palette != oldValue else { return }
+            swipe?.trail.palette = palette
+            setNeedsDisplay()
+        }
+    }
     var returnLabel = "return" { didSet { if returnLabel != oldValue { setNeedsDisplay() } } }
     var returnSymbol: String? = "return" { didSet { if returnSymbol != oldValue { setNeedsDisplay() } } }
     var returnIsAction = false { didSet { if returnIsAction != oldValue { setNeedsDisplay() } } }
     var returnIsEnabled = true { didSet { if returnIsEnabled != oldValue { setNeedsDisplay() } } }
+    /// Drawn faintly on the space bar: the keyboard's language while it switches between two
+    /// or more ("Français"), else the dictation language's name ("English", "Norsk"), with
+    /// the language dictations paste in while they're translated ("Español → English").
+    var spaceLabel: String? { didSet { if spaceLabel != oldValue { setNeedsDisplay() } } }
     /// Called on every key going down, for clicks and haptics.
     var onKeyDown: ((KeyKind) -> Void)?
     /// Called when long-press accents open.
@@ -20,7 +30,24 @@ final class KeyboardKeyPlaneView: UIView {
     private var nextTouchID = 0
     private var deleteTimer: Timer?
     private var deleteStartedAt: TimeInterval = 0
+    /// Hold delete and slide left to delete word by word (`DeleteWordSwipe`).
+    private(set) var deleteSwipe: DeleteWordSwipe?
+    /// Each held key's pending hold: a letter's accents, or the space bar's trackpad.
     private var accentHoldWork: [Int: DispatchWorkItem] = [:]
+    /// Experiments › Swipe typing, while it's on for the layout's language; its trail draws
+    /// above the keys.
+    var swipe: SwipeTyping? {
+        didSet {
+            guard swipe !== oldValue else { return }
+            oldValue?.cancelAll()
+            oldValue?.trail.removeFromSuperview()
+            guard let swipe else { return }
+            swipe.trail.frame = bounds
+            swipe.trail.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            swipe.trail.palette = palette
+            addSubview(swipe.trail)
+        }
+    }
 
     init(engine: FullKeyboardEngine) {
         self.engine = engine
@@ -35,8 +62,10 @@ final class KeyboardKeyPlaneView: UIView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
+    /// The key area, and while you type the strip's lower half (`takesStripTouch(at:)`):
+    /// this view lies over the strip, so it gets those touches before the suggestions.
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
-        engine.layout.keysAreaFrame.contains(point)
+        engine.layout.touchAreaFrame.contains(point) || engine.takesStripTouch(at: point)
     }
 
     // MARK: - Drawing
@@ -47,7 +76,7 @@ final class KeyboardKeyPlaneView: UIView {
         let isLandscape = layout.orientation == .landscape
         let radius = layout.metrics.cornerRadius
         let pressed = engine.pressedKinds
-        let preview = layout.showsBalloons ? engine.previewKey?.kind : nil
+        let preview = layout.showsBalloons && engine.showsKeyPopups ? engine.previewKey?.kind : nil
         // Like Apple's spacebar trackpad, key glyphs blank out while sliding the cursor.
         let hideGlyphs = engine.isTrackpadActive
 
@@ -83,6 +112,13 @@ final class KeyboardKeyPlaneView: UIView {
             case .space:
                 let fill = pressed.contains(.space) ? palette.keyPressedFill : palette.keyFill
                 context.fillKeycap(key.frame, fill: fill, radius: radius)
+                guard !hideGlyphs, let spaceLabel else { continue }
+                drawText(
+                    spaceLabel,
+                    in: key.frame,
+                    font: .systemFont(ofSize: isLandscape ? 13 : 14.5, weight: .regular),
+                    color: palette.textMuted
+                )
             case .returnKey:
                 let isPressed = pressed.contains(.returnKey) && returnIsEnabled
                 let activeAction = returnIsAction && returnIsEnabled && !hideGlyphs
@@ -135,6 +171,11 @@ final class KeyboardKeyPlaneView: UIView {
                 context.fillKeycap(key.frame, fill: lit ? palette.keyPressedFill : palette.keyFill, radius: radius)
                 guard !hideGlyphs else { continue }
                 drawSymbol("globe", in: key.frame, color: palette.textBase, pointSize: isLandscape ? 16 : 18)
+            case .emoji:
+                let lit = pressed.contains(.emoji)
+                context.fillKeycap(key.frame, fill: lit ? palette.keyPressedFill : palette.keyFill, radius: radius)
+                guard !hideGlyphs else { continue }
+                drawSymbol("face.smiling", in: key.frame, color: palette.textBase, pointSize: isLandscape ? 16 : 18)
             }
         }
     }
@@ -182,55 +223,125 @@ final class KeyboardKeyPlaneView: UIView {
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         for touch in touches.sorted(by: { $0.timestamp < $1.timestamp }) {
             guard let id = id(for: touch, creating: true) else { continue }
-            let point = touch.location(in: self)
-            engine.touchBegan(id: id, at: point)
-            if let kind = engine.touches[id]?.key.kind {
-                onKeyDown?(kind)
-                if kind == .delete { startDeleteRepeat() }
-                if case .character = kind { armAccentTimer(for: id) }
-            }
+            began(id: id, sample: TypingLogTouchSample(touch, in: self))
         }
     }
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
         for touch in touches {
             guard let id = id(for: touch, creating: false) else { continue }
-            let previousKey = engine.touches[id]?.key.kind
-            engine.touchMoved(id: id, to: touch.location(in: self))
-            let currentKey = engine.touches[id]?.key.kind
-            if currentKey != previousKey {
-                cancelAccentTimer(for: id)
-                if case .character = currentKey {
-                    armAccentTimer(for: id)
-                }
-            }
+            moved(id: id, sample: TypingLogTouchSample(touch, in: self))
         }
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
         for touch in touches.sorted(by: { $0.timestamp < $1.timestamp }) {
             guard let id = touchIDs.removeValue(forKey: ObjectIdentifier(touch)) else { continue }
-            cancelAccentTimer(for: id)
-            if engine.touches[id]?.key.kind == .delete { stopDeleteRepeat() }
-            engine.touchEnded(id: id, at: touch.location(in: self))
+            ended(id: id, sample: TypingLogTouchSample(touch, in: self))
         }
     }
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
         for touch in touches {
             guard let id = touchIDs.removeValue(forKey: ObjectIdentifier(touch)) else { continue }
-            cancelAccentTimer(for: id)
-            if engine.touches[id]?.key.kind == .delete { stopDeleteRepeat() }
-            engine.touchCancelled(id: id)
+            cancelled(id: id, sample: TypingLogTouchSample(touch, in: self))
         }
     }
 
+    // One finger's samples, from UIKit or a test. Record typing logs writes the touch line
+    // before the engine acts on a press or a release, so the edits it causes follow it,
+    // and after a move, so the line names the key the finger slid onto.
+
+    func began(id: Int, sample: TypingLogTouchSample) {
+        // A swipe still under way types its word before this key's letter.
+        swipe?.touchWillBegin()
+        if let log = typingLog {
+            log.touch(.began, id: id, sample: sample, key: engine.key(at: sample.point), under: engine.layout.hitTest(sample.point))
+        }
+        engine.touchBegan(id: id, at: sample.point)
+        if let kind = engine.touches[id]?.key.kind {
+            onKeyDown?(kind)
+            if kind == .delete {
+                startDeleteRepeat()
+                deleteSwipe?.finish()
+                deleteSwipe = DeleteWordSwipe(engine: engine, touchID: id, startX: sample.point.x)
+            }
+            if case .character = kind { armAccentTimer(for: id) }
+            if kind == .space { armTrackpadHold(for: id) }
+        }
+        swipe?.began(id: id, at: sample.point)
+    }
+
+    func moved(id: Int, sample: TypingLogTouchSample) {
+        // A letter touch that went a key's pitch is a swipe: it moves the trail, not the keys.
+        if let swipe, swipe.moved(id: id, to: sample.point) {
+            cancelAccentTimer(for: id)
+            typingLog?.touch(.moved, id: id, sample: sample, key: nil, under: engine.layout.hitTest(sample.point))
+            return
+        }
+        let previousKey = engine.touches[id]?.key.kind
+        engine.touchMoved(id: id, to: sample.point)
+        let current = engine.touches[id]?.key
+        typingLog?.touch(.moved, id: id, sample: sample, key: current, under: engine.layout.hitTest(sample.point))
+        if current?.kind != previousKey {
+            cancelAccentTimer(for: id)
+            if case .character = current?.kind {
+                armAccentTimer(for: id)
+            }
+        }
+        if let swipe = deleteSwipe, swipe.touchID == id, swipe.move(to: sample.point.x) {
+            stopDeleteRepeat()
+        }
+    }
+
+    func ended(id: Int, sample: TypingLogTouchSample) {
+        cancelAccentTimer(for: id)
+        if let swipe, swipe.owns(id) {
+            typingLog?.touch(.ended, id: id, sample: sample, key: nil, under: engine.layout.hitTest(sample.point))
+            swipe.ended(id: id, at: sample.point)
+            return
+        }
+        swipe?.forget(id)
+        if engine.touches[id]?.key.kind == .delete { stopDeleteRepeat() }
+        finishDeleteSwipe(for: id)
+        typingLog?.touch(.ended, id: id, sample: sample, key: engine.touches[id]?.key, under: engine.layout.hitTest(sample.point))
+        engine.touchEnded(id: id, at: sample.point)
+    }
+
+    func cancelled(id: Int, sample: TypingLogTouchSample) {
+        cancelAccentTimer(for: id)
+        if let swipe, swipe.owns(id) {
+            typingLog?.touch(.cancelled, id: id, sample: sample, key: nil, under: engine.layout.hitTest(sample.point))
+            swipe.cancelled(id: id)
+            return
+        }
+        swipe?.forget(id)
+        if engine.touches[id]?.key.kind == .delete { stopDeleteRepeat() }
+        finishDeleteSwipe(for: id)
+        typingLog?.touch(.cancelled, id: id, sample: sample, key: engine.touches[id]?.key, under: engine.layout.hitTest(sample.point))
+        engine.touchCancelled(id: id)
+    }
+
+    private var typingLog: TypingLogger? { engine.typingLog }
+
     func cancelAllTouches() {
+        if !touchIDs.isEmpty {
+            typingLog?.ui("touches_cancelled", [TypingLogField("count", .int(touchIDs.count))])
+        }
         touchIDs.removeAll()
         for work in accentHoldWork.values { work.cancel() }
         accentHoldWork.removeAll()
         stopDeleteRepeat()
+        deleteSwipe?.finish()
+        deleteSwipe = nil
+        swipe?.cancelAll()
         engine.cancelAllTouches()
+    }
+
+    private func finishDeleteSwipe(for id: Int) {
+        guard let swipe = deleteSwipe, swipe.touchID == id else { return }
+        swipe.finish()
+        deleteSwipe = nil
     }
 
     private func armAccentTimer(for id: Int) {
@@ -246,6 +357,19 @@ final class KeyboardKeyPlaneView: UIView {
         }
         accentHoldWork[id] = work
         DispatchQueue.main.asyncAfter(deadline: .now() + FullKeyboardEngine.accentHoldDelay, execute: work)
+    }
+
+    private func armTrackpadHold(for id: Int) {
+        cancelAccentTimer(for: id)
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.accentHoldWork.removeValue(forKey: id)
+                self.engine.holdSpace(forTouch: id)
+            }
+        }
+        accentHoldWork[id] = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + FullKeyboardEngine.trackpadHoldDelay, execute: work)
     }
 
     private func cancelAccentTimer(for id: Int) {

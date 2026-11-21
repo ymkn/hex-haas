@@ -17,6 +17,9 @@ pub(crate) mod indicator;
 pub(crate) mod live_text;
 #[cfg_attr(target_os = "macos", allow(dead_code))]
 pub(crate) mod modes;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) mod neutral_voice;
+mod numbers;
 #[cfg_attr(not(any(target_os = "windows", test)), allow(dead_code))]
 pub(crate) mod paste_target;
 #[cfg_attr(any(target_os = "linux", target_os = "windows"), allow(dead_code))]
@@ -511,6 +514,17 @@ impl DictationClip {
     }
 
     pub fn into_transcription_samples(self) -> Vec<f32> {
+        self.samples
+    }
+
+    /// A cancel keeps neither warm pre-roll nor a live stream that may have
+    /// heard beyond the physical key event. Never hand it to normal output.
+    #[cfg(all(target_os = "macos", hex_capture))]
+    fn into_cancel_samples(mut self) -> Vec<f32> {
+        self.samples
+            .truncate(self.samples.len().saturating_sub(self.tail_samples));
+        self.samples
+            .drain(..self.press_samples.min(self.samples.len()));
         self.samples
     }
 }

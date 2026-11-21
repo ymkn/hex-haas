@@ -50,10 +50,13 @@ mod model_details;
 mod model_import;
 mod models;
 mod modes;
+mod notes_writer;
 mod onboarding;
 mod onboarding_kit;
 mod output;
 mod paste_access;
+#[cfg(all(hex_capture, target_os = "macos"))]
+pub(crate) mod paste_picker;
 mod picker;
 mod platform;
 mod platform_settings;
@@ -462,23 +465,9 @@ pub(crate) fn show(ui: &mut Ui, destination: Destination, tx: &mut Tx) {
     }
 }
 
-/// What this OS's Hex can do, by capability name, for `hex status` and the
-/// settings `hex settings` can change here.
-pub(crate) fn capabilities() -> std::collections::BTreeMap<String, bool> {
-    platform::Capabilities::current()
-        .fields()
-        .into_iter()
-        .map(|(name, on)| (name.to_owned(), on))
-        .collect()
-}
-
-/// Whether this OS's Hex has the capability `name` ([`capabilities`]).
-pub(crate) fn capability(name: &str) -> bool {
-    platform::Capabilities::current()
-        .fields()
-        .into_iter()
-        .any(|(field, on)| field == name && on)
-}
+#[cfg(all(target_os = "macos", hex_capture))]
+pub(crate) use history::unified::show_all_history;
+pub(crate) use platform::{capabilities, capability};
 
 /// `hex onboarding reset`: replays the first run in the window now; the
 /// window also shows why it couldn't.
@@ -983,12 +972,11 @@ impl Ui {
         self.commit(candidate)
     }
 
-    /// Saves pending text-field edits now (leaving a pane or a mode).
-    fn flush_drafts(&mut self) {
+    /// Saves pending text-field edits now (leaving a pane or a mode). False
+    /// when a save failed, with `error` saying why.
+    fn flush_drafts(&mut self) -> bool {
         let candidate = self.drafted();
-        if candidate != self.settings {
-            self.commit(candidate);
-        }
+        candidate == self.settings || self.commit(candidate)
     }
 
     /// Asks the OS host for something only it can do.
@@ -1217,6 +1205,8 @@ impl Ui {
     /// Switches panes at once: the new pane replaces the old without a fade,
     /// already at rest (a grant's morph doesn't replay).
     fn select_pane(&mut self, pane: Pane, tx: &mut Tx) {
+        #[cfg(all(target_os = "macos", hex_capture))]
+        let pane = history::unified::destination(self, pane);
         let labs = std::mem::take(&mut self.labs_open);
         if self.pane == pane && !labs {
             return;
@@ -1398,6 +1388,10 @@ fn poll(ui: &mut Ui, clock: f64, tx: &mut Tx) -> bool {
     );
     #[cfg(hex_capture)]
     let mut changed = ui.captures.poll(ui.pane == Pane::Captures && !ui.labs_open) | changed;
+    #[cfg(all(target_os = "macos", hex_capture))]
+    {
+        changed |= history::unified::poll(ui);
+    }
     if ui.pane == Pane::Output && !ui.labs_open {
         changed |= output::poll(ui, clock, tx);
     }
@@ -1416,6 +1410,7 @@ fn poll(ui: &mut Ui, clock: f64, tx: &mut Tx) -> bool {
     changed |= modes::poll_chooser(ui);
     changed |= model_import::poll(ui);
     changed |= meetings::poll_import(ui);
+    changed |= vocabulary::poll(ui);
     // Labs › Screenshots' folder chooser, on macOS.
     #[cfg(all(target_os = "macos", hex_capture))]
     {

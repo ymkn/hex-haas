@@ -62,6 +62,9 @@ impl AppearanceTheme {
 pub struct LabsSettings {
     /// Live text beside the HUD while dictating.
     pub live_text: bool,
+    /// Live text with a shorter lookahead, so its words appear sooner at a
+    /// little more GPU work (Parakeet buffered streaming).
+    pub faster_live_text: bool,
     /// A failed dictation's explanation beside the HUD for a few seconds.
     pub failure_notices: bool,
     /// Provisional words in the focused text field as a Wayland input-method
@@ -102,6 +105,10 @@ pub struct LabsSettings {
     /// Filler words such as "um" and "uh" are removed from dictations (issue 631).
     pub filler_words: bool,
     pub clean_up_with_apple_intelligence: bool,
+    /// A dictation in a mode that opts in is rewritten into plain, neutral
+    /// wording on this Mac instead of the OpenCode rewrite and the cleanup
+    /// (macOS).
+    pub neutral_voice: bool,
     /// `second_dictation_hotkey` dictates like the dictation shortcut (issue 627).
     pub second_dictation_shortcut: bool,
     /// Up to four more dictation shortcuts, each with its own activation
@@ -181,6 +188,9 @@ pub struct LabsSettings {
     pub gnome_meeting_capsules: bool,
     /// Annotate's capsule and ink float on a running XWayland on Wayland desktops without layer-shell, such as GNOME (Linux).
     pub gnome_annotate: bool,
+    /// On Wayland, a screen capture asks the desktop for the monitor under the
+    /// pointer, and each monitor keeps its own ScreenCast choice (Linux).
+    pub annotate_pointer_screen: bool,
     /// The screenshot shortcut takes an area or a window (macOS); its
     /// shortcut and folder are `screenshots.*`.
     pub screenshots: bool,
@@ -192,8 +202,8 @@ pub struct LabsSettings {
     /// With `labs.annotate_replay` on, keeps a rolling 15 s display buffer via `SCClipBufferingOutput` (macOS 27+).
     pub annotate_replay: bool,
     /// An OpenCode service running in the default WSL distribution is used
-    /// for Modes rewriting and the Modes model picker when no Windows
-    /// service answers (Windows).
+    /// for Modes rewriting and the Modes model picker ahead of a Windows one
+    /// when it answers; Windows answers when WSL answers nothing (Windows).
     pub opencode_in_wsl: bool,
     /// `hex completions <shell>` prints a completion script for bash, zsh,
     /// fish, elvish, or PowerShell, generated from Hex's own commands.
@@ -207,6 +217,12 @@ pub struct LabsSettings {
     /// MKV file dropped on the window is transcribed and saved as a text file
     /// beside it.
     pub drop_transcribe: bool,
+    /// Holding Paste Last opens a picker of recent dictations and
+    /// annotations, and History lists them together (macOS).
+    pub paste_last_picker: bool,
+    /// The Vocabulary sheet imports terms from a CSV file and exports the
+    /// list as one (Labs › Vocabulary files).
+    pub vocabulary_files: bool,
     /// The local API's `process=global` returns transcripts after Global
     /// mode's output processing.
     pub api_processing: bool,
@@ -363,6 +379,7 @@ impl Default for LabsSettings {
     fn default() -> Self {
         Self {
             live_text: false,
+            faster_live_text: false,
             failure_notices: false,
             live_typing: false,
             live_chapters: false,
@@ -381,6 +398,7 @@ impl Default for LabsSettings {
             spoken_formatting: false,
             filler_words: false,
             clean_up_with_apple_intelligence: false,
+            neutral_voice: false,
             second_dictation_shortcut: false,
             more_dictation_shortcuts: false,
             terminal_paste_shortcut: false,
@@ -421,6 +439,8 @@ impl Default for LabsSettings {
             yolo_mode: false,
             yolo_mode_apps: Vec::new(),
             drop_transcribe: false,
+            paste_last_picker: false,
+            vocabulary_files: false,
             api_processing: false,
             api_timestamps: false,
             api_browser_access: false,
@@ -439,6 +459,7 @@ impl Default for LabsSettings {
             modes_editor: false,
             gnome_meeting_capsules: false,
             gnome_annotate: false,
+            annotate_pointer_screen: false,
             screenshots: false,
             copy_capture_zip: false,
             meeting_import: false,

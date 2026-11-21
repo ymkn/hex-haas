@@ -540,8 +540,8 @@ was not compiled or run here (Linux check, Windows cross-clippy only).
 On macOS a raw capture never reaches the processing worker at all
 (`parakeet::run_inference_worker` queues only Paste, Copy only, and Print; the
 raw targets go straight to output), so it also skips Labs › Clean up with
-Apple Intelligence ([labs.md](labs.md)); elsewhere that stage is macOS-only,
-so it never runs on the shared pipeline either.
+Apple Intelligence and Labs › Neutral voice ([labs.md](labs.md)); elsewhere
+that stage is macOS-only, so it never runs on the shared pipeline either.
 
 ### Windows Haas-ja backend (this fork)
 
@@ -694,7 +694,8 @@ do they say Default and Use OpenCode default, because then OpenCode's own
 default answers. `live.ndjson` and History's processing observation record the
 rewrite model as `provider/id` in a `model` field, omitted when no model was
 named (OpenCode's own default answered, Hex's automatic choice failed before any
-model answered, or the on-device Apple Intelligence cleanup ran). The "dictation
+model answered, or the on-device Apple Intelligence cleanup or Neutral voice
+pass ran). The "dictation
 post-processing" and "voice prompt" completed and failed log lines name it too:
 `provider/id` for the named model that answered, or on failure the one the
 request asked for; `opencode default` when no model was named and OpenCode's
@@ -773,7 +774,75 @@ options), `the_second_dictation_shortcut_needs_its_lab_and_its_own_keys`
 (cross-compiled only). Proof limits: no physical shortcut press on any OS, no
 real Wayland grant or X11 grab run, and no Windows hook run.
 
-### Paste Last After A Failed Paste (every OS)
+### Paste Last Picker (Labs, macOS)
+
+Labs › Paste Last picker (`labs.paste_last_picker`; macOS, Dev-audience and off
+by default) opts the existing rebindable Paste Last shortcut, menu row and
+`hex paste-last` into mixed output. No new binding or preference row. A stable
+build never lists, accepts, or runs it, and `DisableLabs` holds it off. With it
+off, Paste Last pastes the newest dictation exactly as before; Windows and
+Linux are unchanged. The gate, `crate::labs::paste_last_picker()`, is where the
+work starts: the picker and its gesture, History's unified list and the rows it
+reads, and the cancel path's word writer.
+
+```ts
+Tap, Paste Last menu, or hex paste-last → newest ready, noncancelled dictation or marked annotation
+Hold 300 ms on the Mac event tap → up to eight recent items, without taking focus
+├── Initially select what tap would paste; with only Cancelled rows select nothing
+├── Show all History → open the searchable archive, not a paste
+├── Click a row → recheck that item and paste it once into the original field
+├── Arrow keys → move selection; Enter or release the chord modifiers → choose
+└── Escape or changed focus → close without touching the clipboard
+```
+
+With it on, the Mac History puts dictations, annotations, screenshots and
+screen recordings in one list. All types is the default. Search works inside the
+selected type and beyond the eight picker rows. Capture files keep their
+editor, copy, reveal, drag and Trash actions. Clear dictation history affects
+the dictation owner only. A shared-library bundle can be visible without
+being eligible for global paste; that needs the Hex writer's ready receipt.
+
+```ts
+Physical cancel of an intentional shortcut dictation → stop at the key timestamp, no tail
+├── Already-spoken samples → installed local detector + local model → nonempty words only
+│   └── Retention permits it → Dictation · Cancelled (no recording or output)
+└── Off, no speech, missing detector/model, or Clear during inference → no saved result
+CLI cancel, discard, system cancel, quit → no recovery
+```
+
+[Isolated Mac proof](../../tests/fixtures/paste-picker/one-history.sh): synthesize a
+phrase to a file, send the hold and Escape decisions and device chunks through
+the audio owner, run Silero and Parakeet, then press the type menu and search
+in the real Rune window rendered offscreen. It uses neither a microphone nor
+a pasteboard. This is not a native event-tap or receiving-app replay.
+
+Rows are ordered by completion time for this picker; a paste does not
+promote its item. Secure Input and invocations without usable release or
+overlay support take the immediate path. If Hex can't identify the original
+external field, it refuses. Multiline text in a target requiring simulated
+typing is refused rather than sending a Return. Global paste does not invoke
+Annotate's explicit Paste, Send or Undo.
+
+The [mixed selection check](../../src/paste/recent.rs) opens a temporary
+History file and a shared capture folder. The first row and the tap select the
+same ready item; a newer incomplete folder does not hide it. An unmarked
+bundle is never taken as Hex output. Removing a selected bundle makes its ID
+unavailable, rather than silently pasting the next item. Failed insertion
+recovery in this projection has one RAM slot, cleared with History and never
+written to the file. The Mac output worker now uses this slot for unretained
+output when it has a History owner. With no History owner, the existing
+listener-local fallback still works. These checks don't drive a global key.
+
+The [ownership tests](../../src/paste/capture/tests.rs) run the capture
+transaction without WindowServer. The [private-board Rune test](../../src/rune_ui/paste_picker/proof.rs)
+requires a GUI login and an explicit `--ignored` run. A separate disposable
+macOS GUI run used virtual hardware input, the actual listener and a second
+[AppKit receiver](../../tests/fixtures/paste-picker/Receiver.m). It received
+the newest capture as PNG then summary, the clicked older dictation, and the
+original URL on ordinary ⌘V. Escape left the pasteboard change count alone.
+Changing fields or copying after the PNG stopped the summary. TextEdit's
+RTF conversion sheet can legitimately cause such a partial paste; no retry.
+This does not establish delivery in arbitrary apps or native Secure Input.
 
 A paste that fails (another app changed the clipboard while Hex saved it, or a
 format couldn't be read) still makes that dictation Paste Last's, unless its
@@ -1709,6 +1778,15 @@ Model advertises streaming, GPU device             // dictate.streaming
   Load or switch model -> Probe a one-second silent stream (also prewarms the stream graph)
        ├── Succeeds -> Stream shortcut captures
        └── Fails, CPU device, Apple Speech, or HEX_STREAMING=0 -> Whole-clip path only
+  Geometry, from the model's own GGUF menus (frames of 80 ms)          // dictate.streaming-geometry
+       ├── Default -> the largest left, chunk, and right context; Unified English 70/13/13
+       │             is 5.6 s left, 1.04 s chunk, 1.04 s right (2.08 s of lookahead)
+       ├── Labs + labs.faster_live_text -> the largest chunk from 2 to 7 frames and the
+       │             largest right up to 7; Unified English 70/7/7 is 0.56/0.56 s (1.12 s)
+       ├── HEX_STREAM_CHUNK_MS + HEX_STREAM_RIGHT_MS -> those milliseconds for benchmarks
+       │   ├── A chunk alone also sets right; a right alone keeps the model's default chunk
+       │   └── The model's menu rejects them -> warn, then stream with the default geometry
+       └── A change re-probes on the next idle tick or after the current stream, with no restart
   Shortcut capture passes the hold threshold (Toggle on Windows and Linux: on press)
     -> Open one live stream; feed the 16 kHz backlog, then every 160 ms
        // same audio as the final clip, pre-roll included; never blocks capture
@@ -1819,8 +1897,19 @@ a later capture opens one, and the job then waits for its text in order. Linux
 ([windows/dictation.rs](../../src/windows/dictation.rs)) drive the same engine
 from their capture loops. Parakeet buffers with its largest context menu
 (Unified English: 5.6 s left, 1.04 s chunk, 1.04 s right), its most accurate and
-least compute-intensive setting; `HEX_STREAM_CHUNK_MS` overrides the chunk for
-benchmarks and `HEX_STREAMING=1` streams on any device, including a CPU
+least compute-intensive setting. Labs › Faster live text (`labs.faster_live_text`,
+off by default) asks for a shorter tuple chosen from the model's own GGUF menu
+(`stt.parakeet.encoder.att_chunk_{chunk,right}_choices`, in 80 ms frames): the
+largest chunk from 2 to 7 frames and the largest right up to 7, which for
+Unified English is 70/7/7 (0.56 s chunk and right, 1.12 s of lookahead instead
+of 2.08 s) at about 1.6 times the encoder work. The pasted text comes from that
+same stream, so it uses the same shorter lookahead. `HEX_STREAM_CHUNK_MS` and
+`HEX_STREAM_RIGHT_MS` override both for benchmarks, ahead of the lab; a chunk
+alone also sets the right context, while a right alone keeps the model's
+default chunk. A geometry the model's menu rejects warns and falls back to the
+default tuple instead of turning streaming off, and a change is adopted while
+nothing records (an idle tick, or just after a stream) rather than at the next
+capture's start. `HEX_STREAMING=1` streams on any device, including a CPU
 (diagnostics and the Linux CI fixture). Each dictation logs
 `source=stream|offline|fallback` and `finish_ms`. The macOS "Transcribe during
 pauses" setting no longer affects dictation.
@@ -2150,6 +2239,18 @@ pause cannot trim the silence. Check:
 transcription/engine.rs. Not measured on a real Windows or Linux model or
 microphone.
 
+**Fixed November 20, 2026 (issue 2072):** Parakeet models (v2 and v3, Orukeet,
+Fluid Speech Pro, and Unified English's whole-clip path) fed the encoder the
+trailing center-pad mel frame NeMo does not count, so whenever
+`floor(samples / 160)` was a multiple of 8 that frame became an extra encoder
+frame and leaked into every real one through attention: whole-clip recordings
+of those lengths came back empty or truncated. The transcribe.cpp fork (branch
+`hex/nemo-padding-frame`) drops the padding frame before the encoder. Parakeet
+Ultra already masks it in-graph. Live streams never had the bug: buffered
+streaming already limits attention to the valid frames. Check: transcribe.cpp's
+`transcribe_mel_unit` (`tests/mel_unit.cpp`), not run against a real model or
+recording here.
+
 ```ts
 Listening idle                            // dictate.model-memory
 ├── Keep the selected model weights warm // avoids loading on each dictation
@@ -2465,6 +2566,10 @@ Record -> Release -> Transcribing/processing/paste -> Finished // dictate.feedba
         `hex dictation start` capture's audio is transcribed and copied
         instead of pasted    // recovery.md#keep-an-interrupted-dictation
         -> No usable audio after the start, or a near-silent clip -> Error tone
+        -> Nothing recording, a release tail, or Annotate -> no failure record
+           // recover.idle-interruption: a wake from sleep leaves the card clear
+     -> A press that has not passed the hold threshold waits for the reopen
+        -> its capture starts at the first fresh chunk  // recover.interrupted-press
   Tone requested -> Playback worker opens the default output, then plays
      -> macOS releases ~10 s after the last tone; Windows 5 min; Linux 1 s
      -> An open macOS output is a live CoreAudio client coreaudiod services
@@ -2485,7 +2590,9 @@ listener's own event log on its runtime thread, as Windows already did. The
 listener's own stopped warning and a dictation failure are separate fields, so
 `hex status` keeps treating only the former as a stopped listener; the card
 shows the stopped warning first. A failure whose timestamp predates this run's
-start is ignored. Known
+start is ignored, and an interruption with nothing recording writes no failure
+at all, so a wake from sleep leaves the card clear (`recover.idle-interruption`).
+Known
 microphone causes say what to do in every interface language — a built-in
 microphone switched off by a closed lid, or no microphone available; other
 failures keep their logged wording. Sources and checks:

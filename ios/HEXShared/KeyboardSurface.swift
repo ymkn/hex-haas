@@ -28,7 +28,7 @@ final class KeyboardViewModel: ObservableObject {
     enum PickerTray: Equatable {
         case none
         case style
-        case returnApp
+        case language
     }
 
     enum StagePhase: Equatable {
@@ -56,32 +56,78 @@ final class KeyboardViewModel: ObservableObject {
     @Published private(set) var stagePhase: StagePhase = .idle
     @Published private(set) var statusMessage: String?
     @Published var style: DictationStyle = .polished
-    @Published var returnAppID: String?
-    @Published var quickReturnApps: [HostApp] = HostAppCatalog.quickChips
     @Published var activeTray: PickerTray = .none
+    /// Settings › Dictation language (nil for Automatic), what Automatic resolves to, and the
+    /// languages the keyboard's quick switch offers. Empty choices hide the switch.
+    @Published var dictationLanguage: String?
+    @Published var automaticLanguage: String?
+    @Published var languageChoices: [String] = []
+    /// Translate what I say's target (BCP 47) while it is on, else nil, and the switch that
+    /// picks translated or as spoken for the next dictations.
+    @Published var translationTarget: String?
+    @Published var pastesTranslation = true
+    /// Record typing logs is recording this field: both keyboards show a small mark the
+    /// whole time, so logging is never hidden.
+    @Published var isLoggingTyping = false
 
     // Non-published live telemetry read directly by `DotScopeHostView` / button tap handlers
     // so 25–30 Hz polling never invalidates SwiftUI views mid-spring.
     var liveLoudnessDB: Float = -62.0
     var currentTimestamp: TimeInterval = Date().timeIntervalSince1970
     private(set) var currentSnapshot: KeyboardSnapshot = .offline
-    var coldStartURL: URL = KeyboardLaunchRequest.startSession(requestedAt: nil, returnAppID: nil).url
+    var coldStartURL: URL = KeyboardLaunchRequest.startSession(requestedAt: nil).url
     private(set) var pendingCommand: PendingCommand?
 
     var onDictateTap: (() -> Void)?
     var onLocalDictateTap: (() -> Void)?
+    /// The finger landed on the full keyboard's Hex key (wall clock), before it is a tap,
+    /// a hold or a slide.
+    var onHexKeyPress: ((TimeInterval) -> Void)?
+    /// That press became a slide (the style menu) or was cancelled before it was a tap or a hold.
+    var onHexKeyAbandon: (() -> Void)?
     var onStopTap: (() -> Void)?
     var onCancelTap: (() -> Void)?
     var onStyleSelected: ((DictationStyle) -> Void)?
-    var onReturnAppSelected: ((String?) -> Void)?
+    /// A language picked in the keyboard's switch; nil is Automatic.
+    var onLanguageSelected: ((String?) -> Void)?
+    /// Paste translated (true) or as spoken (false), picked where you dictate.
+    var onPasteTranslationSelected: ((Bool) -> Void)?
     var onSpace: (() -> Void)?
     var onDelete: (() -> Void)?
     var onReturn: (() -> Void)?
     var onOpenURL: ((URL) -> Void)?
+    /// The dictation bar's light haptic for each press; the keyboard allows it with Full
+    /// Access and Experiments › Haptics, as the full keyboard's keys.
+    var onKeyFeedback: (() -> Void)?
     weak var inputViewController: UIInputViewController?
 
-    var selectedReturnApp: HostApp? {
-        HostAppCatalog.app(for: returnAppID)
+    /// The language dictation uses now, when known.
+    var effectiveLanguage: String? {
+        dictationLanguage ?? automaticLanguage
+    }
+
+    /// Its own short name ("Norsk", "English"), for the switch and the space bar.
+    var languageLabel: String? {
+        effectiveLanguage.map(DictationLanguageSwitch.nativeName(for:))
+    }
+
+    var showsLanguageSwitch: Bool {
+        hasFullAccess && !languageChoices.isEmpty
+    }
+
+    /// "Paste in English" or "Paste in Spanish", when Translate what I say is on and you
+    /// dictate in another language than its target.
+    var pasteChoice: TranslationPasteChoice? {
+        guard hasFullAccess, let translationTarget else { return nil }
+        return TranslationPasteChoice(target: translationTarget, source: effectiveLanguage)
+    }
+
+    /// The language label with where dictations go while they paste translated:
+    /// "Español → English".
+    var languageSummary: String? {
+        guard let languageLabel else { return nil }
+        guard pastesTranslation, let target = pasteChoice?.target else { return languageLabel }
+        return "\(languageLabel) → \(DictationLanguageSwitch.nativeName(for: target))"
     }
 
     var dotScopePhase: DotScopePhase {
@@ -112,7 +158,6 @@ final class KeyboardViewModel: ObservableObject {
             snapshot: currentSnapshot,
             isModelInstalled: isModelInstalled,
             style: style,
-            returnAppID: returnAppID,
             now: now,
             animated: animated
         )
@@ -123,7 +168,6 @@ final class KeyboardViewModel: ObservableObject {
         snapshot newSnapshot: KeyboardSnapshot,
         isModelInstalled newModelInstalled: Bool,
         style newStyle: DictationStyle,
-        returnAppID newReturnAppID: String?,
         now: TimeInterval,
         clearPending: Bool = false,
         animated: Bool
@@ -161,7 +205,6 @@ final class KeyboardViewModel: ObservableObject {
             snapshot: newSnapshot,
             isModelInstalled: newModelInstalled,
             style: newStyle,
-            returnAppID: newReturnAppID,
             now: now,
             animated: animated
         )
@@ -174,7 +217,6 @@ final class KeyboardViewModel: ObservableObject {
         hasFullAccess: Bool = true,
         isModelInstalled: Bool = true,
         style: DictationStyle = .polished,
-        returnAppID: String? = "messages",
         activeTray: PickerTray = .none
     ) {
         self.activeTray = activeTray
@@ -183,7 +225,6 @@ final class KeyboardViewModel: ObservableObject {
             snapshot: snapshot,
             isModelInstalled: isModelInstalled,
             style: style,
-            returnAppID: returnAppID,
             now: now,
             clearPending: true,
             animated: false
@@ -195,7 +236,6 @@ final class KeyboardViewModel: ObservableObject {
         snapshot snap: KeyboardSnapshot,
         isModelInstalled newModelInstalled: Bool,
         style newStyle: DictationStyle,
-        returnAppID newReturnAppID: String?,
         now: TimeInterval,
         animated: Bool
     ) {
@@ -210,7 +250,6 @@ final class KeyboardViewModel: ObservableObject {
             || stagePhase != nextStage
             || statusMessage != nextMessage
             || style != newStyle
-            || returnAppID != newReturnAppID
 
         guard changed else { return }
 
@@ -221,7 +260,6 @@ final class KeyboardViewModel: ObservableObject {
             self.stagePhase = nextStage
             self.statusMessage = nextMessage
             self.style = newStyle
-            self.returnAppID = newReturnAppID
         }
 
         if animated {
@@ -461,6 +499,26 @@ extension View {
     }
 }
 
+/// Record typing logs is recording: a dot and "Logging", flat and small, in the dictation
+/// bar's top row (the full keyboard draws `TypingLogMarkView`).
+struct TypingLogMark: View {
+    let textColor: Color
+
+    var body: some View {
+        HStack(spacing: 4) {
+            // Muted, not orange: an orange dot would read as iOS's microphone indicator.
+            Circle()
+                .fill(textColor)
+                .frame(width: 5, height: 5)
+            Text(TypingLogMarkView.text)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(textColor)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(TypingLogMarkView.accessibilityText)
+    }
+}
+
 enum KeyboardSetupCopy {
     static let fullAccessPath = "Allow Full Access: Settings › Apps › Hex › Keyboards"
 }
@@ -545,6 +603,14 @@ struct KeyboardSurfaceView: View {
     /// the live scope mounted at rest.
     var defersDotScopeUntilActive = false
 
+    /// Push to talk on the well: the press, on the Hex key's state machine.
+    @State private var hold = HexKeyGesture()
+    @State private var holdTimer: Task<Void, Never>?
+    @State private var pressBegan = false
+    /// This press's hold started the dictation, so the Dictate button's tap action skips it.
+    @State private var holdTookPress = false
+    @GestureState private var isPressingWell = false
+
     private static let wellHeight: CGFloat = 44
     private static let controlHeight: CGFloat = 34
     private static let wellInset: CGFloat = 5
@@ -591,8 +657,8 @@ struct KeyboardSurfaceView: View {
             styleTrayBar(palette: p)
                 .hexTrayReveal(model.activeTray == .style, reduceMotion: reduceMotion, offsetY: 3.5)
 
-            returnAppTrayBar(palette: p)
-                .hexTrayReveal(model.activeTray == .returnApp, reduceMotion: reduceMotion, offsetY: 3.5)
+            languageTrayBar(palette: p)
+                .hexTrayReveal(model.activeTray == .language, reduceMotion: reduceMotion, offsetY: 3.5)
         }
         .frame(height: 26)
     }
@@ -600,6 +666,7 @@ struct KeyboardSurfaceView: View {
     private func defaultTopBar(palette p: KeyboardChromePalette) -> some View {
         HStack(spacing: 8) {
             Button {
+                model.onKeyFeedback?()
                 if model.hasFullAccess, !model.isWarmAvailable, let local = model.onLocalDictateTap {
                     local()
                 } else {
@@ -617,9 +684,17 @@ struct KeyboardSurfaceView: View {
             .buttonStyle(.plain)
             .accessibilityLabel("Open Hex")
 
+            if model.isLoggingTyping {
+                TypingLogMark(textColor: p.textMuted)
+            }
+
             leadingAccessory(palette: p)
 
             Spacer(minLength: 4)
+
+            if model.showsLanguageSwitch {
+                languageTrigger(palette: p)
+            }
 
             styleTrigger(palette: p)
                 .hexTrayReveal(model.hasFullAccess, reduceMotion: reduceMotion, offsetY: 0)
@@ -632,6 +707,7 @@ struct KeyboardSurfaceView: View {
             ForEach(DictationStyle.allCases, id: \.self) { candidate in
                 let active = candidate == model.style
                 Button {
+                    model.onKeyFeedback?()
                     model.onStyleSelected?(candidate)
                     model.setActiveTray(.none, reduceMotion: reduceMotion)
                 } label: {
@@ -650,35 +726,11 @@ struct KeyboardSurfaceView: View {
         .frame(height: 26)
     }
 
-    private func returnAppTrayBar(palette p: KeyboardChromePalette) -> some View {
-        HStack(spacing: 4) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 4) {
-                    returnChip(id: nil, label: "Swipe", palette: p)
-                    ForEach(model.quickReturnApps) { app in
-                        returnChip(id: app.id, label: app.name, palette: p)
-                    }
-                }
-                .padding(.leading, 2)
-                .padding(.trailing, 10)
-            }
-            .hexScrollEdgeEffectHidden()
-            .hexHorizontalEdgeFade(leading: 4, trailing: 14)
-
-            closeTrayButton(palette: p)
-        }
-        .frame(height: 26)
-    }
-
     private func leadingAccessory(palette p: KeyboardChromePalette) -> some View {
         let showNoAccess = !model.hasFullAccess
         let showRecordingClock = model.hasFullAccess && model.stagePhase == .recording
         let showWarmStatus = model.hasFullAccess
             && model.isWarmAvailable
-            && model.stagePhase != .recording
-            && model.stagePhase != .transcribing
-        let showReturnTrigger = model.hasFullAccess
-            && !model.isWarmAvailable
             && model.stagePhase != .recording
             && model.stagePhase != .transcribing
 
@@ -707,10 +759,13 @@ struct KeyboardSurfaceView: View {
                         if model.stagePhase == .failed {
                             HexStatusDot(color: HexTheme.danger, size: 6)
                         }
+                        // A failure gets two smaller lines: it has to be read in full.
+                        let failed = model.stagePhase == .failed
                         Text(message)
-                            .font(.system(size: 13, weight: .regular))
+                            .font(.system(size: failed ? 11 : 13, weight: .regular))
                             .foregroundStyle(p.textMuted)
-                            .lineLimit(1)
+                            .lineLimit(failed ? 2 : 1)
+                            .minimumScaleFactor(0.85)
                     }
                 } else {
                     HStack(spacing: 5) {
@@ -720,29 +775,12 @@ struct KeyboardSurfaceView: View {
                 }
             }
             .hexTrayReveal(showWarmStatus, reduceMotion: reduceMotion, offsetY: 2)
-
-            Button {
-                model.setActiveTray(.returnApp, reduceMotion: reduceMotion)
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "arrow.uturn.backward")
-                        .font(.system(size: 11, weight: .medium))
-                    Text(model.selectedReturnApp?.name ?? "Swipe")
-                        .font(.system(size: 13, weight: .medium))
-                }
-                .foregroundStyle(p.textMuted)
-                .padding(.horizontal, 8)
-                .frame(height: 26)
-                .contentShape(Capsule())
-            }
-            .buttonStyle(TopBarTriggerButtonStyle(palette: p))
-            .accessibilityLabel("Return app")
-            .hexTrayReveal(showReturnTrigger, reduceMotion: reduceMotion, offsetY: 2)
         }
     }
 
     private func styleTrigger(palette p: KeyboardChromePalette) -> some View {
         Button {
+            model.onKeyFeedback?()
             model.setActiveTray(.style, reduceMotion: reduceMotion)
         } label: {
             HStack(spacing: 4) {
@@ -761,10 +799,83 @@ struct KeyboardSurfaceView: View {
         .accessibilityLabel("Style: \(model.style.label)")
     }
 
-    private func returnChip(id: String?, label: String, palette p: KeyboardChromePalette) -> some View {
-        let active = model.returnAppID == id
+    private func languageTrigger(palette p: KeyboardChromePalette) -> some View {
+        let label = model.languageSummary ?? "Automatic"
         return Button {
-            model.onReturnAppSelected?(id)
+            model.onKeyFeedback?()
+            model.setActiveTray(.language, reduceMotion: reduceMotion)
+        } label: {
+            HStack(spacing: 4) {
+                Text(label)
+                    .font(.system(size: 13, weight: .medium))
+                    .lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(p.textMuted)
+            }
+            .foregroundStyle(p.textMuted)
+            .padding(.horizontal, 8)
+            .frame(height: 26)
+            .contentShape(Capsule())
+        }
+        .buttonStyle(TopBarTriggerButtonStyle(palette: p))
+        // "Español → English" before the status beside the Hex mark, which is short whenever
+        // the switch shows (it needs Full Access).
+        .layoutPriority(1)
+        .accessibilityLabel("Dictation language: \(label)")
+    }
+
+    private func languageTrayBar(palette p: KeyboardChromePalette) -> some View {
+        let names = DictationLanguageSwitch.nativeNames(for: model.languageChoices)
+        return HStack(spacing: 4) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 4) {
+                    languageChip(id: nil, label: "Auto", palette: p)
+                    ForEach(model.languageChoices, id: \.self) { id in
+                        languageChip(id: id, label: names[id] ?? id, palette: p)
+                    }
+                }
+                .padding(.leading, 2)
+                .padding(.trailing, 10)
+            }
+            .hexScrollEdgeEffectHidden()
+            .hexHorizontalEdgeFade(leading: 4, trailing: 14)
+
+            if let choice = model.pasteChoice {
+                pasteTranslationChip(choice, palette: p)
+            }
+            closeTrayButton(palette: p)
+        }
+        .frame(height: 26)
+    }
+
+    /// Lit while dictations paste translated; a tap switches to as spoken and back.
+    private func pasteTranslationChip(_ choice: TranslationPasteChoice, palette p: KeyboardChromePalette) -> some View {
+        let active = model.pastesTranslation
+        return Button {
+            model.onKeyFeedback?()
+            model.onPasteTranslationSelected?(!active)
+            model.setActiveTray(.none, reduceMotion: reduceMotion)
+        } label: {
+            Text(choice.translatedTitle)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(active ? p.textBase : p.textMuted)
+                .lineLimit(1)
+                .padding(.horizontal, 10)
+                .frame(height: 26)
+                .background(active ? p.chipActiveFill : p.chipIdleFill, in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(choice.translatedTitle)
+        .accessibilityValue(active ? "On" : "Off. \(choice.spokenTitle)")
+        .accessibilityAddTraits(active ? .isSelected : [])
+    }
+
+    private func languageChip(id: String?, label: String, palette p: KeyboardChromePalette) -> some View {
+        let active = model.dictationLanguage == id
+        return Button {
+            model.onKeyFeedback?()
+            model.onLanguageSelected?(id)
             model.setActiveTray(.none, reduceMotion: reduceMotion)
         } label: {
             Text(label)
@@ -775,10 +886,12 @@ struct KeyboardSurfaceView: View {
                 .background(active ? p.chipActiveFill : p.chipIdleFill, in: Capsule())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(id == nil ? "Automatic language" : label)
     }
 
     private func closeTrayButton(palette p: KeyboardChromePalette) -> some View {
         Button {
+            model.onKeyFeedback?()
             model.setActiveTray(.none, reduceMotion: reduceMotion)
         } label: {
             Image(systemName: "xmark")
@@ -845,6 +958,7 @@ struct KeyboardSurfaceView: View {
             // Recording peer controls (`✕` and `Done`), always mounted so enter/exit springs stay continuous.
             HStack(spacing: 8) {
                 Button {
+                    model.onKeyFeedback?()
                     model.onCancelTap?()
                 } label: {
                     Image(systemName: "xmark")
@@ -868,6 +982,7 @@ struct KeyboardSurfaceView: View {
                 Spacer(minLength: 0)
 
                 Button {
+                    model.onKeyFeedback?()
                     model.onStopTap?()
                 } label: {
                     Text("Done")
@@ -891,6 +1006,8 @@ struct KeyboardSurfaceView: View {
 
             // Single permanently mounted idle trigger (never swapped across 3 Button branches).
             Button {
+                guard !holdTookPress else { return }
+                model.onKeyFeedback?()
                 handleIdleStageTap()
             } label: {
                 HStack(spacing: 0) {
@@ -912,6 +1029,7 @@ struct KeyboardSurfaceView: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel(spec.title)
+            .accessibilityHint(canHoldToTalk ? "Hold to talk, release to finish" : "")
             .hexControlReveal(
                 showIdleTrigger,
                 reduceMotion: reduceMotion,
@@ -922,6 +1040,63 @@ struct KeyboardSurfaceView: View {
         }
         .frame(height: Self.wellHeight)
         .clipShape(Capsule())
+        // On the well, not the Dictate button: the button stops taking touches once recording shows.
+        .simultaneousGesture(pushToTalk)
+        .onChange(of: isPressingWell) { _, pressing in
+            guard !pressing else { return }
+            // A cancelled press never reaches onEnded; an ended one already reset.
+            DispatchQueue.main.async {
+                guard pressBegan else { return }
+                holdTimer?.cancel()
+                hold.cancel()
+                pressBegan = false
+            }
+        }
+    }
+
+    /// The well dictates in the keyboard (a warm session or in-keyboard dictation), so a
+    /// hold there can be push to talk; opening Hex or setup stays a tap.
+    private var canHoldToTalk: Bool {
+        guard model.hasFullAccess, model.stagePhase == .idle || model.stagePhase == .failed else { return false }
+        return (model.isWarmAvailable && model.stagePhase != .failed) || model.onLocalDictateTap != nil
+    }
+
+    /// Hold still on Dictate for `HexKeyGesture.holdDuration`: dictation starts with a light
+    /// tap, and lifting the finger finishes it as Done does. A quick tap keeps tap to start.
+    private var pushToTalk: some Gesture {
+        DragGesture(minimumDistance: 0)
+            .updating($isPressingWell) { _, pressing, _ in pressing = true }
+            .onChanged { value in
+                guard pressBegan else {
+                    pressBegan = true
+                    holdTookPress = false
+                    guard canHoldToTalk else { return }
+                    hold.touchDown(at: value.startLocation)
+                    holdTimer?.cancel()
+                    holdTimer = Task { @MainActor in
+                        try? await Task.sleep(for: .seconds(HexKeyGesture.holdDuration))
+                        guard !Task.isCancelled, hold.holdElapsed() == .hold else { return }
+                        holdTookPress = true
+                        model.onKeyFeedback?()
+                        handleIdleStageTap()
+                    }
+                    return
+                }
+                if hold.touchMoved(to: value.location) == .openMenu {
+                    // Moved away: not a hold.
+                    holdTimer?.cancel()
+                }
+            }
+            .onEnded { _ in
+                holdTimer?.cancel()
+                holdTimer = nil
+                pressBegan = false
+                if hold.touchUp() == .release {
+                    model.onStopTap?()
+                    // After the button's own touch-up action, which this press must not repeat.
+                    DispatchQueue.main.async { holdTookPress = false }
+                }
+            }
     }
 
     private func handleIdleStageTap() {
@@ -954,6 +1129,7 @@ struct KeyboardSurfaceView: View {
             }
 
             Button {
+                model.onKeyFeedback?()
                 model.onSpace?()
             } label: {
                 Text("space")
@@ -966,10 +1142,12 @@ struct KeyboardSurfaceView: View {
             .buttonStyle(KeyboardKeyButtonStyle(palette: p))
 
             RepeatDeleteKey(palette: p) {
+                model.onKeyFeedback?()
                 model.onDelete?()
             }
 
             Button {
+                model.onKeyFeedback?()
                 model.onReturn?()
             } label: {
                 Image(systemName: "return")

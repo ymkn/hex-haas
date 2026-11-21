@@ -5,6 +5,7 @@
 use rune::{Cursor, El, Icon, SpringPair, TextStyle, Transition, Tx, col, el, icon, row, text};
 use rune_theme_opencode::icons;
 
+use super::super::notes_writer::NotesWriter;
 use super::*;
 
 /// What a recording says beside its meter, in place of its title.
@@ -42,14 +43,29 @@ pub(super) fn recording_notice(shown: &Recording) -> Option<Notice> {
     }
 }
 
+/// Whether Apple Intelligence writes meeting notes on this computer, which
+/// the Meetings pane reads from its platform host.
+fn apple_intelligence_here() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        crate::apple_intelligence::availability().is_available()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
 /// The ready panel's line under its title, and its colour: the summary, the
-/// summary still being written, or why the Markdown wasn't saved.
+/// summary still being written by whichever writer the Meetings pane names,
+/// or why the Markdown wasn't saved.
 pub(super) fn ready_summary(manifest: &MeetingManifest) -> Option<(String, bool)> {
     if meeting::notes_in_progress(&manifest.id) {
-        return Some((
-            tr("Writing a title and summary with Apple Intelligence…").to_owned(),
-            false,
-        ));
+        let writer = NotesWriter::for_choice(
+            crate::app_settings::meeting_summaries(),
+            apple_intelligence_here(),
+        );
+        return Some((writer.running_label().to_owned(), false));
     }
     if let Some(summary) = manifest
         .notes
@@ -145,7 +161,13 @@ fn panel_row(
         .center_y()
         .radius(ROW_RADIUS)
         .role("button")
-        .cursor(Cursor::Default)
+        // An enabled row is a button; a disabled one only says what it would
+        // do, and keeps the arrow.
+        .cursor(if enabled {
+            Cursor::Pointer
+        } else {
+            Cursor::Default
+        })
         .focus_ring(2., -2., p.k.c.border_focus)
         // The surface steps each row's presence; nothing eases it twice.
         .transition(Transition::none())
@@ -554,7 +576,8 @@ fn title_label(p: Paint, c: &Capsule, title: &str) -> El {
         .child(label)
 }
 
-// Only the meter band owns the window drag, never an ancestor of an action row.
+/// Only the meter band owns the window drag, never an ancestor of an action
+/// row, so the grab hand stops where the rows' pointer begins.
 fn meter_band() -> El {
     row()
         .key("meta")
@@ -562,7 +585,7 @@ fn meter_band() -> El {
         .px(REST_PX)
         .center_y()
         .transition(Transition::none())
-        .cursor(Cursor::Default)
+        .cursor(Cursor::Grab)
         .on_drag(|c: &mut Capsule, d, tx| c.drag(d, tx))
 }
 

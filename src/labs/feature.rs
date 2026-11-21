@@ -9,6 +9,7 @@ pub enum Feature {
     VoiceFilter,
     Playground,
     LiveText,
+    FasterLiveText,
     FailureNotices,
     LiveTyping,
     LiveChapters,
@@ -28,6 +29,7 @@ pub enum Feature {
     SpokenFormatting,
     FillerWords,
     CleanUpWithAppleIntelligence,
+    NeutralVoice,
     SecondDictationShortcut,
     TerminalPasteShortcut,
     SmartSpacing,
@@ -58,6 +60,7 @@ pub enum Feature {
     NotchIndicator,
     GnomeMeetingCapsules,
     GnomeAnnotate,
+    AnnotatePointerScreen,
     Screenshots,
     AnnotateReplay,
     MeetingImport,
@@ -83,14 +86,17 @@ pub enum Feature {
     HoldThroughKeys,
     ModesEditor,
     DropTranscribe,
+    PasteLastPicker,
+    VocabularyFiles,
 }
 
 impl Feature {
-    pub const ALL: [Self; 78] = [
+    pub const ALL: [Self; 83] = [
         Self::Meetings,
         Self::VoiceFilter,
         Self::Playground,
         Self::LiveText,
+        Self::FasterLiveText,
         Self::FailureNotices,
         Self::LiveTyping,
         Self::LiveChapters,
@@ -110,6 +116,7 @@ impl Feature {
         Self::SpokenFormatting,
         Self::FillerWords,
         Self::CleanUpWithAppleIntelligence,
+        Self::NeutralVoice,
         Self::SecondDictationShortcut,
         Self::TerminalPasteShortcut,
         Self::SmartSpacing,
@@ -140,6 +147,7 @@ impl Feature {
         Self::NotchIndicator,
         Self::GnomeMeetingCapsules,
         Self::GnomeAnnotate,
+        Self::AnnotatePointerScreen,
         Self::Screenshots,
         Self::AnnotateReplay,
         Self::MeetingImport,
@@ -165,5 +173,7 @@ impl Feature {
         Self::HoldThroughKeys,
         Self::ModesEditor,
         Self::DropTranscribe,
+        Self::PasteLastPicker,
+        Self::VocabularyFiles,
     ];
 }

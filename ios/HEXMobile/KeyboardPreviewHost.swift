@@ -66,6 +66,8 @@ struct KeyboardSnapshotStage: View {
     private func configureScene() {
         let now: TimeInterval = 10_000
         viewModel.needsGlobeKey = true
+        DictationLanguageFixture.apply(to: viewModel)
+        viewModel.isLoggingTyping = ProcessInfo.processInfo.arguments.contains("--typing-log-mark")
 
         switch scene {
         case "keyboard-cold":
@@ -132,9 +134,70 @@ struct KeyboardSnapshotStage: View {
                 activeTray: .style
             )
 
+        case "keyboard-language-unavailable":
+            // In-keyboard dictation on an iPhone whose Apple Speech can't install Russian.
+            let unavailable = SpeechModelUnavailable(language: "ru-RU", reason: .notOnThisIPhone, fallback: "en-US")
+            viewModel.configureFixture(
+                snapshot: KeyboardSnapshot(
+                    state: .failed,
+                    heartbeat: now,
+                    expiresAt: now + 6,
+                    message: UserFacingError.message(for: unavailable, context: .transcription)
+                ),
+                now: now,
+                style: .polished
+            )
+
+        case "keyboard-language":
+            viewModel.configureFixture(
+                snapshot: KeyboardSnapshot(
+                    state: .ready,
+                    heartbeat: now - 0.1,
+                    expiresAt: now + 14 * 60
+                ),
+                now: now,
+                style: .polished,
+                activeTray: .language
+            )
+
         default:
             break
         }
+    }
+}
+
+/// The dictation languages simulator scenes show: `--dictation-language nb-NO` picks one (put
+/// first when it isn't in the list, as `hi-IN` for Hinglish), otherwise Automatic, which
+/// resolves to English. `--translate-to en` turns on Translate what I say with that target,
+/// pasting translated unless `--paste-as-spoken`.
+enum DictationLanguageFixture {
+    static let choices = ["nb-NO", "en-US", "es-ES", "de-DE", "he-IL"]
+
+    static var explicit: String? {
+        argument(after: "--dictation-language")
+    }
+
+    static var translationTarget: String? {
+        argument(after: "--translate-to")
+    }
+
+    private static func argument(after flag: String) -> String? {
+        let args = ProcessInfo.processInfo.arguments
+        guard let idx = args.firstIndex(of: flag), idx + 1 < args.count else { return nil }
+        return args[idx + 1]
+    }
+
+    @MainActor
+    static func apply(to model: KeyboardViewModel) {
+        if let explicit, !choices.contains(explicit) {
+            model.languageChoices = [explicit] + choices.prefix(DictationLanguageSwitch.maxChoices - 1)
+        } else {
+            model.languageChoices = choices
+        }
+        model.dictationLanguage = explicit
+        model.automaticLanguage = "en-US"
+        model.translationTarget = translationTarget
+        model.pastesTranslation = !ProcessInfo.processInfo.arguments.contains("--paste-as-spoken")
     }
 }
 

@@ -119,7 +119,7 @@ const ROW_PX: f32 = 9.0;
 const ROW_GAP: f32 = 2.0;
 /// "Microphone is silent" or "Started automatically" under the header.
 const NOTICE_HEIGHT: f32 = 20.0;
-/// The ready panel's summary: Apple Intelligence's two sentences.
+/// The ready panel's summary: the notes writer's two sentences.
 const SUMMARY_LINES: usize = 3;
 const TITLE_LINES: usize = 3;
 const TITLE_INSET: f32 = (REST_HEIGHT - 20.) / 2.;
@@ -1179,6 +1179,8 @@ fn button(
         })
         .build_push(p.k)
         .key(key)
+        // The capsule's body drags; its buttons are buttons.
+        .cursor(Cursor::Pointer)
         // The surface answers in the frame of the press.
         .on_press_tx(move |c: &mut Capsule, tx| {
             press(c);
@@ -1197,6 +1199,7 @@ fn dismiss_button(p: Paint) -> El {
         .label(tr("Close"))
         .build(p.k)
         .key("dismiss")
+        .cursor(Cursor::Pointer)
         .on_press_tx(|c: &mut Capsule, tx| {
             c.close();
             c.stir(tx);
@@ -1906,6 +1909,23 @@ mod tests {
             commands.try_recv(),
             Ok(ControllerCommand::DismissReminder(_))
         ));
+    }
+
+    #[test]
+    fn a_reminders_buttons_take_the_pointer_while_its_body_grabs() {
+        let (mut rt, _, _) = runtime(reminder(true, false), false, true, REMINDER);
+        landed(&mut rt);
+        for key in ["not-now", "join-record", "record"] {
+            let (x, y) = rt.find(key).unwrap();
+            rt.pointer_move(x, y);
+            rt.frame(1. / 60.);
+            assert_eq!(rt.cursor(), Cursor::Pointer, "{key}");
+        }
+        // The name and the time between the dot and the buttons drag it.
+        let (x, y) = rt.find("title").unwrap();
+        rt.pointer_move(x, y);
+        rt.frame(1. / 60.);
+        assert_eq!(rt.cursor(), Cursor::Grab);
     }
 
     #[test]
