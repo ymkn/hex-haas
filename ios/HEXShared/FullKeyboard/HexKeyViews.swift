@@ -10,6 +10,9 @@ final class HexKeyControl: UIControl {
     /// Sits in the suggestion strip instead of the bottom row (prototype).
     var inStrip = false { didSet { if inStrip != oldValue { setNeedsDisplay() } } }
     var isWarm = false { didSet { if isWarm != oldValue { setNeedsDisplay(); updateAccessibility() } } }
+    /// Dictations paste translated into this target (BCP 47): the key wears its code ("EN")
+    /// in the corner, so a dictation never comes out in another language by surprise.
+    var translatingTo: String? { didSet { if translatingTo != oldValue { setNeedsDisplay(); updateAccessibility() } } }
     var cornerRadius: CGFloat = FullKeyboardPalette.cornerRadius { didSet { if cornerRadius != oldValue { setNeedsDisplay() } } }
     /// The drawn keycap inside the control's (larger) touch target.
     var keycapFrame: CGRect = .zero { didSet { if keycapFrame != oldValue { setNeedsDisplay() } } }
@@ -55,7 +58,8 @@ final class HexKeyControl: UIControl {
     }
 
     private func updateAccessibility() {
-        accessibilityLabel = isWarm ? "Dictate with Hex" : "Open Hex to dictate"
+        let label = isWarm ? "Dictate with Hex" : "Open Hex to dictate"
+        accessibilityLabel = translatingTo.map { "\(label), \(TranslationPasteChoice.translatingLabel(target: $0))" } ?? label
         accessibilityHint = "Tap to dictate, hold to talk, slide for styles"
     }
 
@@ -139,7 +143,8 @@ final class HexKeyControl: UIControl {
             palette.keyPressedFill.setFill()
             UIBezierPath(roundedRect: cap, cornerRadius: cap.height / 2).fill()
         }
-        let markSize: CGFloat = min(19, cap.height * 0.56)
+        // In the strip the mark keeps its 19 pt in the 26 pt pill as in the Duo's 36 pt one.
+        let markSize: CGFloat = inStrip ? min(19, cap.height) : min(19, cap.height * 0.56)
         let markRect = CGRect(x: cap.midX - markSize / 2, y: cap.midY - markSize / 2, width: markSize, height: markSize)
         if isWarm {
             HexMarkPath.draw(in: context, rect: markRect, color: palette.textBase, coreColor: palette.warmCore)
@@ -147,6 +152,30 @@ final class HexKeyControl: UIControl {
             // A tap dictates inside the keyboard now, so no ↗ "opens Hex" badge.
             HexMarkPath.draw(in: context, rect: markRect, color: palette.textBase, coreColor: nil)
         }
+        if let translatingTo {
+            drawTranslationBadge(TranslationPasteChoice.badge(target: translatingTo), keycap: cap, mark: markRect)
+        }
+    }
+
+    /// "EN" in a small capsule at the keycap's top trailing corner, over the mark's edge.
+    private func drawTranslationBadge(_ code: String, keycap cap: CGRect, mark: CGRect) {
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: UIFont.systemFont(ofSize: 8.5, weight: .bold),
+            .foregroundColor: palette.isDark ? UIColor.black : UIColor.white,
+        ]
+        let size = (code as NSString).size(withAttributes: attributes)
+        let height: CGFloat = 12
+        let width = max(height, ceil(size.width) + 6)
+        // Inside the keycap, clear of its corner radius; in the strip (no keycap) beside the mark.
+        let x = inStrip ? mark.maxX - width / 2 : min(cap.maxX - width - 2, mark.maxX - 3)
+        let y = inStrip ? mark.minY - height / 2 : cap.minY + 2
+        let badge = CGRect(x: x, y: y, width: width, height: height)
+        palette.textBase.setFill()
+        UIBezierPath(roundedRect: badge, cornerRadius: height / 2).fill()
+        (code as NSString).draw(
+            at: CGPoint(x: badge.midX - size.width / 2, y: badge.midY - size.height / 2),
+            withAttributes: attributes
+        )
     }
 }
 
@@ -192,7 +221,7 @@ final class HexKeyRecordingPanel: UIView {
 
     init(loudness: @escaping () -> Float) {
         var tuning = DotScopeTuning.bar(leadingInset: 0, trailingInset: 0, fade: 24, spacing: 5)
-        tuning.height = 44
+        tuning.height = Float(KeyboardMetrics.portrait.stripPillHeight)
         // Cap drawables at 2 inside the keyboard extension to save ~2.2 MB of IOSurface RAM.
         scope = DotScopeHostView(tuning: tuning, maximumDrawableCount: 2)
         super.init(frame: .zero)
@@ -271,8 +300,8 @@ final class HexKeyRecordingPanel: UIView {
         super.layoutSubviews()
         let innerLeft = horizontalInset + metrics.side
         let innerRight = bounds.width - horizontalInset - metrics.side
-        // The strip's 44 pt with 4 pt above and below, as the strip's chips sit.
-        let rowH = max(28, bounds.height - 8)
+        // The strip's pill height, inset from its top and bottom as its pills are.
+        let rowH = metrics.stripPillHeight
         let rowY = (bounds.height - rowH) / 2
 
         doneButton.cornerRadius = rowH / 2
@@ -374,10 +403,10 @@ final class PanelKeyButton: UIControl {
 }
 
 /// Holding the Hex key: dictation styles, then the dictation language when there are choices,
-/// then, while Translate what I say is on, whether to paste translated or as spoken.
+/// then Translate to <language> (on or off) and the target to translate into.
 @MainActor
 final class HexStyleMenuView: UIView {
-    enum Page { case styles, languages }
+    enum Page { case styles, languages, translation }
 
     var palette = FullKeyboardPalette(isDark: false) { didSet { rebuild() } }
     var style: DictationStyle = .polished { didSet { rebuild() } }
@@ -386,12 +415,17 @@ final class HexStyleMenuView: UIView {
     var dictationLanguage: String? { didSet { if dictationLanguage != oldValue { rebuild() } } }
     var automaticLanguage: String? { didSet { if automaticLanguage != oldValue { rebuild() } } }
     var languageChoices: [String] = [] { didSet { if languageChoices != oldValue { rebuild() } } }
-    /// Translate what I say's switch; nil hides its rows.
-    var pasteChoice: TranslationPasteChoice? { didSet { if pasteChoice != oldValue { rebuild() } } }
-    var pastesTranslation = true { didSet { if pastesTranslation != oldValue { rebuild() } } }
+    /// Translate what I say's target, on or off; nil hides its rows
+    /// (`KeyboardViewModel.showsTranslationSwitch`).
+    var translationTarget: String? { didSet { if translationTarget != oldValue { rebuild() } } }
+    var isTranslating = false { didSet { if isTranslating != oldValue { rebuild() } } }
+    /// The targets the Translate to page lists; with one or none it has no row.
+    var translationTargets: [String] = [] { didSet { if translationTargets != oldValue { rebuild() } } }
     var onStyle: ((DictationStyle) -> Void)?
     var onLanguage: ((String?) -> Void)?
-    var onPasteTranslation: ((Bool) -> Void)?
+    /// Translate to <language> switched on (true) or off.
+    var onTranslationToggle: ((Bool) -> Void)?
+    var onTranslationTarget: ((String) -> Void)?
     var onDismiss: (() -> Void)?
     var onHoverChanged: (() -> Void)?
     /// The Hex key's keycap, in this view's coordinates; the panel opens above it.
@@ -474,27 +508,43 @@ final class HexStyleMenuView: UIView {
             }
             if !languageChoices.isEmpty {
                 let current = (dictationLanguage ?? automaticLanguage).map(DictationLanguageSwitch.nativeName(for:))
-                rows.append(makeRow(title: "Language", detail: current ?? "Automatic", chevron: true, selected: false, showsTopDivider: true) { [weak self] in
+                rows.append(makeRow(title: String(localized: "Language"), detail: current ?? String(localized: "Automatic"), chevron: true, selected: false, showsTopDivider: true) { [weak self] in
                     self?.show(page: .languages)
                 })
             }
-            if let pasteChoice {
-                rows.append(makeRow(title: pasteChoice.translatedTitle, selected: pastesTranslation, showsTopDivider: true) { [weak self] in
-                    self?.onPasteTranslation?(true)
-                })
-                rows.append(makeRow(title: pasteChoice.spokenTitle, selected: !pastesTranslation) { [weak self] in
-                    self?.onPasteTranslation?(false)
-                })
+            if let translationTarget {
+                // A switch: lit with a checkmark while on, like a picked style.
+                let on = isTranslating
+                let toggle = makeRow(title: TranslationPasteChoice.toggleTitle(target: translationTarget), selected: on, showsTopDivider: true) { [weak self] in
+                    self?.onTranslationToggle?(!on)
+                }
+                toggle.accessibilityValue = on ? String(localized: "On") : String(localized: "Off")
+                toggle.accessibilityTraits = on ? [.button, .selected] : .button
+                rows.append(toggle)
+                if translationTargets.count > 1 {
+                    rows.append(makeRow(title: String(localized: "Translation language"), chevron: true, selected: false) { [weak self] in
+                        self?.show(page: .translation)
+                    })
+                }
             }
         case .languages:
             let automatic = automaticLanguage.map(DictationLanguageSwitch.nativeName(for:))
-            rows.append(makeRow(title: "Automatic", detail: automatic, selected: dictationLanguage == nil) { [weak self] in
+            rows.append(makeRow(title: String(localized: "Automatic"), detail: automatic, selected: dictationLanguage == nil) { [weak self] in
                 self?.onLanguage?(nil)
             })
             let names = DictationLanguageSwitch.nativeNames(for: languageChoices)
             for id in languageChoices {
                 rows.append(makeRow(title: names[id] ?? id, selected: id == dictationLanguage) { [weak self] in
                     self?.onLanguage?(id)
+                })
+            }
+        case .translation:
+            // Picking a target turns translation on: that's why you'd pick one here.
+            for id in translationTargets {
+                let name = TranslationPasteChoice.name(of: id)
+                let current = translationTarget.map { Locale.Language(identifier: $0).minimalIdentifier }
+                rows.append(makeRow(title: name, selected: id == current) { [weak self] in
+                    self?.onTranslationTarget?(id)
                 })
             }
         }

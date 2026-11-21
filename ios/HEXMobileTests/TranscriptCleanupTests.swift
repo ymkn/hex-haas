@@ -94,6 +94,101 @@ final class TranscriptCleanupGuardTests: XCTestCase {
     }
 }
 
+/// Clean up what I say in English: `CleanupGuard` after the tagger keeps names, hyphenated
+/// words, numbers and content adverbs, and still lets fillers, repeats and self-corrections go.
+final class CleanupGuardTests: XCTestCase {
+    private func cleaned(_ text: String, _ probabilities: [Double], terms: [String] = []) -> String {
+        let words = CleanupTagger.words(in: text)
+        let deletes = CleanupGuard.deletes(
+            words, probabilities: probabilities, protectedTerms: CleanupGuard.protectedTerms(terms)
+        )
+        return CleanupReconstruction.reconstruct(words, deletes: deletes)
+    }
+
+    func testUnsetSwitchIsOnAndAStoredChoiceStays() throws {
+        let suite = "hex.tests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        XCTAssertTrue(CleanupTaggerSettings(defaults: defaults).isEnabled, "an unset switch is on")
+        defaults.set(false, forKey: "experiments.cleanupTagger")
+        XCTAssertFalse(CleanupTaggerSettings(defaults: defaults).isEnabled, "turning it off is kept")
+        CleanupTaggerSettings(defaults: defaults).isEnabled = true
+        XCTAssertTrue(CleanupTaggerSettings(defaults: defaults).isEnabled)
+    }
+
+    func testTheModelSeesHyphenatedWordsWhole() {
+        XCTAssertEqual(CleanupGuard.modelWord("Hye-jin"), "Hyejin")
+        XCTAssertEqual(CleanupGuard.modelWord("follow-up,"), "followup,")
+        XCTAssertEqual(CleanupGuard.modelWord("w-"), "w-", "a stutter fragment stays one")
+        XCTAssertEqual(CleanupGuard.modelWord("415-555-0198"), "415-555-0198")
+        XCTAssertEqual(CleanupGuard.modelWord("-"), "-")
+    }
+
+    /// The tagger was sure (P 0.996 to 1.0) about each of these words; none is a disfluency.
+    func testProtectedWordsStayWhenTheTaggerIsSure() {
+        XCTAssertEqual(cleaned("Tell Hye-jin I said thanks.", [0, 1, 0.999, 0.999, 0]), "Tell Hye-jin I said thanks.")
+        XCTAssertEqual(cleaned("Ask Jean-Luc and Anne-Marie.", [0, 1, 0, 1]), "Ask Jean-Luc and Anne-Marie.")
+        XCTAssertEqual(cleaned("Send the follow-up today.", [0, 0, 1, 0]), "Send the follow-up today.")
+        XCTAssertEqual(cleaned("Call me later, maybe after dinner.", [0, 0, 0, 1, 0, 0]), "Call me later, maybe after dinner.")
+        XCTAssertEqual(cleaned("It's really good.", [0, 1, 0]), "It's really good.")
+        XCTAssertEqual(cleaned("Meet at gate 12 now.", [0, 0, 0, 1, 0]), "Meet at gate 12 now.")
+        XCTAssertEqual(cleaned("I told Priya already.", [0, 0, 1, 0]), "I told Priya already.")
+        XCTAssertEqual(cleaned("Ship the opencode build.", [0, 0, 1, 0], terms: ["OpenCode"]), "Ship the opencode build.")
+        XCTAssertEqual(cleaned("It was really, really long.", [0, 0, 1, 0, 0]), "It was really, really long.")
+        XCTAssertEqual(cleaned("The cat keeps trying to scratch it.", [0, 0, 0, 0.99, 0.99, 0, 0]), "The cat keeps trying to scratch it.")
+        XCTAssertEqual(cleaned("I mean what I say.", [0, 1, 0, 0, 0]), "I mean what I say.")
+    }
+
+    func testFillersRepeatsAndSelfCorrectionsStillGo() {
+        XCTAssertEqual(cleaned("Um, tell Hye-jin I said thanks.", [1, 0, 0, 0, 0, 0]), "Tell Hye-jin I said thanks.")
+        XCTAssertEqual(cleaned("It was, like, really long.", [0, 0, 1, 0, 0]), "It was really long.")
+        XCTAssertEqual(cleaned("It's, you know, been rough.", [0, 1, 1, 0, 0]), "It's been rough.")
+        XCTAssertEqual(cleaned("I I think so.", [1, 0, 0, 0]), "I think so.")
+        XCTAssertEqual(cleaned("Ask Ji-woo Ji-woo now.", [0, 1, 0, 0]), "Ask Ji-woo now.", "a repeated name loses only its copy")
+        XCTAssertEqual(cleaned("We w- we left.", [0, 1, 0, 0]), "We we left.")
+        XCTAssertEqual(cleaned("Meet me at 5, no, at 6.", [0, 0, 1, 1, 1, 0, 0]), "Meet me at 6.")
+        XCTAssertEqual(cleaned("Send it to John, I mean Mike.", [0, 0, 0, 1, 1, 1, 0]), "Send it to Mike.")
+        XCTAssertEqual(
+            cleaned("Send it to Ji-woo, no wait, to Smith-Jones.", [0, 0, 1, 1, 1, 1, 0, 0]),
+            "Send it to Smith-Jones.", "a hyphenated name goes in a self-correction"
+        )
+        XCTAssertEqual(cleaned("It costs 15 euros, er, 50 euros.", [0, 0, 1, 1, 1, 0, 0]), "It costs 50 euros.")
+        XCTAssertEqual(cleaned("Did you, have you seen it?", [0.99, 0.99, 0, 0, 0, 0]), "Have you seen it?")
+    }
+
+    /// A self-correction or false start the tagger is unsure of stays as said.
+    func testUnsureRepairsStay() {
+        XCTAssertEqual(cleaned("Meet me at 5, no, 6.", [0, 0, 0, 0.99, 0.99, 0]), "Meet me at 5, no, 6.")
+        XCTAssertEqual(cleaned("Miss you, see you soon.", [0.99, 0.99, 0, 0, 0]), "Miss you, see you soon.")
+    }
+
+    /// The shipped model with the guard: hyphenated names it used to delete at P 0.996 to 1.0
+    /// stay, and disfluencies around them still go.
+    func testTaggerKeepsHyphenatedNamesAndStillCleans() throws {
+        let tagger = CleanupTagger()
+        for (spoken, expected) in [
+            ("Tell Hye-jin I said thanks.", "Tell Hye-jin I said thanks."),
+            ("Can you ask Jean-Luc to send the deck?", "Can you ask Jean-Luc to send the deck?"),
+            ("Anne-Marie and Ji-woo are coming on Friday.", "Anne-Marie and Ji-woo are coming on Friday."),
+            ("I met Mr. Smith-Jones and Catherine Zeta-Jones.", "I met Mr. Smith-Jones and Catherine Zeta-Jones."),
+            ("I'll ask Bo-ra about the launch.", "I'll ask Bo-ra about the launch."),
+            ("Call me later, maybe after dinner.", "Call me later, maybe after dinner."),
+            ("The cat keeps trying to scratch that chair.", "The cat keeps trying to scratch that chair."),
+            ("Um, tell Hye-jin I said thanks.", "Tell Hye-jin I said thanks."),
+            ("Send the follow-up to Ji-woo, no wait, to Smith-Jones.", "Send the follow-up to Smith-Jones."),
+            ("Let's ship it Tuesday, no wait, Thursday.", "Let's ship it Thursday."),
+            ("Can you send it to John, I mean Mike?", "Can you send it to Mike?"),
+            ("Meet me at 5, no, at 6.", "Meet me at 6."),
+            ("We need 20, sorry, 25 chairs.", "We need 25 chairs."),
+            ("I I think we're good to go.", "I think we're good to go."),
+            ("Can you, um, send me the address again?", "Can you send me the address again?"),
+            ("It was, like, really long.", "It was really long."),
+        ] {
+            XCTAssertEqual(try tagger.clean(spoken), expected, spoken)
+        }
+    }
+}
+
 /// Clean up what I say's word rules for Spanish, German and Norwegian: what goes, and what
 /// must stay because the words mean something there.
 final class SpokenCleanupRulesTests: XCTestCase {
@@ -351,6 +446,23 @@ final class SpokenCleanupRulesTests: XCTestCase {
         )
     }
 
+    /// Ukrainian as `DictationTranscriber` writes it (macOS 27.2, Lesya voice: Cyrillic, no
+    /// punctuation): Polished capitalizes and ends it, Casual starts each sentence lowercase,
+    /// Lowercase lowers Ґ, Є and Ї, and English's "i" rules never touch Cyrillic "і" ("and").
+    func testUkrainianStylesAndLowercase() {
+        let heard = "привіт як справи їжак Єнот завтра о дев'ятій ми підемо на каву"
+        XCTAssertEqual(
+            TranscriptFormatter.format(heard, style: .polished, language: "uk-UA"),
+            "Привіт як справи їжак Єнот завтра о дев'ятій ми підемо на каву."
+        )
+        XCTAssertEqual(TranscriptFormatter.format("ґанок і сад. і все", style: .polished, language: "uk-UA"), "Ґанок і сад. І все.")
+        XCTAssertEqual(TranscriptFormatter.format("Ґанок і сад. І все.", style: .casual, language: "uk-UA"), "ґанок і сад. і все")
+        XCTAssertEqual(TranscriptFormatter.format("Ґанок і сад.", style: .verbatim, language: "uk-UA"), "Ґанок і сад.")
+        var pipeline = DictationPipeline(style: .polished, language: "uk-UA", vocabulary: [])
+        pipeline.lowercase = true
+        XCTAssertEqual(pipeline.format("Єнот, Ґанок і Їжак", language: "uk-UA"), "єнот, ґанок і їжак.")
+    }
+
     /// Lowercase comes after the style and the vocabulary's spellings, as desktop's Lowercase
     /// step lowercases the final text, custom vocabulary included.
     func testLowercaseRunsAfterTheStyleAndVocabulary() {
@@ -460,5 +572,262 @@ final class HinglishRomanizerTests: XCTestCase {
         XCTAssertTrue(HinglishSettings(defaults: defaults).isEnabled)
         XCTAssertEqual(settings.name(for: "hi-IN"), "Hinglish")
         XCTAssertNil(settings.name(for: "en-IN"))
+    }
+}
+
+
+/// Settings › Dictation › Format lists. The English and Spanish inputs are what Apple Speech
+/// (SpeechTranscriber, macOS 27.2, Samantha and Paulina voices) wrote for spoken lists.
+final class SpokenListsTests: XCTestCase {
+    private func lists(_ text: String, _ language: String = "en-US") -> String {
+        SpokenLists.format(text, language: language)
+    }
+
+    func testNumberedListsInEnglish() {
+        XCTAssertEqual(
+            lists("Here is my shopping list. First, eggs. Second, milk, third, bread."),
+            "Here is my shopping list.\n1. Eggs\n2. Milk\n3. Bread"
+        )
+        XCTAssertEqual(
+            lists("My shopping list, 1st egg, 2nd milk, and 3rd bread."),
+            "My shopping list:\n1. Egg\n2. Milk\n3. Bread"
+        )
+        XCTAssertEqual(
+            lists("Number one, call the bank. Number two, pay rent. Number three, email Sam."),
+            "1. Call the bank\n2. Pay rent\n3. Email Sam"
+        )
+        XCTAssertEqual(
+            lists("One, buy tickets. Two, book the hotel. Three, pack."),
+            "1. Buy tickets\n2. Book the hotel\n3. Pack"
+        )
+        XCTAssertEqual(
+            lists("Step one preheat the oven, step two, mix the flour, step three, bake for 20 minutes."),
+            "1. Preheat the oven\n2. Mix the flour\n3. Bake for 20 minutes"
+        )
+        XCTAssertEqual(lists("1. Eggs. 2. Milk."), "1. Eggs\n2. Milk")
+        XCTAssertEqual(lists("First of all, thanks. Second of all, sorry."), "1. Thanks\n2. Sorry")
+    }
+
+    /// "finally" ends a list of two or more; what follows the last item's sentence is its own
+    /// line, and a later list is found too.
+    func testListEndsAndWhatFollows() {
+        XCTAssertEqual(
+            lists("First, preheat the oven. Second, mix. And finally, bake. Thanks!"),
+            "1. Preheat the oven\n2. Mix\n3. Bake\nThanks!"
+        )
+        XCTAssertEqual(
+            lists("Third, bake for 20 minutes. Let it cool. First, preheat. Second, mix."),
+            "Third, bake for 20 minutes. Let it cool.\n1. Preheat\n2. Mix"
+        )
+        XCTAssertEqual(
+            lists("Who's coming? First, Ana. Second, who else?"),
+            "Who's coming?\n1. Ana\n2. Who else?"
+        )
+        XCTAssertEqual(
+            lists("Packing: first, the iPhone charger, second, passport."),
+            "Packing:\n1. The iPhone charger\n2. Passport"
+        )
+    }
+
+    func testBulletsAndLineBreaks() {
+        XCTAssertEqual(lists("Groceries, bullet, eggs, bullet, milk, bullet bread."), "Groceries:\n- Eggs\n- Milk\n- Bread")
+        XCTAssertEqual(lists("Todo bullet ship it bullet tell Ravi"), "Todo:\n- Ship it\n- Tell Ravi")
+        XCTAssertEqual(lists("Agenda: next item, budget. Next item, hiring."), "Agenda:\n- Budget\n- Hiring")
+        XCTAssertEqual(lists("Dash, eggs. Dash, milk."), "- Eggs\n- Milk")
+        XCTAssertEqual(
+            lists("Dear Sam, new line, thanks for the help, new paragraph see you soon."),
+            "Dear Sam\nthanks for the help\n\nsee you soon."
+        )
+        XCTAssertEqual(lists("Shopping new line bullet eggs new line bullet milk"), "Shopping\n- Eggs\n- Milk")
+    }
+
+    func testSpanish() {
+        XCTAssertEqual(
+            lists("Mi lista de compras. Primero, huevos, segundo, leche, tercero, pan.", "es-ES"),
+            "Mi lista de compras.\n1. Huevos\n2. Leche\n3. Pan"
+        )
+        XCTAssertEqual(
+            lists("Uno, Comprar boletos. Dos, reservar el hotel. Tres, hacer la maleta.", "es-MX"),
+            "1. Comprar boletos\n2. Reservar el hotel\n3. Hacer la maleta"
+        )
+        XCTAssertEqual(lists("Viñeta, huevos, viñeta, leche, viñeta, pan.", "es-ES"), "- Huevos\n- Leche\n- Pan")
+        XCTAssertEqual(
+            lists("En primer lugar, gracias. En segundo lugar, perdón. Y por último, adiós.", "es-ES"),
+            "1. Gracias\n2. Perdón\n3. Adiós"
+        )
+        XCTAssertEqual(
+            lists("Hola Ana, nueva línea. Gracias por todo nuevo párrafo. Nos vemos.", "es-ES"),
+            "Hola Ana\nGracias por todo\n\nNos vemos."
+        )
+        XCTAssertEqual(lists("Paso uno, lavar. Paso dos, secar.", "es-ES"), "1. Lavar\n2. Secar")
+    }
+
+    func testOtherLanguagesStayAsSaid() {
+        XCTAssertEqual(lists("First, eggs. Second, milk.", "fr-FR"), "First, eggs. Second, milk.")
+        XCTAssertEqual(lists("Erstens, Eier. Zweitens, Milch.", "de-DE"), "Erstens, Eier. Zweitens, Milch.")
+    }
+
+    /// Prose that only looks like a list stays exactly as it was heard.
+    func testProseStaysAsSaid() {
+        let english = [
+            "The first time I saw it, I loved it.",
+            "She is one of the best.",
+            "I have two dogs and three cats.",
+            "Don't second guess yourself.",
+            "At first I didn't like it, but then I did.",
+            "First things first, let's eat.",
+            "He finished first and I finished second.",
+            "One day we'll go there.",
+            "Give me one second.",
+            "It's the second time this week.",
+            "We bought a new line of shoes.",
+            "The bullet points are on the slide.",
+            "I need to dash, see you.",
+            "Number one fans only.",
+            "One, two, three, go!",
+            "Step by step, we got there.",
+            "Who came first, the chicken or the egg?",
+            "My first car was red and my second was blue.",
+            "Two, maybe three people came.",
+            "One more thing, call me later.",
+            "The 1st time I saw it, I had to 2nd guess myself, one of the best, I have 2 dogs.",
+            "First of all, thank you for coming.",
+            "A bullet hit the wall.",
+            "In the first place, it was not my fault.",
+            "Add a new paragraph about pricing.",
+            "Firstly, I disagree.",
+            "We'll meet at 1, 2, or 3.",
+            "Chapter one, two and three are done.",
+            "One, two, buckle my shoe. Three, four, shut the door.",
+            "He said one thing, then another.",
+            "I was second in line, and first in my heart.",
+            "The second half was better than the first.",
+            "One of them said two words.",
+            "First come, first served.",
+            "Second to none.",
+            "We'll do it in one, two weeks.",
+            "Item one is missing.",
+            "Point taken, next item please.",
+            "Meet me at 1:30. 2 people are coming.",
+            "That's a new line for me.",
+            "Our new line of credit is ready.",
+            "Third time's the charm.",
+            "I came in second, and then first the next year.",
+            "Last, but not least, thanks.",
+            "One, I'm tired.",
+            "First, let me say thanks for coming.",
+            "Finally, we're done. Lastly, go home.",
+            "The dash cam caught it.",
+            "Number two pencils only.",
+            "There are two options. One, we wait.",
+        ]
+        for sentence in english {
+            XCTAssertEqual(lists(sentence), sentence)
+        }
+        let spanish = [
+            "La primera vez que lo vi, me encantó.",
+            "Es uno de los mejores.",
+            "Tengo dos perros.",
+            "Espera un segundo.",
+            "Una nueva línea de productos.",
+            "Primero llegó Ana y segundo llegó Luis.",
+            "Uno nunca sabe.",
+            "Vivo en el segundo piso.",
+            "Compré una viñeta de Mafalda.",
+            "Es mi primer día.",
+            "Uno, dos, tres, ¡ya!",
+            "En primer lugar estaba Ana.",
+        ]
+        for sentence in spanish {
+            XCTAssertEqual(lists(sentence, "es-ES"), sentence)
+        }
+    }
+
+    /// Each style ends the lines its own way; Verbatim keeps the model's words.
+    func testStylesEndTheLines() {
+        let heard = "Um, so the plan is, first, um, call the bank, second, pay rent. Thanks!"
+        let formatted = DictationStyle.allCases.map {
+            TranscriptFormatter.format(heard, style: $0, language: "en-US", lists: true)
+        }
+        XCTAssertEqual(formatted, [
+            "So the plan is:\n1. Call the bank.\n2. Pay rent.\nThanks!",
+            "so the plan is:\n1. Call the bank\n2. Pay rent\nthanks!",
+            "So the plan is:\n1. Call the bank\n2. Pay rent\nThanks!",
+            heard,
+        ])
+        XCTAssertEqual(
+            TranscriptFormatter.format("Groceries, bullet, eggs, bullet, milk.", style: .polished, language: "en-US", lists: true),
+            "Groceries:\n- Eggs.\n- Milk."
+        )
+        XCTAssertEqual(
+            TranscriptFormatter.format(heard, style: .polished, language: "en-US"),
+            "So the plan is, first, call the bank, second, pay rent. Thanks!",
+            "off: as before"
+        )
+    }
+
+    /// The pipeline formats lists only with the switch on, and Lowercase still lowercases them.
+    func testPipelineSwitchAndLowercase() {
+        let heard = "First, eggs. Second, milk."
+        var pipeline = DictationPipeline(style: .notes, language: "en-US")
+        XCTAssertEqual(pipeline.format(heard, language: "en-US"), "- Eggs\n- Milk", "off: Notes as before")
+        pipeline.formatLists = true
+        XCTAssertEqual(pipeline.format(heard, language: "en-US"), "1. Eggs\n2. Milk")
+        pipeline.lowercase = true
+        XCTAssertEqual(pipeline.format(heard, language: "en-US"), "1. eggs\n2. milk")
+
+        let defaults = UserDefaults(suiteName: "hex.tests.\(UUID().uuidString)")!
+        let settings = DictationListSettings(defaults: defaults)
+        XCTAssertTrue(settings.isEnabled, "on by default")
+        settings.isEnabled = false
+        XCTAssertFalse(DictationListSettings(defaults: defaults).isEnabled)
+    }
+}
+
+
+/// iOS 27's speech models write "gonna", "wanna" and "gotta" (macOS 27.2's SpeechTranscriber
+/// too: "I'm gonna call you later."); Polished writes them out, Casual and Verbatim keep them.
+final class InformalContractionTests: XCTestCase {
+    private func polished(_ text: String) -> String {
+        TranscriptFormatter.format(text, style: .polished, language: "en-US")
+    }
+
+    func testPolishedWritesThemOut() {
+        XCTAssertEqual(
+            polished("I'm gonna call you later. I wanna finish this first."),
+            "I'm going to call you later. I want to finish this first."
+        )
+        XCTAssertEqual(polished("I gotta go, lemme know. It's kinda late"), "I got to go, let me know. It's kind of late.")
+        XCTAssertEqual(polished("Gonna be a long day."), "Going to be a long day.")
+        XCTAssertEqual(polished("ok. wanna grab lunch?"), "Ok. Want to grab lunch?")
+    }
+
+    func testQuotesNamesAndOtherWordsStay() {
+        XCTAssertEqual(polished("He said \"I'm gonna win\" and left."), "He said \"I'm gonna win\" and left.")
+        XCTAssertEqual(polished("She sang “Wanna Be Startin' Somethin'” all night."), "She sang “Wanna Be Startin' Somethin'” all night.")
+        XCTAssertEqual(polished("We played Gonna Fly Now on repeat."), "We played Gonna Fly Now on repeat.")
+        XCTAssertEqual(polished("The gonnabe kinds and the wannabes."), "The gonnabe kinds and the wannabes.")
+        XCTAssertEqual(
+            TranscriptFormatter.format("Voy a gonna mañana.", style: .polished, language: "es-ES"),
+            "Voy a gonna mañana.",
+            "English only"
+        )
+    }
+
+    func testCasualAndVerbatimKeepThem() {
+        let heard = "I'm gonna be late, wanna start without me?"
+        XCTAssertEqual(TranscriptFormatter.format(heard, style: .casual, language: "en-US"), "i'm gonna be late, wanna start without me?")
+        XCTAssertEqual(TranscriptFormatter.format(heard, style: .verbatim, language: "en-US"), heard)
+    }
+
+    func testListItems() {
+        XCTAssertEqual(
+            TranscriptFormatter.format("First, gonna call Sam. Second, wanna book the hotel.", style: .polished, language: "en-US", lists: true),
+            "1. Going to call Sam.\n2. Want to book the hotel."
+        )
+        XCTAssertEqual(
+            TranscriptFormatter.format("Todo bullet gotta pack bullet lemme check the car", style: .polished, language: "en-US", lists: true),
+            "Todo:\n- Got to pack.\n- Let me check the car."
+        )
     }
 }

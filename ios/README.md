@@ -30,29 +30,37 @@ doesn't use, and `SpeechAnalyzer` runs without it in the app and the keyboard al
 ## Capabilities
 
 - **One-tap keyboard dictation (`HEXKeyboard`):**
-  - **First run (`HEXMobile/Onboarding.swift`):** Three pages. **Welcome**
-    says what Hex is. **Set up Hex** is a checklist that updates every second:
-    Hex Keyboard, Allow Full Access, the microphone (iOS asks for it when the
-    Keyboard row's **Open Settings** or **Continue** is tapped, never from a
-    button of Hex's that says Allow, per App Review 5.1.1(iv); **Open Settings**
-    once it's denied), and the speech model's download, with one **Open
-    Settings** button (Hex's page, with Keyboards inside) and the steps to take
-    there. Continue needs the keyboard added (or unverifiable), not the
-    microphone, so declining it never blocks the app; Full Access still reads
-    Not checked, and the model keeps downloading. **Try the keyboard** focuses a field: once the keyboard
-    has reported Full Access and text is in the field, it shows success and
-    **Done** enters the app. If Full Access hasn't appeared 4 s after a
-    keyboard switch or new text, it says Full Access looks off, with **Open
-    Settings**; **Skip for now** enters the app. It shows once:
-    `onboarding.completed` in the app's UserDefaults records Done or Skip,
-    `onboarding.page` resumes a quit part-way on the same page, and a launch
-    that finds the keyboard ready and the microphone allowed (an existing
-    user) records completion without showing it. **Run setup again** in the
-    app's settings replays it from page 1. It never shows under
-    `--snap-state` except its own scenes: `onboarding-welcome`,
-    `onboarding-allow`, `onboarding-try`, `onboarding-try-done`,
-    `onboarding-try-off`, and `onboarding-tour`, which walks every page by
-    itself for a screen recording.
+  - **First run (`HEXMobile/Onboarding.swift`):** The desktop's pages and
+    order. **Setting up Hex** starts the speech model downloading (the engine
+    `transcriberFactory` picks; a launch that found Parakeet ended mid-load
+    stays failed until Try again) and moves on after a beat. **With Hex**, a
+    short demo, moves on by itself. **Let Hex hear you** has two rows, the
+    microphone (its pill and the page's Continue say Continue before iOS's
+    prompt, never Allow, per App Review 5.1.1(iv)) and the Hex keyboard with
+    Full Access (Open Settings, Hex's page); a done row shows only its check,
+    and the page moves on once both are done. Continue never needs the
+    microphone. **Almost ready** shows only while the model downloads, with
+    Continue without a model after a failure or 30 s without progress.
+    **Your turn** keeps the keyboard up and counts once a dictation arrives or
+    three words are typed with Full Access; an empty dictation says Hex heard
+    nothing (the keyboard notes it in the App Group). **Hex is ready** shows
+    only once every step is done, else Almost ready with what's left. The
+    model step counts the keyboard's own model too
+    (`KeyboardSpeechPreparation`): on iOS 26 the keyboard dictates with
+    Apple Speech even when Hex uses Parakeet, so Hex installs that language's
+    model as the keyboard would; where Apple has none on the iPhone, it marks
+    `keyboardNeedsHex` so the Hex key opens Hex from the first tap. Home's
+    Ready counts it the same way. The
+    model's progress pill sits in the top bar until it's ready; Skip shows on
+    the demo and the practice only. It shows once: `onboarding.completed` in
+    the app's UserDefaults records Start using Hex or Continue without a
+    model, `onboarding.page` resumes a quit part-way on the same page, and a
+    launch that finds the keyboard ready and the microphone allowed (an
+    existing user) records completion without showing it. **Run setup again**
+    replays it from page 1. Its `--snap-state` scenes are `onboarding-setup`,
+    `-demo`, `-permissions`, `-permissions-done`, `-waiting`, `-failed`,
+    `-try`, `-try-done`, `-try-empty`, `-try-off`, `-ready`, and
+    `onboarding-tour`, which walks every page by itself for a recording.
   - **Without Full Access (App Review 4.4.1):** Hex is a keyboard first. The
     full keyboard types without Full Access or network: letters, shift and caps
     lock, numbers and symbols, accents, delete, return, the globe key, and
@@ -128,6 +136,23 @@ doesn't use, and `SpeechAnalyzer` runs without it in the app and the keyboard al
     vocabulary included, as desktop's Lowercase step (`str::to_lowercase` on the
     final text) does, on every path (`DictationLowercaseSettings`, App Group key
     `settings.dictationLowercase`).
+  - **Format lists (Settings › Dictation › Format lists):** On by default
+    (`DictationListSettings`, App Group key `settings.dictationFormatLists`), in
+    English and Spanish, every style but Verbatim (`SpokenLists`, inside the
+    style after its fillers, so each style ends the lines its own way). "first …
+    second …" ("1st … 2nd …", "primero … segundo …", "en primer lugar …"),
+    "number one … number two …" (also "step", "item", "point", "número", "paso")
+    and "one, … two, …" become `1. …` lines; "bullet", "bullet point", "next
+    item", "dash" ("viñeta", "guion") said twice or more become `- …` lines; "new
+    line" and "new paragraph" ("nueva línea", "nuevo párrafo", "salto de línea")
+    break lines. Text before the list gets its own line (with a colon unless it
+    ends a sentence), and what follows the last item's sentence its own line.
+    Guards keep prose: markers count up from one, at least two non-empty items,
+    each marker at a clause start (the start, after a mark or line break, or
+    after "and"/"then"/"y"/"luego" that are), a bare number needs its comma, and
+    words like "the first time", "second guess", "a new line of", "bullet
+    points" stay as said. `TranscriptCleanupTests` holds the list cases and
+    62 prose sentences that must not change.
   - **Spoken "@" (English, every style but Verbatim):** "at the rate" (India's
     name for @) and "at sign" become "@", and an address said around it joins
     up: "John at the rate Gmail dot com" becomes "john@gmail.com", "dot" turning
@@ -279,7 +304,7 @@ doesn't use, and `SpeechAnalyzer` runs without it in the app and the keyboard al
     including a name, day or place typed in lowercase that the dictionary knows only
     capitalised, which is capitalised as the dictionary path does: "mary" -> "Mary").
     Shortcuts, learned fixes, contractions, and words you kept still come first. Other
-    layouts (Norsk, Deutsch, Italiano, Français, Português, Русский) keep the dictionary
+    layouts (Norsk, Deutsch, Italiano, Français, Português, Русский, Українська) keep the dictionary
     engine in their own language, and Srpski (no iOS dictionary) none, never the English
     model, except as bilingual autocorrect's second language (below). The
     models (`HEXKeyboard/TypingModel/en.hextm` and `es.hextm`, about 3.6 MB each) are
@@ -297,7 +322,9 @@ doesn't use, and `SpeechAnalyzer` runs without it in the app and the keyboard al
     them as words). An expression is blocked only as the pair ("blow job"), never its words
     alone. A word it may not offer, typed in full, is never corrected (as on Android); your own `UILexicon` words
     (Contacts names, text replacements) are always offered.
-  - **Swipe typing (Settings › Experiments › Swipe typing):** Off by default, for the
+  - **Swipe typing (Settings › Keyboard › Swipe typing):** On by default (stored as
+    `experiments.swipeTyping` from when it was an experiment off by default: unset or true
+    is on, false off, so testers who turned it off keep it off), for the
     English and Spanish layouts only (every other layout keeps a drag as a slide to
     another key) and off under VoiceOver. A touch that goes down on a letter and travels
     more than a key's pitch (width plus gap) is a swipe (`SwipeTyping`): its key no longer
@@ -367,7 +394,7 @@ doesn't use, and `SpeechAnalyzer` runs without it in the app and the keyboard al
   5.1.1(i)) and Support open in Safari inside Hex (`HexLinks`, one base URL:
   `https://dev.anoma.ly/hex` until the production site serves
   `anoma.ly/hex/privacy`). Each row has a one-line description at most. The pages:
-  - **Dictation:** Style, Lowercase, Dictation language, Translate what I say, Clean up
+  - **Dictation:** Style, Lowercase, Format lists, Dictation language, Translate what I say, Clean up
     what I say, Custom vocabulary (its list below the switch), Keep mic warm,
     and Always use iPhone microphone.
   - **Keyboard:** Keyboard, **Full** (the default) or **Dictation bar** (stored
@@ -376,19 +403,20 @@ doesn't use, and `SpeechAnalyzer` runs without it in the app and the keyboard al
     the dictation bar, so testers who turned that experiment off keep the bar),
     then Languages, Auto-capitalization, Autocorrect (with Spatial autocorrect below it while it's
     on), Suggest swear words and Key pop-ups only while Full is chosen, Haptics (the dictation bar uses it too),
-    and a field to try the keyboard in.
+    then Swipe typing and Emoji (Clear emoji history while it's on), which say they need the
+    full keyboard while the dictation bar is chosen, and a field to try the keyboard in.
   - **Privacy:** "Everything stays on this iPhone", Learn how I type (what it
     learned below the switch), and under **Advanced**, Record typing logs (off
     by default) with its Typing logs viewer while it's on.
-  - **Experiments:** Emoji (it says it needs the full keyboard while the
-    dictation bar is chosen; Clear emoji history while it's on), Swipe typing
-    (the same), and Clean up with Apple Intelligence.
+  - **Experiments:** Hinglish (Hindi in Latin letters) and Clean up with Apple
+    Intelligence.
 
   Simulator scenes: `--snap-state settings-home` (ready), `setup` (keyboard
   added, Full Access not confirmed yet), `setup-sheet`, `setup-sheet-microphone`
   (before iOS has asked for the microphone), and
   `settings-<dictation|keyboard|privacy|experiments>[-on][-end]`. Each writes
-  its page's switches to the App Group: off by default, on with `-on`.
+  its page's switches to the App Group: off by default, on with `-on`; switches that are
+  on by default (Spatial autocorrect, Swipe typing, Emoji) stay on.
   `-end` starts the page scrolled to the bottom. `settings-privacy-confirm`
   opens Record typing logs' consent dialog.
 - **Dictation language (Settings › Dictation › Dictation language, iOS 26+):** Automatic by
@@ -461,19 +489,23 @@ doesn't use, and `SpeechAnalyzer` runs without it in the app and the keyboard al
 - **Translate what I say (Settings › Dictation, iOS 26+):** Off by default. Translates
   each dictation on the iPhone with Apple's Translation framework into the
   language picked under Insert in, once its pack is downloaded; without the
-  pack the transcript goes in as spoken. Where you dictate, a switch picks
-  translated or as spoken for the next dictations and keeps the last choice
-  (`experiments.translateDictation.pastesTranslation`, translated by
-  default; turning the experiment on resets it to translated): two rows in
-  the full keyboard's Hex key menu ("Paste in English", "Paste in Spanish",
-  named in English, "Paste as spoken" when the dictation language is
-  unknown), a "Paste in English" chip in the dictation bar's language tray,
-  and a "Paste in English" toggle under Insert in. It shows only while the
-  experiment is on and you dictate in another language than the target.
-  While dictations paste translated, the space bar and the dictation bar's
-  language label read "Español → English". The App Group carries the
-  switch, so in-keyboard dictation, a warm session, and the Action Button
-  all follow it.
+  pack the transcript goes in as spoken. Where you dictate, a "Translate to
+  English" switch turns it on or off without opening Hex (testers asked for
+  a button, not a setting): a row in the full keyboard's Hex key menu, lit
+  with a checkmark while on, and a chip in the dictation bar's language tray.
+  It writes Settings' own switch (`experiments.translateDictation`; on also
+  sets `experiments.translateDictation.pastesTranslation` to translated), and
+  Settings re-reads both when it shows. Below it, Translation language lists
+  up to six targets (the current one, English, the dictation and preferred
+  languages, then common ones, only those Apple translates into); picking one
+  sets `experiments.translateDictation.target` and turns translation on.
+  Settings keeps the full language list, the pack download and its "Paste in
+  English" toggle under Insert in. While dictations paste translated, the Hex
+  key wears the target's code ("EN") in its corner, the dictation bar shows
+  "→ EN" beside the Hex mark, and the space bar reads "Español → English".
+  The App Group carries the switch, so in-keyboard dictation, a warm
+  session, and the Action Button all follow it. The keyboard shares the
+  app's String Catalog, so the Hex key menu is in Chinese on a Chinese iPhone.
 - **Keyboard languages (Settings › Keyboard › Languages, with Full chosen):** Automatic (the
   default, as before: the dictation language's layout, below), or one or more layouts ticked
   and dragged into order (`KeyboardLanguagesPage`, App Group `settings.keyboardLanguages`,
@@ -496,7 +528,7 @@ doesn't use, and `SpeechAnalyzer` runs without it in the app and the keyboard al
   iPhone's region where Apple Speech has it (`KeyboardLanguage.dictationLanguage`; none for
   Srpski). **Bilingual autocorrect:** the first other chosen language with Latin letters and
   an iOS dictionary (`KeyboardLanguageList.partner`: English beside French, French beside
-  English; none for Русский, Srpski, or two French layouts) is checked on the same keys,
+  English; none for Русский, Українська, Srpski, or two French layouts) is checked on the same keys,
   with its Spatial model where it has one, as Apple's "Français et English" keyboard does: a
   word either language knows as typed is never changed, a typo only one can fix gets that
   fix ("teh" → "the" while French types), and when both can, the language of the last words
@@ -513,7 +545,12 @@ doesn't use, and `SpeechAnalyzer` runs without it in the app and the keyboard al
   leaves out), Français (Canada) on QWERTY and Français (Suisse) on QWERTZ, as on Apple's
   (automatic picks them for `fr-CA` and `fr-CH`, AZERTY for any other French, Belgium
   included), Русский (Apple's ЙЦУКЕН: 11, 11 and 9 letters, ё on a
-  held е, ъ on a held ь) and Srpski (Latin: Apple's QWERTZ option for it; Apple's iPhone
+  held е, ъ on a held ь), Українська (the standard Ukrainian ЙЦУКЕН, ДСТУ 4862:2007, in the
+  rows the iOS 27.2 simulator's own Ukrainian keyboard shows: 12, 12 and 10 keys,
+  `йцукенгшщзхї`, `фівапролджєʼ`, `ячсмитьбюґ`, with ʼ the U+02BC apostrophe Ukrainian
+  spells with; as the system keyboard's long-press options were observed, only ʼ offers
+  anything, the other apostrophes (' ’ ‘ and the backtick), and ₴, the system keyboard's
+  currency key, is held on $; no ы, э, ъ or ё) and Srpski (Latin: Apple's QWERTZ option for it; Apple's iPhone
   Serbian Latin keyboard has no keys of its own for č ć đ š ž, they are held on c, d, s
   and z, and only the iPad's Croatian layouts give them keys), as Apple's iOS keyboards
   lay them out (`KeyboardLanguage`: letter rows, long-press accents, spelling dictionary).
@@ -524,14 +561,15 @@ doesn't use, and `SpeechAnalyzer` runs without it in the app and the keyboard al
   input mode, whose `primaryLanguage` is always the Info.plist's en-US. Rows of 11 keys narrow
   only the letters: shift, delete and the bottom row keep their English sizes,
   and row 3's letters sit centred between shift and delete. Russian's nine-letter row 3
-  wouldn't fit beside them, so there shift and delete narrow instead, as on Apple's. Long-press accents
+  wouldn't fit beside them, so there shift and delete narrow instead, as on Apple's;
+  Ukrainian's twelve-key rows leave them one letter wide, as on Apple's. Long-press accents
   drop letters that have their own key (Norwegian A has no å or æ; Æ and Ø offer
   Ä and Ö), put the language's own first (Spanish á, é, í, ó, ú, ñ, ª, º; Italian
   à, è, ì, ò, ù; French é, à, î, ô, û in Apple's order; Portuguese á, ã, é, ó, õ, ú; Russian and
   Serbian copy Apple's lists from the simulator's `TextInput_ru` and `TextInput_sr`,
   base letter first), and German keeps ß on a held S. Autocorrect and suggestions use the layout's
   `UITextChecker` dictionary (`nb`, `es`, `de`, `it`, `fr`, `pt_BR` then
-  `pt_PT`, `ru`; Serbian would use `sr_Latn`, which iOS 27.2 doesn't have, nor a
+  `pt_PT`, `ru`, `uk`; Serbian would use `sr_Latn`, which iOS 27.2 doesn't have, nor a
   Croatian one); where the iPhone has none
   they stay off except your own text replacements, and the English contractions
   and typo list (`i` → `I`) apply only to English. Neighbouring-key costs follow
@@ -541,7 +579,8 @@ doesn't use, and `SpeechAnalyzer` runs without it in the app and the keyboard al
   neighbouring key (or one swap) from a very common two-letter word is fixed too
   ("tk" → "to", Spanish "nl" → "no"; `KeyboardLanguage.commonTwoLetterWords`, English,
   Spanish and Italian only). Auto-capitalization is unchanged.
-  The 123 and #+= pages are English's in every language, and the accent lists
+  The 123 and #+= pages are English's in every language (the system Ukrainian keyboard
+  shows ₴ on its currency key; Hex holds it on $), and the accent lists
   come from Apple's layouts as remembered, not checked against a device.
 - **Size (full keyboard):** The suggestion strip is Apple's 44 pt predictive bar in
   every state (suggestions, Undo dictation, the Full Access hint, the recording bar,
@@ -605,7 +644,9 @@ doesn't use, and `SpeechAnalyzer` runs without it in the app and the keyboard al
   off the keys it types nothing and the page stays. Holding shift and sliding to a letter
   shows and types its capital. None of them is a swipe, and a slid-to key opens no
   accent menu (Apple's does after a hold).
-- **Emoji (Settings › Experiments › Emoji, for the full keyboard):** Off by default. An emoji key
+- **Emoji (Settings › Keyboard › Emoji, for the full keyboard):** On by default (stored as
+  `experiments.emoji` from when it was an experiment off by default: unset or true is on,
+  false off, so testers who turned it off keep it off). An emoji key
   right of 123 (after the globe) in plain text fields, not web address, email or
   ASCII-only ones. It opens a panel in place of the strip and the keys: a row of
   emoji for the text before the cursor, then a grid that scrolls sideways through
@@ -749,6 +790,9 @@ from `ci_scripts/ci_post_clone.sh`. A new model gets a new release tag and hash.
   downloaded each model in 11–16 s. `DictationTranscriber` returned Norwegian
   and Hebrew without punctuation under every preset (the short-form presets
   returned nothing), so Polished only capitalizes and ends the sentence.
+  Ukrainian is `DictationTranscriber`'s only (macOS 27.2 lists `uk-UA` there and
+  not for `SpeechTranscriber`): a `say -v Lesya` clip came back word for word in
+  Cyrillic, without punctuation, after an 18 s model download.
   Unverified on a physical iPhone.
 - **Speech model fallback:** `SpeechModelInstallTests` and `StallWatchTests` run
   the fallback, set-aside, offline, stall and keyboard-handoff rules against fakes

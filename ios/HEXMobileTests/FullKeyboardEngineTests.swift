@@ -364,6 +364,58 @@ final class FullKeyboardEngineTests: XCTestCase {
         XCTAssertEqual(steps, [1, -1, 1])
     }
 
+    /// Settings › Keyboard › Languages with English and Ukrainian: the space bar says
+    /// "Українська", the keys are the twelve-key ЙЦУКЕН, ʼ types the apostrophe Ukrainian
+    /// spells with and a held ʼ the other apostrophes, ґ and ї have keys of their own, and
+    /// Switch dictation too dictates uk-UA.
+    func testUkrainianTypesAndSwitches() {
+        let settings = LanguageSettings(defaults: defaults)
+        settings.keyboardLanguages = [.english, .ukrainian]
+        settings.dictationFollowsKeyboard = true
+        settings.supportedDictationLanguages = ["en-US", "ru-RU", "uk-UA"]
+        let model = KeyboardViewModel()
+        var picked: [String?] = []
+        model.onLanguageSelected = { picked.append($0) }
+        let field = FixtureTextTarget()
+        field.autocapitalizationType = UITextAutocapitalizationType.none
+        let view = FullKeyboardView(model: model, target: field)
+        view.languageSettings = settings
+        view.frame = CGRect(x: 0, y: 0, width: 402, height: 262)
+        view.layoutIfNeeded()
+        view.switchLanguage(by: 1)
+        XCTAssertEqual(view.engine.language, .ukrainian)
+        XCTAssertEqual(view.plane.spaceLabel, "Українська")
+        XCTAssertNil(view.engine.partnerLanguage)
+        XCTAssertNil(view.engine.autocorrect.decoder, "no Ukrainian typing model: the dictionary engine")
+        XCTAssertEqual(picked, ["uk-UA"])
+        var id = 300
+        func press(_ character: String) {
+            let key = view.engine.layout.key(.character(character))!
+            let centre = CGPoint(x: key.frame.midX, y: key.frame.midY)
+            id += 1
+            view.engine.touchBegan(id: id, at: centre)
+            view.engine.touchEnded(id: id, at: centre)
+        }
+        func hold(_ character: String, pick: String) {
+            let key = view.engine.layout.key(.character(character))!
+            id += 1
+            view.engine.touchBegan(id: id, at: CGPoint(x: key.frame.midX, y: key.frame.midY))
+            XCTAssertTrue(view.engine.openAccentMenuIfEligible(forTouch: id), character)
+            guard let menu = view.engine.activeAccentMenu, let index = menu.options.firstIndex(of: pick) else {
+                return XCTFail("\(character): no \(pick)")
+            }
+            let cell = menu.cellFrames[index]
+            view.engine.touchMoved(id: id, to: CGPoint(x: cell.midX, y: cell.midY))
+            view.engine.touchEnded(id: id, at: CGPoint(x: cell.midX, y: cell.midY))
+        }
+        for character in ["с", "і", "м", "ʼ", "я", "ґ", "ї"] { press(character) }
+        hold("ʼ", pick: "’")
+        XCTAssertEqual(field.text, "сімʼяґї’")
+        view.switchLanguage(by: 1)
+        XCTAssertEqual(view.engine.language, .english)
+        XCTAssertEqual(view.plane.spaceLabel, "English")
+    }
+
     /// Settings › Keyboard › Languages with English, French and Russian: the space bar names
     /// the keyboard's language, switching changes the letters (AZERTY, ЙЦУКЕН), the accents and
     /// autocorrect (French with English beside it, Russian alone), and the keyboard comes back
@@ -552,7 +604,7 @@ final class FullKeyboardEngineTests: XCTestCase {
         XCTAssertNil(view.engine.autocorrect.decoder)
         // Nor do Russian, Serbian (Latin) and French; nor do English's or Spanish's
         // next-letter odds move French targets (AZERTY's letters aren't theirs).
-        for language in [KeyboardLanguage.russian, .serbianLatin, .french, .frenchCanadian, .frenchSwiss] {
+        for language in [KeyboardLanguage.russian, .ukrainian, .serbianLatin, .french, .frenchCanadian, .frenchSwiss] {
             view.languageOverride = language
             XCTAssertEqual(view.engine.autocorrect.language, language)
             XCTAssertNil(view.engine.autocorrect.decoder, "\(language)")
@@ -712,13 +764,49 @@ final class FullKeyboardEngineTests: XCTestCase {
         type("por ")
         XCTAssertFalse(engine.suggestions.isEmpty)
         XCTAssertTrue(engine.suggestions.allSatisfy { $0.kind == .nextWord })
-        for context in ["por. ", "hola\n", "@por ", "todo/por ", "por  "] {
+        for context in ["@por ", "todo/por ", "por  "] {
             XCTAssertTrue(engine.autocorrect.suggestions(beforeInput: context, field: .text,
                 autocorrectionType: .default, predictionModel: engine.letterOdds).isEmpty, context)
+        }
+        for context in ["por. ", "hola\n"] {
+            XCTAssertEqual(engine.autocorrect.suggestions(beforeInput: context, field: .text,
+                autocorrectionType: .default, predictionModel: engine.letterOdds).map(\.replacement), ["yo", "el", "la"], context)
         }
         target.autocorrectionType = .no
         engine.refreshSuggestions()
         XCTAssertTrue(engine.suggestions.isEmpty)
+    }
+
+    /// An empty field and a new sentence offer three first words, capitalized as shift would
+    /// be (not with Auto-capitalization off); after a word the three slots are always filled.
+    func testSentenceStartersAndNextWordsFillAllThreeSlots() throws {
+        target.autocapitalizationType = .sentences
+        engine.configureForField()
+        engine.letterOdds = try XCTUnwrap(TypingDecoderModel.bundled("en"))
+        engine.refreshSuggestions()
+        XCTAssertEqual(engine.suggestions.map(\.replacement), ["I", "The", "I'm"])
+        XCTAssertTrue(engine.suggestions.allSatisfy { $0.kind == .nextWord && !$0.willAutoReplace })
+        engine.acceptSuggestion(engine.suggestions[1])
+        XCTAssertEqual(target.text, "The ")
+        type("hi ")
+        XCTAssertEqual(engine.suggestions.count, 3, "\(engine.suggestions.map(\.replacement))")
+        XCTAssertTrue(engine.suggestions.allSatisfy { $0.kind == .nextWord })
+        XCTAssertTrue(engine.suggestions.allSatisfy { $0.replacement.first?.isLowercase == true || $0.replacement == "I" })
+
+        let model = engine.letterOdds
+        func words(_ before: String, capitalized: Bool) -> [String] {
+            engine.autocorrect.suggestions(beforeInput: before, field: .text, autocorrectionType: .default,
+                                           predictionModel: model, capitalizesNext: capitalized).map(\.replacement)
+        }
+        for context in ["Done. ", "Really? ", "Wow! ", "Hi\n", ""] {
+            XCTAssertEqual(words(context, capitalized: true), ["I", "The", "I'm"], context)
+        }
+        XCTAssertEqual(words("zzqx ", capitalized: false), ["the", "to", "and"], "an unknown word: the commonest words")
+        XCTAssertEqual(words("Running late, ", capitalized: false), ["I", "but", "and"], "after a comma, words that start a clause")
+        XCTAssertEqual(words("at 7 ", capitalized: false), [], "not after a number")
+        XCTAssertEqual(words("Done.", capitalized: true), [], "no space after the period yet")
+        engine.autoCapitalizes = false
+        XCTAssertEqual(words("Done. ", capitalized: true), ["I", "the", "I'm"], "Auto-capitalization off adds no capitals")
     }
 
     /// A suggestion types its word and a space, so a space pressed right after it (a pick,
@@ -983,15 +1071,16 @@ final class FullKeyboardEngineTests: XCTestCase {
                 asked += 1
                 return true
             }
-            // Russian has no Latin letters: press its own а and hold its own е.
-            let cyrillic = language == .russian
+            // Russian and Ukrainian have no Latin letters: press their own а and hold their own
+            // е (Ukrainian's ʼ, its only key with long-press options).
+            let cyrillic = !language.isLatin
             for (id, kind) in [KeyKind.character(cyrillic ? "а" : "a"), .space, .delete].enumerated() {
                 let key = view.engine.layout.key(kind)!
                 let sample = TypingLogTouchSample(point: CGPoint(x: key.frame.midX, y: key.frame.midY), timestamp: 0)
                 view.plane.began(id: id + 10, sample: sample)
                 view.plane.ended(id: id + 10, sample: sample)
             }
-            view.debugHoldAccent(cyrillic ? "е" : "e", selectIndex: 1)
+            view.debugHoldAccent(language == .ukrainian ? "ʼ" : cyrillic ? "е" : "e", selectIndex: 1)
             counts[language] = asked
         }
         XCTAssertGreaterThanOrEqual(counts[.english] ?? 0, 4, "three keys and an accent step")
@@ -1318,7 +1407,7 @@ final class FullKeyboardEngineTests: XCTestCase {
         }
         view.languageOverride = .english
         view.swipeOverride = false
-        XCTAssertNil(view.plane.swipe, "off by default and when turned off")
+        XCTAssertNil(view.plane.swipe, "off when turned off")
         view.swipeOverride = nil
         XCTAssertEqual(view.plane.swipe != nil, FullKeyboardSettings().swipeTyping)
     }
@@ -1405,5 +1494,45 @@ final class FullKeyboardEngineTests: XCTestCase {
         }
         swipe("fuck", on: plane)
         XCTAssertTrue(field.text.hasSuffix(" fuck"), "with Suggest swear words on")
+    }
+}
+
+
+/// The strip's Paste chip: one read per paste, and where to stop iOS's Allow Paste.
+@MainActor
+final class KeyboardClipboardTests: XCTestCase {
+    private var suiteName = ""
+    private var defaults: UserDefaults!
+
+    override func setUp() async throws {
+        suiteName = "hex.tests.\(UUID().uuidString)"
+        defaults = UserDefaults(suiteName: suiteName)!
+    }
+
+    override func tearDown() async throws {
+        defaults.removePersistentDomain(forName: suiteName)
+    }
+
+    func testTheChipReadsTextOrALinkOnce() {
+        let pasteboard = UIPasteboard.withUniqueName()
+        defer { UIPasteboard.remove(withName: pasteboard.name) }
+        XCTAssertNil(KeyboardClipboardTracker.read(pasteboard))
+        pasteboard.url = URL(string: "https://hex.example/a")
+        XCTAssertEqual(KeyboardClipboardTracker.read(pasteboard), "https://hex.example/a")
+        pasteboard.string = "See you at 7"
+        XCTAssertEqual(KeyboardClipboardTracker.read(pasteboard), "See you at 7")
+    }
+
+    func testAPasteThatAskedPointsToTheSettingAFewTimes() {
+        let tracker = KeyboardClipboardTracker(defaults: defaults)
+        XCTAssertFalse(tracker.shouldPointToAllowPaste(readDuration: 0.01, refused: false), "Allow: iOS didn't ask")
+        for _ in 0..<KeyboardClipboardTracker.allowPasteHintLimit {
+            XCTAssertTrue(tracker.shouldPointToAllowPaste(readDuration: 1.2, refused: false))
+        }
+        XCTAssertFalse(
+            KeyboardClipboardTracker(defaults: defaults).shouldPointToAllowPaste(readDuration: 1.2, refused: false),
+            "after a few, Ask is left alone: someone may want it"
+        )
+        XCTAssertTrue(tracker.shouldPointToAllowPaste(readDuration: 0.01, refused: true), "refused: the chip did nothing, always say why")
     }
 }

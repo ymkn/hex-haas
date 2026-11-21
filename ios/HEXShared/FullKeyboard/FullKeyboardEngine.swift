@@ -156,7 +156,7 @@ final class FullKeyboardEngine {
     var width: CGFloat = 375 { didSet { if width != oldValue { rebuildLayout() } } }
     var orientation: KeyboardOrientation = .portrait { didSet { if orientation != oldValue { rebuildLayout() } } }
     var showsGlobe = false { didSet { if showsGlobe != oldValue { rebuildLayout() } } }
-    /// Experiments › Emoji, in fields that take emoji.
+    /// Settings › Keyboard › Emoji, in fields that take emoji.
     var showsEmoji = false { didSet { if showsEmoji != oldValue { rebuildLayout() } } }
     var horizontalInset: CGFloat = 0 { didSet { if horizontalInset != oldValue { rebuildLayout() } } }
     /// An iPhone, or the iPhone Duo folded or unfolded (`KeyboardPosture`).
@@ -327,7 +327,12 @@ final class FullKeyboardEngine {
                 beforeInput: target.documentContextBeforeInput,
                 field: field,
                 autocorrectionType: target.autocorrectionType,
-                predictionModel: letterOdds
+                predictionModel: letterOdds,
+                capitalizesNext: AutoCapitalization.shouldCapitalize(
+                    mode: autoCapitalizationMode,
+                    before: target.documentContextBeforeInput,
+                    hasText: target.hasText
+                )
             )
         }
         if next != suggestions {
@@ -340,7 +345,9 @@ final class FullKeyboardEngine {
     func acceptSuggestion(_ suggestion: KeyboardSuggestion) {
         // A queued tap on a prediction must not replace a word started in the meantime.
         if suggestion.kind == .nextWord,
-           target.documentContextBeforeInput?.last != " " || !suggestions.contains(suggestion) { return }
+           AutocorrectEngine.currentToken(in: target.documentContextBeforeInput) != nil
+            || target.documentContextBeforeInput.map({ !($0.isEmpty || $0.last == " " || $0.last!.isNewline) }) == true
+            || !suggestions.contains(suggestion) { return }
         // The strip shows a swipe's readings: mid-swipe they're only shown, after it one
         // takes the swiped word's place.
         if isSwiping { return }
@@ -1043,7 +1050,7 @@ final class FullKeyboardEngine {
         onEdit?()
     }
 
-    // MARK: - Swipe typing (Experiments › Swipe typing; SwipeTyping.swift)
+    // MARK: - Swipe typing (Settings › Keyboard › Swipe typing; SwipeTyping.swift)
 
     /// The word a swipe just typed, until anything else changes the text: delete takes it
     /// back whole, space never autocorrects it, and the strip offers the swipe's other

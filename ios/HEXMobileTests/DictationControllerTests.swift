@@ -34,6 +34,8 @@ private final class FakeAudioManager: AudioManaging {
     var keepaliveError: Error = CocoaError(.coderInvalidValue)
     var nextCaptureDuration: TimeInterval = 1.4
     var nextCaptureIsRecording = true
+    /// A microphone that doesn't start, as in the simulator: the recorder fails in `record`.
+    var captureShouldThrow = false
     var deactivateCount = 0
     var createdCaptures: [FakeAudioCapture] = []
 
@@ -67,6 +69,9 @@ private final class FakeAudioManager: AudioManaging {
         allowBluetooth: Bool
     ) throws -> any ActiveAudioCapture {
         isKeepaliveRunning = false
+        if captureShouldThrow {
+            throw CocoaError(.fileWriteUnknown)
+        }
         let capture = FakeAudioCapture(url: url, initialDuration: nextCaptureDuration)
         capture.isRecording = nextCaptureIsRecording
         createdCaptures.append(capture)
@@ -1234,6 +1239,126 @@ final class DictationControllerTests: XCTestCase {
         XCTAssertEqual(bridge.snapshot().message, "Parakeet V2 is not ready.")
     }
 
+    /// The keyboard opened Hex to dictate (its speech model was missing) and the microphone
+    /// failed: Hex says so in the app and the keyboard, keeps no capture or keepalive half
+    /// started, and the next Hex key dictates once the microphone works.
+    func testAMicrophoneThatFailsWhenTheKeyboardOpensHexSaysSoAndTheNextTryRecords() async throws {
+        let now = 50_000.0
+        let audio = FakeAudioManager()
+        audio.captureShouldThrow = true
+        audio.keepaliveShouldThrow = true
+        let transcriber = ControlledTranscriber()
+        let bridge = KeyboardBridge(defaults: defaults)
+        let controller = DictationController(
+            audio: audio,
+            keyboardBridge: bridge,
+            transcriber: transcriber,
+            transcriberFactory: { transcriber },
+            now: { now },
+            autoPrepareOnInit: false
+        )
+        controller.prepareModel()
+        try await settle()
+
+        controller.handleKeyboardLaunch(
+            .startRecording(jobID: "no-mic-job", requestedAt: now - 0.5, style: nil)
+        )
+        try await settle()
+
+        let message = "Hex couldn't start the microphone. Try again."
+        XCTAssertEqual(controller.phase, .failed(message))
+        let failed = bridge.snapshot()
+        XCTAssertEqual(failed.state, .failed)
+        XCTAssertEqual(failed.message, message)
+        XCTAssertNil(failed.jobID, "no job left recording")
+        XCTAssertNil(failed.recordingStartedAt)
+        XCTAssertTrue(audio.createdCaptures.isEmpty)
+        XCTAssertFalse(audio.isKeepaliveRunning)
+        XCTAssertFalse(controller.keyboardSessionEnabled, "no warm session claimed without a microphone")
+        XCTAssertGreaterThan(audio.deactivateCount, 0, "the audio session is given back")
+
+        // The microphone works again: the next Hex key records.
+        audio.captureShouldThrow = false
+        audio.keepaliveShouldThrow = false
+        controller.handleKeyboardLaunch(
+            .startRecording(jobID: "mic-back-job", requestedAt: now - 0.3, style: nil)
+        )
+        try await settle()
+        XCTAssertEqual(controller.phase, .recording)
+        XCTAssertEqual(bridge.snapshot().state, .recording)
+        XCTAssertEqual(bridge.snapshot().jobID, "mic-back-job")
+        controller.cancelCurrentJob()
+    }
+
+    /// A recorder's end can arrive after Hex already tore its capture down (Cancel, or the
+    /// next dictation started): it changes nothing, and the dictation running now goes on.
+    func testAnEndFromATornDownCaptureChangesNothing() async throws {
+        let now = 51_000.0
+        let audio = FakeAudioManager()
+        let transcriber = ControlledTranscriber()
+        let bridge = KeyboardBridge(defaults: defaults)
+        let controller = DictationController(
+            audio: audio,
+            keyboardBridge: bridge,
+            transcriber: transcriber,
+            transcriberFactory: { transcriber },
+            now: { now },
+            autoPrepareOnInit: false
+        )
+        controller.prepareModel()
+        try await settle()
+        controller.selectWarmDuration(.fifteenMinutes)
+        try await settle()
+
+        controller.startRecording(keyboardJobID: "torn-down")
+        try await settle()
+        let tornDown = try XCTUnwrap(audio.createdCaptures.last)
+        controller.cancelCurrentJob()
+        audio.onUnexpectedCaptureEnd?(tornDown.url, false)
+        try await settle()
+        XCTAssertEqual(controller.phase, .ready)
+        XCTAssertNil(bridge.snapshot().message)
+
+        controller.startRecording(keyboardJobID: "current")
+        try await settle()
+        audio.onUnexpectedCaptureEnd?(tornDown.url, false)
+        audio.onUnexpectedCaptureEnd?(tornDown.url, true)
+        try await settle()
+        XCTAssertEqual(controller.phase, .recording, "the current dictation keeps recording")
+        XCTAssertEqual(bridge.snapshot().jobID, "current")
+        controller.cancelCurrentJob()
+    }
+
+    /// A recorder that stopped, or failed to start, outlives the capture that dropped it,
+    /// so callbacks its audio queue already fetched still find it; then it goes.
+    func testARetiredRecorderOutlivesItsTeardownWhileItsQueueCanCallBack() async throws {
+        let retired = RetiredRecorders()
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("retired-\(UUID().uuidString)")
+            .appendingPathExtension("wav")
+        weak var released: AVAudioRecorder?
+        try autoreleasepool {
+            let recorder = try AVAudioRecorder(
+                url: url,
+                settings: [
+                    AVFormatIDKey: kAudioFormatLinearPCM,
+                    AVSampleRateKey: 16_000,
+                    AVNumberOfChannelsKey: 1,
+                ]
+            )
+            released = recorder
+            recorder.stop()
+            retired.hold(recorder, for: .milliseconds(200))
+        }
+        XCTAssertNotNil(released, "held past its owner")
+        XCTAssertEqual(retired.count, 1)
+
+        try await Task.sleep(for: .milliseconds(700))
+        XCTAssertNil(released, "and let go after the hold")
+        XCTAssertEqual(retired.count, 0)
+        try? FileManager.default.removeItem(at: url)
+    }
+
     private func settle() async throws {
         for _ in 0..<8 {
             try await Task.sleep(for: .milliseconds(25))
@@ -1288,6 +1413,28 @@ final class SpeechLanguagePickerTests: XCTestCase {
         let spanish = await pick(preferred: ["es-MX", "en-US"])
         XCTAssertEqual(spanish?.identifier, "es-MX")
         XCTAssertEqual(spanish?.module, .speech)
+    }
+
+    /// Ukrainian is `DictationTranscriber`'s only (macOS 27.2 lists uk-UA there and not in
+    /// `SpeechTranscriber`): picked by hand or by a Ukrainian iPhone, it dictates in Ukrainian.
+    func testUkrainianComesFromDictationTranscriber() async {
+        let speech = lookup(speechLocales)
+        let dictation = lookup(dictationLocales + ["uk-UA", "ru-RU"])
+        let chosen = await SpeechLanguagePicker.pick(
+            explicit: "uk-UA", candidates: ["en-US"], speech: speech, dictation: dictation
+        )
+        XCTAssertEqual(chosen?.identifier, "uk-UA")
+        XCTAssertEqual(chosen?.module, .dictation)
+        let automatic = await SpeechLanguagePicker.pick(
+            explicit: nil,
+            candidates: SpeechLanguagePicker.automaticCandidates(preferred: ["uk-UA", "en-US"], current: "uk_UA"),
+            speech: speech,
+            dictation: dictation
+        )
+        XCTAssertEqual(automatic?.identifier, "uk-UA")
+        XCTAssertEqual(automatic?.module, .dictation)
+        XCTAssertFalse(SpeechLanguagePicker.isEnglish("uk-UA"), "Apple Speech, never English-only Parakeet")
+        XCTAssertEqual(SpeechLanguagePicker.shortNames(for: ["uk-UA"], in: Locale(identifier: "en-US"))["uk-UA"], "Ukrainian")
     }
 
     func testThePreferredOrderWinsOverTheModule() async {
