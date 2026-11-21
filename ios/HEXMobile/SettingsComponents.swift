@@ -251,8 +251,15 @@ enum SettingsSnapshotFixture {
         scene?.hasSuffix("-end") == true
     }
 
+    /// `settings-experiments-on`: Adaptive touch partway through learning, as a keyboard with
+    /// Full Access reports it.
+    static var adaptiveTouchStatus: AdaptiveTouchStatus? {
+        guard let scene, scene.hasPrefix("settings-experiments") else { return nil }
+        return scene.contains("-on") ? .learning(taps: 240) : nil
+    }
+
     /// `settings-keyboard-languages[-on]`: Keyboard › Languages, open (Automatic, or with
-    /// `-on` English, Français and Русский with Switch dictation too).
+    /// `-on` English on QWERTZ, Français and Русский with Switch dictation too).
     static var opensKeyboardLanguages: Bool {
         scene?.hasPrefix("settings-keyboard-languages") == true
     }
@@ -271,6 +278,8 @@ enum SettingsSnapshotFixture {
             .flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil } == "left"
         keyboard.autocorrect = true
         keyboard.spatialAutocorrect = true
+        keyboard.germanSpatialAutocorrect = on
+        keyboard.emojiLettersUnderEmojiKey = on
         keyboard.suggestSwearWords = on
         keyboard.keyPopups = true
         keyboard.haptics = true
@@ -282,6 +291,8 @@ enum SettingsSnapshotFixture {
             emojiUsage.record("🎉")
         }
         LanguageSettings().keyboardLanguages = on ? [.english, .french, .russian] : []
+        LanguageSettings().setLetterLayout(on ? .qwertz : .qwerty, for: .english)
+        LanguageSettings().setLetterLayout(.azerty, for: .french)
         LanguageSettings().currentKeyboardLanguage = nil
         LanguageSettings().dictationFollowsKeyboard = on
         CleanupTaggerSettings().isEnabled = on
@@ -291,7 +302,11 @@ enum SettingsSnapshotFixture {
         DictationTranslationSettings().isEnabled = on
         DictationTranslationSettings().targetLanguage = "ja"
         TypingJournalSettings().isEnabled = on
+        TypingJournalSettings().learnsPerLanguage = on
         TypingLogSettings().isEnabled = on
         HinglishSettings().isEnabled = on
+        AdaptiveTouchSettings().isEnabled = on
+        // Settings scenes skip preparing a model, so this only draws the switch.
+        MultilingualParakeetSettings().isEnabled = on
     }
 }

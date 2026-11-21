@@ -1,16 +1,16 @@
-//! Brazilian Portuguese (pt-BR) interface strings, keyed by the English
-//! source string like [`super::TRANSLATIONS`]; used for any Portuguese
-//! system language. Not yet reviewed by a native speaker. Terms: dictation is "ditado",
-//! vocabulary "vocabulário", replacements "substituições", and meetings
-//! "reuniões".
+//! Brazilian Portuguese (pt-BR) interface strings; not yet reviewed by a
+//! native speaker. Terms: dictation is "ditado", vocabulary "vocabulário",
+//! replacements "substituições", and meetings "reuniões".
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
+use super::screenshots::{Language, merged};
+
 /// The Portuguese strings by their English source.
 pub(super) fn table() -> &'static HashMap<&'static str, &'static str> {
     static TABLE: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
-    TABLE.get_or_init(|| TRANSLATIONS.iter().copied().collect())
+    TABLE.get_or_init(|| merged(TRANSLATIONS, Language::Portuguese))
 }
 
 #[rustfmt::skip]
@@ -168,6 +168,7 @@ const TRANSLATIONS: &[(&str, &str)] = &[
     ("Try unfinished features. They may change or break.", "Experimente recursos inacabados. Eles podem mudar ou quebrar."),
     ("On while the Hex Microphone driver is installed. Uninstall the driver in Voice Filter to turn it off.", "Ativado enquanto o driver do Hex Microphone estiver instalado. Desinstale o driver em Filtro de voz para desativá-lo."),
     ("Names in the window you're dictating into help Hex spell them. Never saved", "Nomes na janela em que você dita ajudam o Hex a escrevê-los. Nunca salvos"),
+    ("When you fix a name in text Hex just pasted, Hex adds the corrected spelling to Vocabulary. It watches only that field, for up to 5 minutes, and never sends it anywhere.", "Quando você corrige um nome no texto que o Hex acabou de colar, o Hex adiciona a grafia corrigida ao vocabulário. Ele observa apenas esse campo, por até 5 minutos, e não o envia a lugar nenhum."),
     ("Rewrite reads nearby text", "A reescrita lê palavras próximas"),
     ("Rewrite uses the text around the cursor to spell names and terms right and fit where it pastes.", "A reescrita usa o texto ao redor do cursor para escrever nomes e termos corretamente e se encaixar onde cola."),
     ("That text goes to the mode's OpenCode model, which may be a cloud provider. Password fields are never read.", "Esse texto vai para o modelo OpenCode do modo, que pode ser um provedor na nuvem. Campos de senha nunca são lidos."),
@@ -1418,6 +1419,7 @@ const TRANSLATIONS: &[(&str, &str)] = &[
     ("Sat", "Sáb"),
     ("Vocabulary help", "Ajuda de vocabulário"),
     ("Words on screen", "Palavras na tela"),
+    ("Learn from corrections", "Aprender com correções"),
     ("Free memory when idle", "Liberar memória quando ocioso"),
     ("Left and right keys", "Teclas da esquerda e da direita"),
     ("Model test details", "Detalhes dos testes dos modelos"),
@@ -1488,6 +1490,8 @@ const TRANSLATIONS: &[(&str, &str)] = &[
     ("Show in folder", "Mostrar na pasta"),
     ("Could not transcribe {}", "Não foi possível transcrever {}"),
     ("A file could not be chosen.", "Não foi possível escolher um arquivo."),
+    ("Agent tools for captures", "Ferramentas de agente para capturas"),
+    ("Adds hex annotate zoom, inspect, frames, and skill so coding agents can read a capture closely", "Adiciona hex annotate zoom, inspect, frames e skill para que agentes de código leiam uma captura de perto"),
 ];
 
 #[cfg(test)]

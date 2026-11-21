@@ -333,10 +333,6 @@ pub fn apply(
             }
         }
         "labs.double_tap_modifiers" => candidate.normalize_double_tap_settings(),
-        "labs.api_browser_origins" => {
-            candidate.labs.api_browser_origins =
-                crate::app_settings::normalize_browser_origins(&candidate.labs.api_browser_origins);
-        }
         "dictation_hotkey"
         | "paste_last_hotkey"
         | "raw_dictation_hotkey"
@@ -447,6 +443,10 @@ pub fn apply(
                 "The screenshot shortcut is already in use; set screenshots.hotkey to another \
                  shortcut first",
             ));
+        }
+        #[cfg(hex_capture)]
+        "labs.screenshots" if candidate.labs.screenshots => {
+            candidate.clear_record_shortcut_sharing_capture();
         }
         "labs.standalone_special_keys" => candidate.repair_special_keys(),
         "labs.section_key_alone" => candidate.repair_section_key(),
@@ -842,21 +842,6 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), keys().count(), "a key is listed twice");
-    }
-
-    #[test]
-    fn browser_origin_entries_keep_only_real_origins() {
-        let change = apply(
-            &AppSettings::default(),
-            "labs.api_browser_origins",
-            r#"["HTTPS://Example.com:443/", "*", "not an origin", "http://localhost:5173"]"#,
-            &rules(),
-        )
-        .unwrap();
-        assert_eq!(
-            change.settings.labs.api_browser_origins,
-            vec!["https://example.com", "http://localhost:5173"]
-        );
     }
 
     #[test]

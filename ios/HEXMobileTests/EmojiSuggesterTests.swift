@@ -174,6 +174,218 @@ final class EmojiSuggesterTests: XCTestCase {
         XCTAssertEqual(field.documentContextBeforeInput, "Hi 🍕")
     }
 
+    // MARK: - Drawing
+
+    /// The box, in points, that \`draw\`'s opaque pixels cover in a 3x bitmap of \`size\`.
+    private func inkBounds(_ size: CGSize, _ draw: (CGContext) -> Void) throws -> CGRect {
+        let width = Int(size.width * 3)
+        let height = Int(size.height * 3)
+        let context = try XCTUnwrap(CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        // UIKit's coordinates: the origin at the top left, in points.
+        context.translateBy(x: 0, y: CGFloat(height))
+        context.scaleBy(x: 3, y: -3)
+        draw(context)
+        let pixels = try XCTUnwrap(context.data).bindMemory(to: UInt8.self, capacity: width * height * 4)
+        var minX = width, minY = height, maxX = -1, maxY = -1
+        for y in 0..<height {
+            for x in 0..<width where pixels[(y * width + x) * 4 + 3] > 24 {
+                minX = min(minX, x); maxX = max(maxX, x); minY = min(minY, y); maxY = max(maxY, y)
+            }
+        }
+        XCTAssertGreaterThanOrEqual(maxX, 0, "nothing drawn")
+        return CGRect(x: CGFloat(minX) / 3, y: CGFloat(minY) / 3, width: CGFloat(maxX - minX + 1) / 3, height: CGFloat(maxY - minY + 1) / 3)
+    }
+
+    /// The grid's cells draw their own bitmaps (iOS keeps every emoji a label draws), so
+    /// they must land where the label put them.
+    func testAnEmojiCellDrawsItsEmojiWhereALabelDid() throws {
+        let renderer = EmojiGlyphRenderer()
+        XCTAssertTrue(renderer.hasPrivateFont)
+        let size = CGSize(width: 46, height: 40)
+        for emoji in ["😀", "👍🏽", "🇳🇴", "❤️", "#️⃣", "🧑‍🧑‍🧒", "©️"] {
+            for fontSize: CGFloat in [32, 26] {
+                let label = UILabel(frame: CGRect(origin: .zero, size: size))
+                label.textAlignment = .center
+                label.font = .systemFont(ofSize: fontSize)
+                label.text = emoji
+                let expected = try inkBounds(size) { context in
+                    UIGraphicsPushContext(context)
+                    label.drawText(in: label.bounds)
+                    UIGraphicsPopContext()
+                }
+                let cell = EmojiCell(frame: CGRect(origin: .zero, size: size))
+                cell.configure(emoji: emoji, name: emoji, fontSize: fontSize, palette: FullKeyboardPalette(isDark: false), renderer: renderer, scale: 3)
+                cell.layoutIfNeeded()
+                let drawn = try inkBounds(size) { cell.contentView.layer.render(in: $0) }
+                for (a, b, edge) in [(drawn.minX, expected.minX, "left"), (drawn.maxX, expected.maxX, "right"),
+                                     (drawn.minY, expected.minY, "top"), (drawn.maxY, expected.maxY, "bottom")] {
+                    XCTAssertEqual(a, b, accuracy: 0.7, "\(emoji) at \(fontSize) pt: \(edge) edge \(drawn) vs \(expected)")
+                }
+            }
+        }
+    }
+
+    /// Paging past every emoji keeps a bounded set of bitmaps, reuses what it has, and leaves
+    /// the process about where it started (drawn as text it grew by about 90 MB).
+    func testDrawingEveryEmojiStaysWithinTheRenderersLimit() throws {
+        let library = try library()
+        let renderer = EmojiGlyphRenderer(byteLimit: 1 << 20, rendersPerFont: 32)
+        let before = Self.footprint()
+        for (index, entry) in library.entries.enumerated() {
+            XCTAssertNotNil(renderer.glyph(for: entry.emoji, size: 29, scale: 3), entry.emoji)
+            XCTAssertLessThanOrEqual(renderer.cachedBytes, 1 << 20)
+            // The panel draws a screen at a time and its run loop drains between them.
+            if index % 40 == 39 { RunLoop.current.run(until: Date()) }
+        }
+        let grown = Self.footprint() - before
+        XCTAssertLessThan(grown, 12, "drawing every emoji grew the process by \(grown) MB")
+        XCTAssertGreaterThan(renderer.fontsMade, library.entries.count / 32 - 1)
+        let last = try XCTUnwrap(library.entries.last?.emoji)
+        let renders = renderer.renders
+        let first = renderer.glyph(for: last, size: 29, scale: 3)
+        XCTAssertTrue(first === renderer.glyph(for: last, size: 29, scale: 3))
+        XCTAssertEqual(renderer.renders, renders, "a cached emoji was drawn again")
+        renderer.purge()
+        XCTAssertEqual(renderer.cachedBytes, 0)
+        XCTAssertEqual(renderer.cachedCount, 0)
+    }
+
+    func testTheGridShowsTheSkinToneYouPicked() throws {
+        let library = try library()
+        let suite = "anomaly.hex.tests.emoji-grid"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defaults.removePersistentDomain(forName: suite)
+        let usage = EmojiUsageStore(defaults: defaults)
+        usage.setTone(3, for: "👍")
+        let thumbs = try XCTUnwrap(library.entryByEmoji["👍"])
+        let panel = EmojiPanelView(library: library, usage: usage)
+        panel.frame = CGRect(x: 0, y: 0, width: 402, height: 300)
+        panel.show(suggestions: [thumbs], frequent: [thumbs])
+        panel.layoutIfNeeded()
+        let grid = try XCTUnwrap(panel.subviews.compactMap { $0 as? UICollectionView }.first { !($0.superview is EmojiRowView) })
+        grid.layoutIfNeeded()
+        let first = grid.cellForItem(at: IndexPath(item: 0, section: 0)) as? EmojiCell
+        XCTAssertEqual(first?.emoji, library.entries[thumbs].tones[2])
+        XCTAssertGreaterThan(grid.visibleCells.count, 20)
+        defaults.removePersistentDomain(forName: suite)
+    }
+
+    /// A tap a little under or over the bar's icons, or beside ABC and delete, still lands
+    /// on them (it used to hit nothing, so a category could take two taps): the whole band
+    /// under the grid, each category across the full width of its slot.
+    func testTheBarsKeysTakeTheWholeBandUnderTheGrid() throws {
+        let library = try library()
+        let panel = EmojiPanelView(library: library, usage: EmojiUsageStore(defaults: UserDefaults(suiteName: "anomaly.hex.tests.emoji-band")))
+        panel.frame = CGRect(x: 0, y: 0, width: 402, height: 300)
+        panel.show(suggestions: [], frequent: [])
+        panel.layoutIfNeeded()
+        let bar = try XCTUnwrap(panel.subviews.compactMap { $0 as? EmojiCategoryBar }.first)
+        let buttons = bar.subviews.compactMap { $0 as? UIButton }
+        XCTAssertEqual(buttons.count, EmojiCategory.allCases.count + 1)
+        let grid = try XCTUnwrap(panel.subviews.compactMap { $0 as? UICollectionView }.first { !($0.superview is EmojiRowView) })
+        for (index, button) in buttons.enumerated() {
+            let frame = button.convert(button.bounds, to: panel)
+            // The bar reaches the panel's bottom edge, as row 4 does, so nothing is under it there.
+            for y in [grid.frame.maxY + 1, frame.minY - 1, frame.midY, frame.maxY + 1, panel.bounds.maxY - 1] where y < panel.bounds.maxY {
+                for x in [frame.minX + 0.5, frame.midX, frame.maxX - 0.5] {
+                    let point = CGPoint(x: x, y: y)
+                    let hit = panel.hitTest(point, with: nil)
+                    XCTAssertTrue(hit === bar, "\(button.accessibilityLabel ?? "") at \(point): \(String(describing: hit))")
+                    XCTAssertEqual(bar.slot(atX: panel.convert(point, to: bar).x).index, index, "\(button.accessibilityLabel ?? "") at \(point)")
+                }
+            }
+        }
+        let below = panel.bounds.maxY - 1
+        XCTAssertEqual(panel.hitTest(CGPoint(x: 20, y: below), with: nil)?.accessibilityLabel, "Letters")
+        XCTAssertEqual(panel.hitTest(CGPoint(x: 390, y: below), with: nil)?.accessibilityLabel, "Delete")
+        XCTAssertTrue(panel.hitTest(CGPoint(x: 200, y: grid.frame.midY), with: nil)?.isDescendant(of: grid) ?? false)
+    }
+
+    /// As on the system emoji keyboard: a tap on a category jumps the grid there when the
+    /// finger lifts; a finger sliding along the bar scrubs the grid through every category
+    /// live, with a light tick for each new one and no key click; and the bar follows the
+    /// grid when it scrolls by hand.
+    func testSlidingAlongTheBarScrubsTheGrid() throws {
+        let library = try library()
+        let panel = EmojiPanelView(library: library, usage: EmojiUsageStore(defaults: UserDefaults(suiteName: "anomaly.hex.tests.emoji-scrub")))
+        panel.frame = CGRect(x: 0, y: 0, width: 402, height: 300)
+        panel.show(suggestions: [], frequent: [])
+        panel.layoutIfNeeded()
+        var clicks = 0, ticks = 0
+        panel.onKeyDown = { clicks += 1 }
+        panel.onSelectionStep = { ticks += 1 }
+        let bar = try XCTUnwrap(panel.subviews.compactMap { $0 as? EmojiCategoryBar }.first)
+        let grid = try XCTUnwrap(panel.subviews.compactMap { $0 as? UICollectionView }.first { !($0.superview is EmojiRowView) })
+        grid.layoutIfNeeded()
+        let count = EmojiCategory.allCases.count + 1
+        let slot = bar.bounds.width / CGFloat(count)
+        let food = 1 + EmojiCategory.foodDrink.rawValue
+        let foodX = slot * (CGFloat(food) + 0.5)
+
+        bar.touchBegan(atX: foodX)
+        bar.touchMoved(toX: foodX + 4)
+        XCTAssertEqual(grid.contentOffset.x, 0, "a finger that hardly moves is a tap")
+        XCTAssertEqual(bar.selected, 0)
+        bar.touchEnded(atX: foodX + 4)
+        XCTAssertEqual(bar.selected, food, "a tap picks its category as it lifts")
+        let foodStart = grid.contentOffset.x
+        XCTAssertGreaterThan(foodStart, 0)
+        XCTAssertEqual(clicks, 1)
+        XCTAssertEqual(ticks, 0)
+
+        // From Smileys to the far end of Flags, a few points a move.
+        var x = slot * 1.1
+        bar.touchBegan(atX: x)
+        var offsets: [CGFloat] = []
+        var seen: [Int] = []
+        while x < bar.bounds.width + 20 {
+            x += 3
+            bar.touchMoved(toX: x)
+            guard bar.isScrubbing else { continue }
+            offsets.append(grid.contentOffset.x)
+            if seen.last != bar.selected { seen.append(bar.selected) }
+        }
+        XCTAssertEqual(seen, Array(1..<count), "the chip follows the finger through every category")
+        XCTAssertEqual(ticks, count - 1, "a tick for each new category (Food and drink to Smileys first)")
+        XCTAssertEqual(offsets, offsets.sorted(), "the grid only moves on as the finger does")
+        XCTAssertGreaterThan(Set(offsets).count, 40, "the grid moves within each category too, not only between them")
+        let maxX = grid.contentSize.width - grid.bounds.width
+        XCTAssertEqual(offsets.last ?? 0, maxX, accuracy: 1, "the end of the bar is the end of the grid")
+        XCTAssertTrue(bar.isScrubbing)
+        bar.touchEnded(atX: x)
+        XCTAssertFalse(bar.isScrubbing)
+        XCTAssertEqual(bar.selected, count - 1, "lifting keeps the grid and the chip where the slide left them")
+        XCTAssertEqual(grid.contentOffset.x, maxX, accuracy: 1)
+        XCTAssertEqual(clicks, 1, "a slide types no key click")
+
+        // A slide back stops at Food and drink's start where its slot begins.
+        bar.touchBegan(atX: bar.bounds.width - 1)
+        bar.touchMoved(toX: slot * CGFloat(food) + 0.01)
+        XCTAssertEqual(bar.selected, food)
+        XCTAssertEqual(grid.contentOffset.x, foodStart, accuracy: 1)
+        bar.touchCancelled()
+
+        // The grid scrolled by hand moves the chip.
+        grid.setContentOffset(CGPoint(x: 0, y: 0), animated: false)
+        XCTAssertEqual(bar.selected, 0)
+        grid.setContentOffset(CGPoint(x: foodStart, y: 0), animated: false)
+        XCTAssertEqual(bar.selected, food)
+    }
+
+    private static func footprint() -> Double {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
+        let result = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        return result == KERN_SUCCESS ? Double(info.phys_footprint) / 1_048_576 : 0
+    }
+
     // MARK: - Quality
 
     private struct Sentence: Decodable {

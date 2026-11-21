@@ -39,16 +39,17 @@ struct AcknowledgementsView: View {
         let body: String
     }
 
-    /// Spatial autocorrect's word lists (`scripts/build-typing-model.py`) and the keyboard's
-    /// never-suggest list (`OffensiveWords`); keep in step with ios/README.md.
+    /// Spatial autocorrect's word lists (`scripts/build-typing-model.py`), the keyboard's
+    /// never-suggest list (`OffensiveWords`), and the speech models Hex downloads (Parakeet V2,
+    /// and Parakeet Ultra for Experiments › Multilingual model); keep in step with ios/README.md.
     static let entries: [Entry] = [
         Entry(
             title: "Google Books Ngram data",
             body: """
-            Spatial autocorrect's word and word-pair frequencies come from the Google Books \
-            Ngram Viewer data, version 3 (2020), by Google, licensed under Creative Commons \
-            Attribution 3.0 (creativecommons.org/licenses/by/3.0). Hex sums the counts from \
-            1980 to 2019 and keeps only words in the lists below.
+            Spatial autocorrect's word and word-pair frequencies, and German's capitalisation \
+            shares, come from the Google Books Ngram Viewer data, version 3 (2020), by Google, \
+            licensed under Creative Commons Attribution 3.0 (creativecommons.org/licenses/by/3.0). \
+            Hex sums the counts from 1980 to 2019 and keeps only words in the lists below.
             """
         ),
         Entry(
@@ -92,6 +93,30 @@ struct AcknowledgementsView: View {
             (creativecommons.org/licenses/by/4.0). Hex lowercased and classified the entries, \
             omitted ordinary, medical and search-only terms, and added common slurs, \
             inflections and spelling variants.
+            """
+        ),
+        Entry(
+            title: "Parakeet V2",
+            body: """
+            Hex dictates English with NVIDIA's Parakeet TDT 0.6B v2 \
+            (huggingface.co/nvidia/parakeet-tdt-0.6b-v2), licensed under Creative Commons \
+            Attribution 4.0 International (creativecommons.org/licenses/by/4.0), downloaded as \
+            FluidInference's Core ML conversion (huggingface.co/FluidInference/\
+            parakeet-tdt-0.6b-v2-coreml, CC BY 4.0), which stores the encoder's weights at \
+            reduced precision; Hex uses its files unchanged.
+            """
+        ),
+        Entry(
+            title: "Parakeet Ultra",
+            body: """
+            Experiments › Multilingual model downloads Parakeet Ultra by Moondream \
+            (huggingface.co/moondream/parakeet-ultra), a post-training of NVIDIA's Parakeet \
+            TDT 0.6B v3 (huggingface.co/nvidia/parakeet-tdt-0.6b-v3), both licensed under \
+            Creative Commons Attribution 4.0 International \
+            (creativecommons.org/licenses/by/4.0). Core ML conversion by FluidInference \
+            (huggingface.co/FluidInference/parakeet-ultra-coreml, revision 95eaa59), which \
+            stores the encoder's weights as 8-bit integers and re-exports the decoder and \
+            joint; Hex uses its files unchanged.
             """
         ),
         Entry(

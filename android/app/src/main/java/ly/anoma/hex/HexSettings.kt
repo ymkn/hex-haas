@@ -21,6 +21,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.colorResource
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
@@ -67,6 +68,13 @@ internal fun HexSettings(setup: Setup, speech: SpeechPreferences, typing: Typing
     val style = remember(revision) { speech.style }
     val translate = remember(revision) { speech.translation }
     val clean = remember(revision) { speech.clean }
+    val lowercase = remember(revision) { speech.lowercase }
+    val endWithPeriod = remember(revision) { speech.endWithPeriod }
+    val formatLists = remember(revision) { speech.formatLists }
+    val spokenPunctuation = remember(revision) { speech.spokenPunctuation }
+    val customVocabulary = remember(revision) { speech.customVocabulary }
+    var vocabularyDraft by remember { mutableStateOf(speech.vocabularyTerms.joinToString("\n")) }
+    val autoCapitalize = remember(revision) { typing.autoCapitalize }
     val autocorrect = remember(revision) { typing.autocorrect }
     val swearWords = remember(revision) { typing.suggestSwearWords }
     val spatial = remember(revision) { typing.spatial }
@@ -136,12 +144,32 @@ internal fun HexSettings(setup: Setup, speech: SpeechPreferences, typing: Typing
                     Page.Dictation -> {
                         Card {
                             Entry("Style", value = style.name, action = { open(Page.Styles) })
+                            Rule(); Toggle(stringResource(R.string.dictation_lowercase), stringResource(R.string.dictation_lowercase_detail),
+                                lowercase) { speech.lowercase = it }
+                            Rule(); Toggle(stringResource(R.string.dictation_format_lists), stringResource(R.string.dictation_format_lists_detail),
+                                formatLists) { speech.formatLists = it }
+                            Rule(); Toggle(stringResource(R.string.dictation_spoken_punctuation), stringResource(R.string.dictation_spoken_punctuation_detail),
+                                spokenPunctuation) { speech.spokenPunctuation = it }
+                            Rule(); Toggle(stringResource(R.string.dictation_end_with_period), stringResource(R.string.dictation_end_with_period_detail),
+                                endWithPeriod) { speech.endWithPeriod = it }
                             Rule(); Entry("Dictation language", if (selectedLanguage == null) automatic.label else null,
                                 selectedLanguage?.label ?: "Automatic", { open(Page.Language) })
                         }
                         Card {
                             Toggle("Translate what I say", "Dictate in Spanish, write in English", translate) { speech.translation = it }
                             Rule(); Toggle("Clean up what I say", "Drop hesitations and spoken corrections", clean) { speech.clean = it }
+                            Rule(); Toggle(stringResource(R.string.dictation_vocabulary), stringResource(R.string.dictation_vocabulary_detail),
+                                customVocabulary) { speech.customVocabulary = it }
+                            if (customVocabulary) {
+                                val ink = colorResource(R.color.ink)
+                                BasicTextField(value = vocabularyDraft, onValueChange = {
+                                    vocabularyDraft = it; speech.vocabularyTerms = it.split('\n')
+                                }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 14.dp),
+                                    textStyle = TextStyle(color = ink, fontFamily = inter, fontSize = 16.sp),
+                                    cursorBrush = SolidColor(ink), decorationBox = { field ->
+                                        Box { if (vocabularyDraft.isEmpty()) Label(stringResource(R.string.dictation_vocabulary_hint), muted = true); field() }
+                                    })
+                            }
                         }
                         Card {
                             val detail = when (model) {
@@ -159,6 +187,8 @@ internal fun HexSettings(setup: Setup, speech: SpeechPreferences, typing: Typing
                         Card {
                             Entry("Keyboard layout", if (selectedLayout == null) "Follows dictation · " + automatic.label else null,
                                 selectedLayout?.label ?: "Automatic", { open(Page.Layout) })
+                            Rule(); Toggle(stringResource(R.string.settings_auto_capitalisation), stringResource(R.string.settings_auto_capitalisation_detail),
+                                autoCapitalize) { typing.autoCapitalize = it }
                             Rule(); Toggle("Autocorrect", "Fix typos when you press space", autocorrect) { typing.autocorrect = it }
                             Rule(); Toggle("Suggest swear words", "Slurs are never suggested", swearWords) { typing.suggestSwearWords = it }
                             Rule(); Toggle("Key pop-ups", "Show the letter above your finger", popups) { typing.popups = it }
@@ -196,13 +226,14 @@ internal fun HexSettings(setup: Setup, speech: SpeechPreferences, typing: Typing
                     }
                     Page.Language, Page.Layout -> Card {
                         val layout = page == Page.Layout
-                        (listOf(null) + Spoken.entries).forEachIndexed { i, it ->
+                        // Layouts and dictation languages are separate lists that happen to match today.
+                        val choices: List<Triple<String?, Boolean, () -> Unit>> =
+                            if (layout) (listOf(null) + Spoken.entries).map { Triple(it?.label, it == selectedLayout, { typing.layout = it }) }
+                            else (listOf(null) + DictationLanguage.entries).map { Triple(it?.label, it == selectedLanguage, { speech.language = it }) }
+                        choices.forEachIndexed { i, (label, chosen, pick) ->
                             if (i != 0) Rule()
-                            Entry(it?.label ?: "Automatic", if (it != null) null else if (layout) "Follow dictation language" else "Follow system language",
-                                if (it == (if (layout) selectedLayout else selectedLanguage)) "✓" else "", {
-                                    if (layout) typing.layout = it else speech.language = it
-                                    open(page.parent)
-                                })
+                            Entry(label ?: "Automatic", if (label != null) null else if (layout) "Follow dictation language" else stringResource(R.string.dictation_language_automatic_detail),
+                                if (chosen) "✓" else "", { pick(); open(page.parent) })
                         }
                     }
                     Page.Policy, Page.Licences -> {

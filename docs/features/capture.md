@@ -16,7 +16,9 @@ the clipboard, and sends it to an OpenCode session with Scrawl's router
 (`crates/router`), run in Hex's process. Settings › Annotate (under Labs in
 the sidebar) holds its settings. Scrawl's capsule (switch chips, the
 on-screen picker, route chips) and its ink and laser overlay are Rune
-overlays.
+overlays. A capture's `summary.md` and the text pasted into an agent start
+with `[hex-annotate <clock> · <target> · <folder>]`; older captures say
+`[scrawl …]`.
 
 ```ts
 Turn it on                               // capture.gate
@@ -295,7 +297,7 @@ On Windows                               // capture.windows
     a Windows machine
 
 Settings › Annotate                      // capture.pane
-├── Capture with Hex (capture.enabled, default off) -> off: no host, shortcut,
+├── Capture with Hex (capture.enabled, default on) -> off: no host, shortcut,
 │   input, retention, or folder
 │   └── On while the shortcut collides -> refused, the shortcut row says why
 ├── Shortcut (capture.hotkey, default ⌥⇧S, F9 on Linux and Windows) -> same keycap and recorder as dictation;
@@ -336,6 +338,56 @@ Settings › Annotate                      // capture.pane
 │       shortcut within 2 s of Scrawl leaving
 └── No iPhone pairing row: ScrawlKit pairing needs the ingest server, which Hex
     doesn't run. A cabled iPhone needs no row (capture.phone)
+
+Agents (on; Labs › Install agent skill from Annotate)   // capture.agents; labs.annotate_agent_install
+├── Off -> the pane is exactly as before, and nothing reads a coding agent's folder
+├── One row per coding agent: whether its folder exists, and whether it already has this Hex's skill
+│   ├── Claude Code -> $CLAUDE_CONFIG_DIR or ~/.claude, then skills/hex-annotate/SKILL.md
+│   │   (found with that folder)
+│   ├── Codex -> ~/.agents/skills/hex-annotate/SKILL.md (found with ~/.codex or
+│   │   $CODEX_HOME); $CODEX_HOME/skills is only the legacy place
+│   ├── OpenCode -> $XDG_CONFIG_HOME or ~/.config, then opencode/skills/hex-annotate/SKILL.md
+│   │   (found with the opencode folder)
+│   └── Pi -> ~/.pi/agent/skills/hex-annotate/SKILL.md ($PI_CODING_AGENT_DIR or ~/.pi;
+│       found with that folder), or the shared ~/.agents copy when one exists
+├── npx skills writes Codex and Pi skills to ~/.agents/skills, so that copy counts for
+│   both: read by content, never checked for a second copy, and an outdated shared copy
+│   is the one installing updates
+├── A found agent without the skill reads Not installed and starts checked; the file
+│   differing from this Hex's reads Update available, and installing replaces it
+├── Install -> agent_install::install writes the same embedded
+│   skills/hex-annotate/SKILL.md that hex annotate skill prints into each checked agent's
+│   folder: directories created, a staging file renamed into place in the same folder,
+│   and no other file touched
+├── A symlinked SKILL.md, or a symlinked hex-annotate folder, is managed elsewhere: the
+│   row says Managed elsewhere, it has no switch, and nothing is written through the link
+├── An agent this computer doesn't have reads Not found, has no switch, is never checked,
+│   and gets no folder created for it; Install is disabled while nothing is checked
+├── Install with the skills CLI -> npx skills add anomalyco/hex --skill hex-annotate,
+│   beside Copy for people who manage skills themselves
+├── Command-line tool (macOS) -> a hex symlink to this app's executable (current_exe) in
+│   the first of /opt/homebrew/bin and /usr/local/bin that exists and is writable, else
+│   ~/.local/bin (created)
+│   ├── An existing hex that is a symlink to this Hex or any
+│   │   Hex.app/Contents/MacOS/hex is kept and reads Installed at <path>; a link whose
+│   │   target is gone counts only when it names a Hex app, and is then replaced
+│   ├── A regular file, or a link to anything else (a dangling one included), is never
+│   │   replaced: the row reads Owned by another program
+│   ├── A hex running from App Translocation refuses to link and says to move Hex to
+│   │   Applications first
+│   └── A ~/.local/bin link that $PATH doesn't name adds "<folder> isn't on your PATH"
+├── While Labs › Agent tools for captures is off, a note says the skill's zoom, inspect,
+│   and frames commands need it
+└── Checks: agent_install (finding each agent, installing, updating an outdated file,
+    leaving other files alone, the shared ~/.agents copy for Codex and Pi, a symlinked
+    skill or folder, choosing the link folder, never replacing a foreign hex (a live
+    foreign link or a regular file is never removed even by link() itself), a dangling
+    Hex-app link, App Translocation), and rune_ui::scrawl's
+    the_agents_section_needs_its_lab, installing_writes_each_checked_agents_skill,
+    an_agents_row_checks_only_that_agent, a_linked_skill_has_no_switch.
+    Proof limits: the macOS symlink path runs the same POSIX rules its unit tests
+    cover on Linux; nothing was run on a real Mac, and no real Claude Code, Codex,
+    OpenCode, or Pi read a capture after this installed the skill
 
 First launch with Annotate on            // capture.import
 ├── ~/.config/scrawl/config.json -> transcriber (apple; else Parakeet), capturesDir,
@@ -1096,6 +1148,40 @@ hex capture list|show|send|route         // capture.cli; docs/cli.md
 │       destination; --always is refused
 ├── route <capture> [--ask-jev] -> what the router sees and decides; sends nothing
 └── <capture> = bundle name, path, or `latest`; unknown -> `not-found`
+
+hex annotate inspect|zoom|frames|skill   // capture.agents; labs.annotate_agent_tools
+├── Off by default (`Audience::Everyone`, every OS); a CLI read in the `hex`
+│   process, never over the control socket: Hex needn't run, and nothing
+│   records, sends, or writes a setting. `frames` extracts with `ffmpeg` from
+│   PATH when one is installed (the engine's own choice), else the engine's
+│   decoder. Off -> refused naming `hex labs on annotate-agent-tools`
+├── inspect [<capture>=latest] -> `summary.md` (sketch::summary_markdown)
+│   ├── --marks -> one `agent_context::MarkEntry::line()` per mark, time order,
+│   │   or `No marks`; --marks --json -> the entries as a JSON array
+│   └── --json -> `scrawl.json` pretty-printed as written
+├── zoom [<capture>=latest] (--at <M:SS|secs|phrase> | --mark <n|id> [--frame N])
+│   [--span secs=2] [--frames N=12] [--full] -> `zoom::zoom` into a sheet at
+│   `<bundle>/zoom/zoom-<from>-<to>.png`; prints the sheet's path,
+│   `0:09.500 → 0:11.500, 12 frames: #1 0:09.500, …`, and `Said: “…”` when
+│   the window has words. A mark prints `find_mark`'s line first, and its
+│   `--frame` picks the keyframe whose ✎① the number counts
+├── frames [<capture>=latest] --from <M:SS|secs> --to <M:SS|secs> [--fps 4] ->
+│   `handoff::extract_frames_range`'s PNGs under `<bundle>/zoom/range-*/`,
+│   each path printed. `--to` is clamped to the bundle's `durationMs`, and a
+│   range over 240 frames is refused `invalid`, counted as the larger of
+│   `(to − from) * fps / 1000 + 1` and the engine decoder's inclusive
+│   `(to − from) / max(1000 / fps, 1) + 1`; without a video, or over an empty
+│   range, it prints the keyframes in `frames/` that fall in the range instead
+├── skill -> `include_str!` of `skills/hex-annotate/SKILL.md`, the guide an
+│   agent installs with `npx skills add anomalyco/hex --skill hex-annotate`
+├── Every command resolves `<capture>` as `hex capture list` does (bundle name,
+│   path, or `latest`, in `capture.folder`); an unknown bundle -> `not-found`.
+│   `zoom` and `frames` write only into `<bundle>/zoom/`; nothing else in the
+│   bundle changes
+└── Proof limits: unit tests cover the mark lines, both JSON shapes, a sheet's
+    printed lines, and every refusal; decoding a bundle's video into a sheet or
+    frames is the engine's own `zoom`/`movie_frames_at` path, unverified on a
+    real bundle here, and no capture was recorded for this change
 
 hex capture cancel -> engine cancelled, sink closed, bundle removed
 hex capture status -> recording (bundle, elapsed), bundles still writing, last outcome

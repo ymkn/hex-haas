@@ -20,6 +20,24 @@ nonisolated struct DictationLowercaseSettings {
     }
 }
 
+/// Settings › Dictation › End with a period, in the shared App Group so in-keyboard dictation
+/// reads it too. On by default. Off, no line ends with a full stop, though "?" and "!" stay
+/// (`TranscriptFormatter.format(_:style:language:lists:endsWithPeriod:)`).
+nonisolated struct DictationPeriodSettings {
+    static let enabledKey = "settings.dictationEndWithPeriod"
+
+    private let defaults: UserDefaults?
+
+    init(defaults: UserDefaults? = UserDefaults(suiteName: KeyboardBridge.appGroup)) {
+        self.defaults = defaults
+    }
+
+    var isEnabled: Bool {
+        get { defaults?.object(forKey: Self.enabledKey) as? Bool ?? true }
+        nonmutating set { defaults?.set(newValue, forKey: Self.enabledKey) }
+    }
+}
+
 /// Experiments › Hinglish (Hindi in Latin letters), in the shared App Group so in-keyboard
 /// dictation reads it too. Off by default. While it is on, Hindi dictation is written in Latin
 /// letters (`HinglishRomanizer`) and Hindi is called Hinglish in the language menus.
@@ -69,9 +87,11 @@ nonisolated struct HinglishSettings {
 /// custom vocabulary, Clean up what I say
 /// (`CleanupTagger.cleanIfEnabled`, which guards its own memory in the keyboard), `refine`
 /// (Clean up with Apple Intelligence, only in the app), translation, the style
-/// (`TranscriptFormatter`, with Format lists' `SpokenLists` inside it), the spellings again,
-/// then Lowercase. The style and Lowercase are
-/// string rules with no model, so in-keyboard dictation needs no more memory to run them.
+/// (`TranscriptFormatter`, with Format lists' `SpokenLists` and Spoken punctuation's
+/// `SpokenPunctuation` inside it), the spellings again,
+/// Lowercase, then French spacing (`FrenchSpacing`, in every style but Verbatim). The style,
+/// Lowercase and French spacing are string rules with no model, so in-keyboard dictation needs
+/// no more memory to run them.
 nonisolated struct DictationPipeline: Sendable {
     var style: DictationStyle
     /// The dictation language (BCP 47).
@@ -83,9 +103,15 @@ nonisolated struct DictationPipeline: Sendable {
     var lowercase = false
     /// Settings › Dictation › Format lists (`SpokenLists`), inside the style.
     var formatLists = false
+    /// Settings › Dictation › Spoken punctuation (`SpokenPunctuation`), inside the style.
+    var spokenPunctuation = false
     /// Experiments › Hinglish: Hindi is written in Latin letters before every other step, so
     /// learned fixes, vocabulary and the style see the Latin words.
     var hinglish = false
+    /// Settings › Dictation › End with a period; off, no line ends with a full stop.
+    var endsWithPeriod = true
+    /// Translate what I say's translator; nil is Apple's. Tests stand in for it.
+    var translationEngine: TranslationEngine?
 
     /// Each step's text, for Record typing logs.
     struct Stages: Equatable, Sendable {
@@ -101,6 +127,8 @@ nonisolated struct DictationPipeline: Sendable {
         /// After `refine`.
         var cleaned: String
         var translated: String?
+        /// Why it went in as spoken while Translate what I say was on.
+        var translationFailure: TranslationFailure?
         /// What Hex inserts.
         var formatted: String
     }
@@ -109,12 +137,17 @@ nonisolated struct DictationPipeline: Sendable {
     /// `language`.
     @MainActor
     func run(
-        _ heard: String,
+        _ spoken: String,
         translationSource: Locale.Language? = nil,
         refine: ((String) async -> String)? = nil
     ) async -> Stages {
-        let heard = hinglish && HinglishSettings.isHindi(language) ? HinglishRomanizer.romanize(heard) : heard
-        let fixed = DictationCorrections.apply(corrections, to: heard)
+        let translation = DictationTranslationSettings()
+        let romanizes = hinglish && HinglishSettings.isHindi(language)
+        // Apple translates Hindi from Devanagari, not Hinglish's Latin letters: a dictation that
+        // may go into another language keeps its Devanagari, romanized only if it goes in as spoken.
+        let translatesHindi = romanizes && translation.isEnabled && !HinglishSettings.isHindi(translation.targetLanguage)
+        let heard = romanizes ? HinglishRomanizer.romanize(spoken) : spoken
+        let fixed = DictationCorrections.apply(corrections, to: translatesHindi ? spoken : heard)
         let spelled = VocabularySpelling.apply(vocabulary, to: fixed)
         let tagged = await CleanupTagger.cleanIfEnabled(
             spelled,
@@ -122,13 +155,17 @@ nonisolated struct DictationPipeline: Sendable {
             language: language,
             protectedTerms: DictationCorrections.recognitionHints(vocabulary: vocabulary, corrections: corrections)
         )
-        let cleaned = await refine?(tagged) ?? tagged
-        let translated = await DictationTranslator.translateIfEnabled(
-            cleaned,
-            source: translationSource ?? Locale(identifier: language).language
+        let refined = await refine?(tagged) ?? tagged
+        let outcome = await DictationTranslator.translate(
+            refined,
+            source: translationSource ?? Locale(identifier: language).language,
+            settings: translation,
+            engine: translationEngine
         )
+        let translated = outcome.text
+        let cleaned = translatesHindi && translated == nil ? HinglishRomanizer.romanize(refined) : refined
         // A translation is formatted in the language it is now in.
-        let formatLanguage = translated == nil ? language : DictationTranslationSettings().targetLanguage
+        let formatLanguage = translated == nil ? language : translation.targetLanguage
         return Stages(
             heard: heard,
             fixed: fixed,
@@ -136,16 +173,28 @@ nonisolated struct DictationPipeline: Sendable {
             tagged: tagged,
             cleaned: cleaned,
             translated: translated,
+            translationFailure: outcome.failure,
             formatted: format(translated ?? cleaned, language: formatLanguage)
         )
     }
 
     /// `text` in the style, then the vocabulary's and learned fixes' spellings again (a style
     /// can lowercase a term or capitalize a sentence start: "iPhone" -> "IPhone"), then
-    /// Lowercase.
+    /// Lowercase, with Unicode's context-aware mapping, so a word-final Σ becomes ς ("ΟΔΟΣ" ->
+    /// "οδος"), where Swift's `lowercased()` always gives σ, then, in French, the spaces before
+    /// `? ! ; :` and inside `« »` that the styles take out (`FrenchSpacing`; Verbatim keeps the
+    /// model's).
     func format(_ text: String, language: String?) -> String {
-        let styled = TranscriptFormatter.format(text, style: style, language: language, lists: formatLists)
+        let styled = TranscriptFormatter.format(
+            text,
+            style: style,
+            language: language,
+            lists: formatLists,
+            punctuation: spokenPunctuation,
+            endsWithPeriod: endsWithPeriod
+        )
         let spelled = VocabularySpelling.apply(vocabulary + DictationCorrections.spellings(corrections), to: styled)
-        return lowercase ? spelled.lowercased() : spelled
+        let cased = lowercase ? spelled.lowercased(with: nil) : spelled
+        return style == .verbatim ? cased : FrenchSpacing.apply(cased, language: language)
     }
 }

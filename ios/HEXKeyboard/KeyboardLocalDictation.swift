@@ -17,11 +17,36 @@ final class KeyboardLocalDictation {
         case armed(jobID: String, startedAt: TimeInterval)
         case recording(jobID: String, startedAt: TimeInterval)
         case transcribing(jobID: String)
-        case finished(jobID: String, resultID: String, transcript: String, heard: String?, stages: DictationStages?)
+        case finished(
+            jobID: String,
+            resultID: String,
+            transcript: String,
+            heard: String?,
+            stages: DictationStages?,
+            translationFailure: TranslationFailure?
+        )
         case failed(message: String, until: TimeInterval)
     }
 
+    /// The job being captured or transcribed, shared with its transcription task: whether the
+    /// keyboard hid before it finished (its text is then held in the App Group for the next
+    /// keyboard, `KeyboardHeldDictation`) and the field it was started in.
+    private final class Job {
+        let id: String
+        let document: UUID?
+        var interrupted = false
+
+        init(id: String, document: UUID?) {
+            self.id = id
+            self.document = document
+        }
+    }
+
     private var phase: Phase = .idle
+    private var job: Job?
+    /// When the job last showed progress: its start, its capture's last audio, or the start of
+    /// its transcription (`KeyboardJobWatchdog`).
+    private var lastProgressAt: TimeInterval = 0
     private var capture: KeyboardWebCapture?
     private var pcmFile: KeyboardPCMFile?
     private var loudness: Float = -62
@@ -30,11 +55,32 @@ final class KeyboardLocalDictation {
     private var timeline: CaptureTimeline?
     /// A failure while armed, shown only if the touch is kept: a slide to the menu drops it.
     private var armedFailure: (message: String, detail: String?)?
+    /// Another app played audio as this capture began, which WebKit's capture interrupts.
+    private var otherAudioAtStart = false
+    /// The job whose page start waits on the audio session's queue (`begin`).
+    private var startPending: String?
+    /// After a capture ends, long enough for WebKit to have let its audio session go.
+    static let resumeOtherAudioDelay: TimeInterval = 0.5
+    private static let audioSessionQueue = DispatchQueue(label: "anomaly.hex.keyboard.audio-session", qos: .userInitiated)
+
+    /// Keyboard dictation sets this process's audio session to record (WebKit captures for
+    /// it), and iOS mutes a recording session's haptics by default: key haptics stay on. Set
+    /// once per process on the audio session's queue: it waits on the audio server, which the
+    /// keyboard's main thread must not do while iOS waits for its first frame.
+    static func allowHapticsWhileRecording() {
+        audioSessionQueue.async { _ = hapticsAllowed }
+    }
+
+    nonisolated private static let hapticsAllowed: Void = {
+        try? AVAudioSession.sharedInstance().setAllowHapticsAndSystemSoundsDuringRecording(true)
+    }()
     /// A touch-down capture neither kept nor dropped by then is dropped, so a lost touch never
     /// leaves the microphone open. A hold keeps it at 0.35 s.
     static let armedTimeout: TimeInterval = 3
     /// Learn how I type's dictation fixes, read when a dictation starts; empty while off.
     var corrections: () -> [DictationCorrection] = { [] }
+    /// The field the keyboard is in, read when a dictation starts.
+    var currentDocument: () -> UUID? = { nil }
     private var activeCorrections: [DictationCorrection] = []
 
     static var isSupported: Bool {
@@ -91,7 +137,7 @@ final class KeyboardLocalDictation {
             )
         case .transcribing(let jobID):
             return KeyboardSnapshot(state: .transcribing, heartbeat: now, expiresAt: now + 60, jobID: jobID)
-        case .finished(let jobID, let resultID, let transcript, let heard, let stages):
+        case .finished(let jobID, let resultID, let transcript, let heard, let stages, let translationFailure):
             return KeyboardSnapshot(
                 state: .ready,
                 heartbeat: now,
@@ -100,19 +146,21 @@ final class KeyboardLocalDictation {
                 resultID: resultID,
                 transcript: transcript,
                 heard: heard,
-                stages: stages
+                stages: stages,
+                translationFailure: translationFailure
             )
         case .failed(let message, let until):
             guard until > now else {
                 phase = .idle
                 return nil
             }
-            return KeyboardSnapshot(state: .failed, heartbeat: now, expiresAt: until, message: message)
+            return KeyboardSnapshot(state: .failed, heartbeat: now, expiresAt: until, message: message, messageAt: now)
         }
     }
 
     func markDelivered(resultID: String) {
-        if case .finished(_, let current, _, _, _) = phase, current == resultID {
+        if case .finished(_, let current, _, _, _, _) = phase, current == resultID {
+            job = nil
             phase = .idle
         }
     }
@@ -169,27 +217,29 @@ final class KeyboardLocalDictation {
     /// The keyboard extension itself may not record (audiomxd: "it is an extension and
     /// doesn't have entitlements to record audio"), so capture runs in WebKit's media
     /// process through getUserMedia, attributed to Hex's microphone permission.
-    /// With Always use iPhone microphone (the app's default), capture uses the iPhone's own
-    /// microphone and mixes with other audio, so a car or headset keeps playing music
-    /// instead of switching to call audio, which pauses it and stalls the start.
+    /// The page asks for Settings › Microphone's input by name (`microphone(for:)`): left to
+    /// itself, WebKit takes the input of the route already playing, the iPhone's microphone
+    /// while a car or headphones play over A2DP, whatever the setting.
+    /// WebKit's capture session doesn't mix: other apps' video and music pause while it
+    /// records, and `releaseAudioSession` asks them to resume afterwards.
     /// `pressedAt` is the Hex key's touch-down (wall clock), where the start's timeline begins.
     /// A capture armed at touch-down becomes this dictation.
-    func start(in host: UIView, allowBluetoothMic: Bool, pressedAt: TimeInterval? = nil) {
+    func start(in host: UIView, microphone: MicrophoneChoice, pressedAt: TimeInterval? = nil) {
         if case .armed(let jobID, let startedAt) = phase {
             keepArmed(jobID: jobID, startedAt: startedAt)
             return
         }
         guard !isActive else { return }
-        begin(in: host, allowBluetoothMic: allowBluetoothMic, pressedAt: pressedAt, armed: false)
+        begin(in: host, microphone: microphone, pressedAt: pressedAt, armed: false)
     }
 
     /// Touch-down on the Hex key: capture starts now, unseen, so the first words aren't lost
     /// while the touch becomes a tap or a hold (`start` keeps it) or a slide or a cancelled
     /// touch (`discard` drops it, with nothing transcribed). The microphone opens here.
-    func arm(in host: UIView, allowBluetoothMic: Bool, pressedAt: TimeInterval) {
+    func arm(in host: UIView, microphone: MicrophoneChoice, pressedAt: TimeInterval) {
         // Without the microphone, the tap's own start says so.
         guard !isActive, Self.microphoneAllowed else { return }
-        guard let jobID = begin(in: host, allowBluetoothMic: allowBluetoothMic, pressedAt: pressedAt, armed: true) else { return }
+        guard let jobID = begin(in: host, microphone: microphone, pressedAt: pressedAt, armed: true) else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.armedTimeout) { [weak self] in
             guard let self, case .armed(let current, _) = self.phase, current == jobID else { return }
             self.discard(reason: "never kept")
@@ -208,8 +258,9 @@ final class KeyboardLocalDictation {
         pcmFile = nil
         timeline = nil
         armedFailure = nil
+        job = nil
         phase = .idle
-        Self.releaseAudioSession()
+        releaseAudioSession()
         KeyboardProbeLog.shared.write("touch-down capture discarded after \(Int((Date().timeIntervalSince1970 - startedAt) * 1000)) ms (\(reason))")
     }
 
@@ -231,16 +282,18 @@ final class KeyboardLocalDictation {
 
     /// Opens the microphone for a new job, armed (touch-down) or recording; nil when it can't.
     @discardableResult
-    private func begin(in host: UIView, allowBluetoothMic: Bool, pressedAt: TimeInterval?, armed: Bool) -> String? {
+    private func begin(in host: UIView, microphone: MicrophoneChoice, pressedAt: TimeInterval?, armed: Bool) -> String? {
         let log = KeyboardProbeLog.shared
         let appAllowed = KeyboardBridge().appMicrophoneAllowed
-        log.write("start(web\(armed ? ", touch-down" : "")): mic=\(Self.describe(AVAudioApplication.shared.recordPermission)) app=\(appAllowed ? "granted" : "no") speech=\(Self.describe(SFSpeechRecognizer.authorizationStatus())) \(KeyboardProbeLog.memory())")
         guard Self.microphoneAllowed else {
+            log.write("start(web\(armed ? ", touch-down" : "")): mic=\(Self.describe(AVAudioApplication.shared.recordPermission)) app=no")
             fail("Allow the microphone in Hex first")
             return nil
         }
         let jobID = UUID().uuidString
         let requestedAt = Date()
+        job = Job(id: jobID, document: currentDocument())
+        lastProgressAt = requestedAt.timeIntervalSince1970
         activeCorrections = corrections()
         loudness = -62
         armedFailure = nil
@@ -256,31 +309,85 @@ final class KeyboardLocalDictation {
         capture.onEvent = { [weak self] event in
             self?.handle(event, jobID: jobID, requestedAt: requestedAt)
         }
-        if !allowBluetoothMic {
-            Self.preferBuiltInMicrophone()
+        // The audio session's calls are round trips to the audio server, which can be slow to
+        // answer (a call, another app's audio, a capture that just ended): on the main thread
+        // they held every key until it did. They run on the session's queue, after any earlier
+        // capture's release there, and the page starts once they're back, unless the job was
+        // dropped, stopped or replaced meanwhile.
+        startPending = jobID
+        let label = armed ? ", touch-down" : ""
+        Self.audioSessionQueue.async { [weak self, weak capture] in
+            log.write("start(web\(label)): mic=\(Self.describe(AVAudioApplication.shared.recordPermission)) app=\(appAllowed ? "granted" : "no") speech=\(Self.describe(SFSpeechRecognizer.authorizationStatus())) \(KeyboardProbeLog.memory())")
+            let input = Self.microphone(for: microphone)
+            let otherAudio = AVAudioSession.sharedInstance().isOtherAudioPlaying
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self, let capture, self.capture === capture,
+                          self.startPending == jobID, self.isCapturing(jobID) else { return }
+                    self.startPending = nil
+                    self.otherAudioAtStart = self.otherAudioAtStart || otherAudio
+                    // Without a name to ask for, every choice but Bluetooth asks for the iPhone's own.
+                    capture.start(microphone: input?.name, builtInFallback: microphone != .bluetooth)
+                }
+            }
         }
-        capture.start(preferBuiltIn: !allowBluetoothMic)
         return jobID
     }
 
-    /// Lets music or navigation that the capture paused resume.
-    private static func releaseAudioSession() {
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    /// Asks the video or music the capture interrupted to resume (`InterruptedAudio`), once
+    /// WebKit has let its session go and unless another capture has started.
+    private func releaseAudioSession() {
+        guard otherAudioAtStart else { return }
+        otherAudioAtStart = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.resumeOtherAudioDelay) { [weak self] in
+            guard let self else { return }
+            switch self.phase {
+            case .armed, .recording:
+                // Another capture started: its end asks instead.
+                self.otherAudioAtStart = true
+                return
+            default:
+                break
+            }
+            Self.audioSessionQueue.async {
+                let session = AVAudioSession.sharedInstance()
+                guard InterruptedAudio.shouldAskToResume(playingAtStart: true, playingNow: session.isOtherAudioPlaying) else {
+                    KeyboardProbeLog.shared.write("other audio kept playing through the capture")
+                    return
+                }
+                do {
+                    try InterruptedAudio.askToResume(session)
+                    KeyboardProbeLog.shared.write("asked the audio the capture interrupted to resume")
+                } catch {
+                    let ns = error as NSError
+                    KeyboardProbeLog.shared.write("asking interrupted audio to resume failed: \(ns.domain) \(ns.code)")
+                }
+            }
+        }
     }
 
-    private static func preferBuiltInMicrophone() {
+    /// The input Settings › Microphone takes on this route (`MicrophoneRoute.capture`), read
+    /// from the keyboard's own session with the category Hex records in: CarPlay's and
+    /// Bluetooth hands-free inputs are listed only there. WebKit records in its own session,
+    /// which only getUserMedia's `deviceId` steers (WebKit then prefers that input), so the
+    /// page asks for this input by its name, the label WebKit gives it.
+    nonisolated private static func microphone(for choice: MicrophoneChoice) -> Microphone? {
         let session = AVAudioSession.sharedInstance()
         do {
             try session.setCategory(
                 .playAndRecord,
                 mode: .measurement,
-                options: [.mixWithOthers, .allowBluetoothA2DP, .defaultToSpeaker]
+                options: MicrophoneRoute.categoryOptions(allowingBluetooth: choice.allowsBluetooth)
             )
-            if let builtIn = session.availableInputs?.first(where: { $0.portType == .builtInMic }) {
-                try session.setPreferredInput(builtIn)
-            }
+            let inputs = session.microphones
+            let input = MicrophoneRoute.capture(choice, from: inputs)
+            try? session.prefer(input)
+            let listed = inputs.map { "\($0.name) (\($0.port.rawValue))" }.joined(separator: ", ")
+            KeyboardProbeLog.shared.write("microphone \(choice.rawValue): \(input?.name ?? "none") of [\(listed)]")
+            return input
         } catch {
-            KeyboardProbeLog.shared.write("built-in mic preference failed: \(describe(error))")
+            KeyboardProbeLog.shared.write("microphone \(choice.rawValue) unknown: \(describe(error))")
+            return nil
         }
     }
 
@@ -310,6 +417,7 @@ final class KeyboardLocalDictation {
                 timeline = nil
             }
             pcmFile?.append(data)
+            lastProgressAt = Date().timeIntervalSince1970
             loudness = peak > 0 ? max(-62, 20 * log10(peak)) : -62
         case .stopped:
             finishRecording(jobID: jobID)
@@ -347,14 +455,85 @@ final class KeyboardLocalDictation {
         }
         if let url = pcmFile?.url { try? FileManager.default.removeItem(at: url) }
         pcmFile = nil
+        job = nil
         phase = .idle
-        Self.releaseAudioSession()
+        releaseAudioSession()
         KeyboardProbeLog.shared.write("cancelled")
     }
 
     func stop() {
-        guard case .recording = phase else { return }
+        guard case .recording(let jobID, _) = phase else { return }
+        guard startPending != jobID else {
+            // Done before the page was even asked to start: nothing was recorded.
+            startPending = nil
+            finishRecording(jobID: jobID)
+            return
+        }
         capture?.stop()
+    }
+
+    /// The keyboard is going away mid-dictation (dismissed, or another app came forward).
+    /// A touch still deciding is dropped; a recording stops and keeps what was said, without
+    /// waiting for the page (WebKit may not answer once the keyboard is gone); and the job's
+    /// text is held for the next keyboard instead of being lost with this one.
+    func keyboardWillHide() {
+        switch phase {
+        case .armed:
+            discard(reason: "keyboard hidden")
+        case .recording(let jobID, _):
+            job?.interrupted = true
+            KeyboardProbeLog.shared.write("keyboard hidden while recording: finishing with what was said")
+            if let capture {
+                listenWhileIdle(capture)
+                capture.stop()
+            }
+            finishRecording(jobID: jobID)
+        case .transcribing:
+            guard let job, !job.interrupted else { return }
+            job.interrupted = true
+            KeyboardProbeLog.shared.write("keyboard hidden while transcribing: holding its text for the next keyboard")
+        case .finished(_, let resultID, let transcript, let heard, _, _):
+            // Shown but not yet inserted: the next keyboard inserts it.
+            Self.hold(resultID: resultID, text: transcript, heard: heard, document: job?.document)
+            job = nil
+            phase = .idle
+        case .idle, .failed:
+            break
+        }
+    }
+
+    /// Self-heal, on every poll while the keyboard shows: a capture that went quiet finishes
+    /// with what it heard, and a transcription that never returns is given up, so the
+    /// keyboard never stays in recording or transcribing with nothing behind it.
+    func healIfStalled(now: TimeInterval) {
+        switch phase {
+        case .recording(let jobID, _) where KeyboardJobWatchdog.isStalled(.recording, lastProgress: lastProgressAt, now: now):
+            KeyboardProbeLog.shared.write("capture silent for \(Int(now - lastProgressAt)) s: finishing with what it heard")
+            if let capture {
+                listenWhileIdle(capture)
+                capture.stop()
+            }
+            finishRecording(jobID: jobID)
+        case .transcribing where KeyboardJobWatchdog.isStalled(.transcribing, lastProgress: lastProgressAt, now: now):
+            KeyboardProbeLog.shared.write("transcription stuck for \(Int(now - lastProgressAt)) s: giving up")
+            transcription?.cancel()
+            transcription = nil
+            job = nil
+            phase = .idle
+        default:
+            break
+        }
+    }
+
+    private static func hold(resultID: String, text: String, heard: String?, document: UUID?) {
+        KeyboardBridge().heldDictation = KeyboardHeldDictation(
+            id: resultID,
+            text: text,
+            heard: heard,
+            document: document,
+            finishedAt: Date().timeIntervalSince1970
+        )
+        KeyboardProbeLog.shared.write("held a dictation for the next keyboard: \(text.count) chars")
     }
 
     private func finishRecording(jobID: String) {
@@ -363,8 +542,9 @@ final class KeyboardLocalDictation {
             endQuietly("stopped before the microphone started")
             return
         }
+        let job = self.job
         pcmFile = nil
-        Self.releaseAudioSession()
+        releaseAudioSession()
         let seconds = Date().timeIntervalSince1970 - startedAt
         let frames = file.close()
         KeyboardProbeLog.shared.write("stopped after \(String(format: "%.1f", seconds)) s, frames=\(frames) \(KeyboardProbeLog.memory())")
@@ -375,6 +555,7 @@ final class KeyboardLocalDictation {
         }
         guard #available(iOS 26.0, *) else { return }
         phase = .transcribing(jobID: jobID)
+        lastProgressAt = Date().timeIntervalSince1970
         let url = file.url
         let fixes = activeCorrections
         let hints = DictationCorrections.recognitionHints(vocabulary: [], corrections: fixes)
@@ -386,8 +567,8 @@ final class KeyboardLocalDictation {
                 let locale = language.identifier
                 let style = KeyboardBridge().style
                 let vocabulary = CustomVocabularySettings().activeTerms
-                // The app's steps (but Apple Intelligence's cleanup), its style, Format lists
-                // and Lowercase included.
+                // The app's steps (but Apple Intelligence's cleanup), its style, Format lists,
+                // Spoken punctuation, End with a period and Lowercase included.
                 let pipeline = DictationPipeline(
                     style: style,
                     language: locale,
@@ -395,13 +576,32 @@ final class KeyboardLocalDictation {
                     corrections: fixes,
                     lowercase: DictationLowercaseSettings().isEnabled,
                     formatLists: DictationListSettings().isEnabled,
-                    hinglish: HinglishSettings().isEnabled
+                    spokenPunctuation: DictationPunctuationSettings().isEnabled,
+                    hinglish: HinglishSettings().isEnabled,
+                    endsWithPeriod: DictationPeriodSettings().isEnabled
                 )
                 let steps = await pipeline.run(heard, translationSource: language.locale.language)
                 let translated = steps.translated
                 let text = steps.formatted
                 KeyboardProbeLog.shared.write("transcribed in \(String(format: "%.2f", Date().timeIntervalSince(started))) s: \(text.count) chars \(KeyboardProbeLog.memory())")
-                guard let self, !Task.isCancelled else { return }
+                if let failure = steps.translationFailure {
+                    KeyboardProbeLog.shared.write("pasted as spoken: \(failure.source)->\(failure.target) \(failure.reason.rawValue) \(failure.detail ?? "")")
+                }
+                guard !Task.isCancelled else { return }
+                // A translation's words can't be compared with what was heard, so it isn't learned from.
+                let resultID = UUID().uuidString
+                let learnable = translated == nil ? steps.heard : nil
+                guard let self, !(job?.interrupted ?? false) else {
+                    // The keyboard hid before it finished, or is gone: the next one delivers it.
+                    if !text.isEmpty {
+                        Self.hold(resultID: resultID, text: text, heard: learnable, document: job?.document)
+                    }
+                    if let self, self.job === job {
+                        self.job = nil
+                        self.phase = .idle
+                    }
+                    return
+                }
                 // Record typing logs keeps every step; nothing is kept while it is off.
                 let stages: DictationStages? = TypingLogSettings().isEnabled
                     ? DictationStages(
@@ -420,13 +620,13 @@ final class KeyboardLocalDictation {
                         formatted: steps.formatted
                     )
                     : nil
-                // A translation's words can't be compared with what was heard, so it isn't learned from.
                 self.phase = .finished(
                     jobID: jobID,
-                    resultID: UUID().uuidString,
+                    resultID: resultID,
                     transcript: text,
-                    heard: translated == nil ? steps.heard : nil,
-                    stages: stages
+                    heard: learnable,
+                    stages: stages,
+                    translationFailure: steps.translationFailure
                 )
             } catch {
                 try? FileManager.default.removeItem(at: url)
@@ -449,30 +649,30 @@ final class KeyboardLocalDictation {
         if case .armed = phase {
             // Shown only if the touch is kept.
             armedFailure = (message, detail)
-            Self.releaseAudioSession()
+            releaseAudioSession()
             KeyboardProbeLog.shared.write("FAILED at touch-down (held): \(detail ?? message) \(KeyboardProbeLog.memory())")
             return
         }
-        Self.releaseAudioSession()
+        releaseAudioSession()
         KeyboardProbeLog.shared.write("FAILED: \(detail ?? message) \(KeyboardProbeLog.memory())")
         phase = .failed(message: message, until: Date().timeIntervalSince1970 + 6)
     }
 
     /// Nothing to insert and nothing wrong: back to idle without a message.
     private func endQuietly(_ reason: String) {
-        Self.releaseAudioSession()
+        releaseAudioSession()
         KeyboardProbeLog.shared.write("ended quietly: \(reason)")
         // For onboarding's practice only; the keyboard shows nothing.
         KeyboardBridge().lastEmptyDictationAt = Date().timeIntervalSince1970
         phase = .idle
     }
 
-    private static func describe(_ error: Error) -> String {
+    nonisolated private static func describe(_ error: Error) -> String {
         let ns = error as NSError
         return "\(ns.domain) \(ns.code) \(ns.localizedDescription)"
     }
 
-    private static func describe(_ permission: AVAudioApplication.recordPermission) -> String {
+    nonisolated private static func describe(_ permission: AVAudioApplication.recordPermission) -> String {
         switch permission {
         case .granted: "granted"
         case .denied: "denied"
@@ -481,7 +681,7 @@ final class KeyboardLocalDictation {
         }
     }
 
-    private static func describe(_ status: SFSpeechRecognizerAuthorizationStatus) -> String {
+    nonisolated private static func describe(_ status: SFSpeechRecognizerAuthorizationStatus) -> String {
         switch status {
         case .authorized: "authorized"
         case .denied: "denied"
@@ -493,7 +693,7 @@ final class KeyboardLocalDictation {
 }
 
 /// What the page timed while starting (wall clock): the device list, the first
-/// getUserMedia, the stream kept (after a second one for the built-in microphone) and the
+/// getUserMedia, the stream kept (after a second one for the chosen microphone) and the
 /// audio context running.
 struct CaptureSteps {
     var listedAt: TimeInterval?
@@ -636,16 +836,23 @@ private final class KeyboardWebCapture: NSObject, WKNavigationDelegate, WKUIDele
         webView.loadHTMLString(Self.page, baseURL: URL(string: "https://keyboard.hex.local/"))
     }
 
-    private var preferBuiltIn = true
+    private var microphone: String?
+    private var builtInFallback = true
 
-    func start(preferBuiltIn: Bool) {
-        self.preferBuiltIn = preferBuiltIn
+    /// Records from the input labelled `microphone` (`KeyboardLocalDictation.microphone(for:)`),
+    /// else, with `builtInFallback`, the iPhone's own microphone, else WebKit's default.
+    func start(microphone: String?, builtInFallback: Bool) {
+        self.microphone = microphone
+        self.builtInFallback = builtInFallback
         guard isLoaded else {
             startWhenLoaded = true
             return
         }
         scriptAt = Date().timeIntervalSince1970
-        webView.evaluateJavaScript("hexStart(\(preferBuiltIn))")
+        let label = microphone
+            .flatMap { try? JSONEncoder().encode($0) }
+            .flatMap { String(data: $0, encoding: .utf8) } ?? "null"
+        webView.evaluateJavaScript("hexStart(\(label), \(builtInFallback))")
     }
 
     func stop() {
@@ -671,7 +878,7 @@ private final class KeyboardWebCapture: NSObject, WKNavigationDelegate, WKUIDele
         onEvent?(.loaded)
         if startWhenLoaded {
             startWhenLoaded = false
-            start(preferBuiltIn: preferBuiltIn)
+            start(microphone: microphone, builtInFallback: builtInFallback)
         }
     }
 
@@ -718,19 +925,22 @@ private final class KeyboardWebCapture: NSObject, WKNavigationDelegate, WKUIDele
 
     private static let page = """
     <!doctype html><meta charset="utf-8"><script>
-    let ctx, stream, source, node, running = false, generation = 0;
+    let ctx, stream, source, node, running = false, generation = 0, revive = null;
     const post = (m) => webkit.messageHandlers.hex.postMessage(m);
     const release = (s, c) => {
       if (s) s.getTracks().forEach((t) => t.stop());
       if (c) c.close().catch(() => {});
     };
     const base = { channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false };
-    async function builtInMicrophone() {
+    // The input named `label`, else (with `builtIn`) the iPhone's own. Labels stay empty
+    // until this page has had the microphone once.
+    async function chosenMicrophone(label, builtIn) {
       const inputs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "audioinput");
-      const found = inputs.find((d) => /iphone|ipad|built-in/i.test(d.label));
+      const found = (label && inputs.find((d) => d.label === label))
+        || (builtIn && inputs.find((d) => /iphone|ipad|built-in/i.test(d.label)));
       return found ? found.deviceId : null;
     }
-    async function hexStart(preferBuiltIn) {
+    async function hexStart(label, builtIn) {
       if (running) return;
       running = true;
       // A hexStop while this start waits (a slide off the Hex key right after touch-down)
@@ -739,14 +949,15 @@ private final class KeyboardWebCapture: NSObject, WKNavigationDelegate, WKUIDele
       const stale = () => start !== generation;
       let s = null, c = null;
       try {
-        let id = preferBuiltIn ? await builtInMicrophone() : null;
+        const choosing = !!label || builtIn;
+        let id = choosing ? await chosenMicrophone(label, builtIn) : null;
         if (stale()) return;
         const listed = Date.now();
         s = await navigator.mediaDevices.getUserMedia({ audio: id ? { ...base, deviceId: { exact: id } } : base });
         if (stale()) return release(s);
         const opened = Date.now();
-        if (preferBuiltIn && !id) {
-          id = await builtInMicrophone();
+        if (choosing && !id) {
+          id = await chosenMicrophone(label, builtIn);
           if (stale()) return release(s);
           if (id && s.getAudioTracks()[0].getSettings().deviceId !== id) {
             s.getTracks().forEach((t) => t.stop());
@@ -779,6 +990,12 @@ private final class KeyboardWebCapture: NSObject, WKNavigationDelegate, WKUIDele
         };
         source.connect(node);
         node.connect(ctx.destination);
+        // iOS may suspend or interrupt a running context for other audio (an alert, a call's
+        // ring, another app's session) without resuming it: the page then sends no audio and the
+        // keyboard's watchdog ends the dictation 6 s later. Resume it as soon as iOS allows.
+        revive = setInterval(() => {
+          if (running && ctx && ctx.state !== "running" && ctx.state !== "closed") ctx.resume().catch(() => {});
+        }, 250);
         post({ type: "started", rate: ctx.sampleRate, device: stream.getAudioTracks()[0].label, listed, opened, mic, audio: Date.now() });
       } catch (error) {
         if (stale()) return release(s, c);
@@ -792,6 +1009,7 @@ private final class KeyboardWebCapture: NSObject, WKNavigationDelegate, WKUIDele
       generation++;
       const wasRunning = running;
       running = false;
+      if (revive) { clearInterval(revive); revive = null; }
       try { node && node.disconnect(); source && source.disconnect(); } catch (e) {}
       if (stream) stream.getTracks().forEach((t) => t.stop());
       if (ctx) { try { await ctx.close(); } catch (e) {} }

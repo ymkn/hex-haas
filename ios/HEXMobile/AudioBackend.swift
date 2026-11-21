@@ -32,10 +32,12 @@ protocol AudioManaging: AnyObject {
     var onUnexpectedCaptureEnd: ((URL, Bool) -> Void)? { get set }
 
     func requestPermission() async -> Bool
-    func startKeepalive(allowBluetooth: Bool) throws
+    /// Holds the iPhone's microphone between dictations (`MicrophoneRoute.keepalive`).
+    func startKeepalive() throws
     func stopKeepalive()
     func deactivateSession()
-    func beginCapture(at url: URL, maxDuration: TimeInterval, allowBluetooth: Bool) throws -> any ActiveAudioCapture
+    /// Records from `microphone`'s input for this route (`MicrophoneRoute.capture`).
+    func beginCapture(at url: URL, maxDuration: TimeInterval, microphone: MicrophoneChoice) throws -> any ActiveAudioCapture
 }
 
 /// Keeps AVAudioRecorders that stopped or failed to start alive until their audio queue is
@@ -130,6 +132,7 @@ private final class RecorderCaptureAdapter: NSObject, ActiveAudioCapture, AVAudi
 
 @MainActor
 final class SystemAudioManager: AudioManaging {
+    private let session: any AudioSessionControlling
     private var engine = AVAudioEngine()
     private var tapInstalled = false
     nonisolated(unsafe) private var observers: [NSObjectProtocol] = []
@@ -141,7 +144,8 @@ final class SystemAudioManager: AudioManaging {
         engine.isRunning
     }
 
-    init() {
+    init(session: any AudioSessionControlling = AVAudioSession.sharedInstance()) {
+        self.session = session
         installNotifications()
     }
 
@@ -159,11 +163,11 @@ final class SystemAudioManager: AudioManaging {
         }
     }
 
-    func startKeepalive(allowBluetooth: Bool) throws {
+    func startKeepalive() throws {
         stopKeepalive()
-        try configureAudioSession(allowBluetooth: allowBluetooth)
+        try configureAudioSession(recordingFrom: nil)
 
-        // Changing the session (Always use iPhone microphone, or a route change) can move the
+        // Changing the session (a dictation's own input, or a route change) can move the
         // hardware to another sample rate. An engine built before that keeps the old input
         // format, and installTap raises an Objective-C exception Swift can't catch, so build a
         // fresh engine for the current route and tap with the format the hardware reports.
@@ -206,19 +210,16 @@ final class SystemAudioManager: AudioManaging {
 
     func deactivateSession() {
         stopKeepalive()
-        try? AVAudioSession.sharedInstance().setActive(
-            false,
-            options: .notifyOthersOnDeactivation
-        )
+        try? session.setActive(false, options: .notifyOthersOnDeactivation)
     }
 
     func beginCapture(
         at url: URL,
         maxDuration: TimeInterval,
-        allowBluetooth: Bool
+        microphone: MicrophoneChoice
     ) throws -> any ActiveAudioCapture {
         stopKeepalive()
-        try configureAudioSession(allowBluetooth: allowBluetooth)
+        try configureAudioSession(recordingFrom: microphone)
 
         let settings: [String: Any] = [
             AVFormatIDKey: kAudioFormatLinearPCM,
@@ -245,38 +246,33 @@ final class SystemAudioManager: AudioManaging {
         }
     }
 
-    /// Bluetooth off (Always use iPhone microphone, the default): record from the iPhone's
-    /// microphone and mix with other audio, so music or navigation keeps playing (over A2DP
-    /// in a car or headphones) instead of pausing and dropping into call audio.
-    private func configureAudioSession(allowBluetooth: Bool) throws {
-        let session = AVAudioSession.sharedInstance()
-        if allowBluetooth {
-            try session.setCategory(.record, mode: .measurement, options: [.allowBluetoothHFP])
-        } else {
-            try session.setCategory(
-                .playAndRecord,
-                mode: .measurement,
-                options: [.mixWithOthers, .allowBluetoothA2DP, .defaultToSpeaker]
-            )
-        }
-        try session.setPreferredSampleRate(16_000)
-        do {
-            try session.setActive(true)
-        } catch where UserFacingError.audioSessionCode(of: error) == .cannotInterruptOthers {
-            // '!int': a non-mixable session can't go active from the background while another
-            // app plays or records. Record alongside that audio instead, once.
-            try session.setCategory(
-                .playAndRecord,
-                mode: .measurement,
-                options: allowBluetooth
-                    ? [.mixWithOthers, .allowBluetoothHFP, .allowBluetoothA2DP, .defaultToSpeaker]
-                    : [.mixWithOthers, .allowBluetoothA2DP, .defaultToSpeaker]
-            )
-            try session.setActive(true)
-        }
-        if !allowBluetooth, let builtIn = session.availableInputs?.first(where: { $0.portType == .builtInMic }) {
-            try? session.setPreferredInput(builtIn)
-        }
+    /// Captures and the warm keepalive record alongside other audio: `.mixWithOthers` never
+    /// interrupts another app, so its video or music keeps playing (over A2DP in a car or
+    /// headphones) with nothing to resume, and no `.duckOthers`.
+    ///
+    /// A dictation records from Settings › Microphone's input for this route
+    /// (`MicrophoneRoute.capture`): with Automatic (the default) a wired headset's
+    /// microphone, the car's in CarPlay, else the iPhone's; Bluetooth hands-free microphones
+    /// only with Bluetooth, the one choice that adds `.allowBluetoothHFP`. The keepalive
+    /// (`choice` nil) stays on the iPhone's microphone without HFP, so a warm session never
+    /// holds a car or headset in call audio between dictations. The input is always set,
+    /// never left to an earlier preference or to iOS, which routes HFP and CarPlay first.
+    ///
+    /// No preferred sample rate: `.playAndRecord` runs the microphone and the output at one
+    /// hardware rate, so asking for 16 kHz moved everything the iPhone played and recorded (a
+    /// screen recording's audio too) to 16 kHz for as long as Hex held the session, and back
+    /// at its end. The hardware keeps its own rate: the recorder writes 16 kHz itself, and the
+    /// keepalive taps whatever format the hardware reports.
+    func configureAudioSession(recordingFrom choice: MicrophoneChoice?) throws {
+        try session.setCategory(
+            .playAndRecord,
+            mode: .measurement,
+            options: MicrophoneRoute.categoryOptions(allowingBluetooth: choice?.allowsBluetooth ?? false)
+        )
+        try session.setActive(true, options: [])
+        let inputs = session.microphones
+        let input = choice.map { MicrophoneRoute.capture($0, from: inputs) } ?? MicrophoneRoute.keepalive(from: inputs)
+        try? session.prefer(input)
     }
 
     nonisolated private static func discardSamples(

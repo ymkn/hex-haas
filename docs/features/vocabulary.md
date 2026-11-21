@@ -12,8 +12,6 @@ General › Vocabulary   // vocabulary.settings; after Language
 │   -> muted note on the row and under the sheet's description: "SenseVoice
 │   Small doesn't use these terms; rewriting and search still do"; Parakeet,
 │   Underdog Bark, Whisper, and Qwen3-ASR (QwenCleo too) show none
-├── Parakeet-based model with Labs › Vocabulary help off -> the sheet says
-│   transcription uses the terms only with it on
 ├── Selected model reads fewer terms than the list holds -> muted line under
 │   the sheet's description: "This model reads the first 38 of 52 terms"
 │   (dictation::vocabulary::terms_read: Parakeet's 64-term cap or the
@@ -56,9 +54,7 @@ General › Vocabulary   // vocabulary.settings; after Language
     (settings.json `vocabulary_boost`)  // vocabulary.boost
 
 Transcription (Parakeet: RNN-T and TDT, Underdog Bark and Nemotron 3.5 ASR too)  // vocabulary.transcription; transcription::gguf_session::with_vocabulary
-├── Only with Labs › Vocabulary help on (`labs.vocabulary_biasing`, off by
-│   default; labs.md) -> off: no run takes the list; the sheet says so, and
-│   rewriting and search still use it
+├── Parakeet takes the list unless the boost is Off (labs.md)
 ├── Every run and live stream reads the list and the boost at its start:
 │   dictation, meetings, captures, the local API
 │   └── `hex transcribe` with no Hex running starts `hex service --embedded`,
@@ -123,8 +119,8 @@ Words on screen (Labs › Words on screen, macOS)  // vocabulary.screen
 ├── Joins that dictation after the mode's terms and the shared list, inside
 │   the same 64-term/character budgets; a model with VocabularyUse::None gets
 │   nothing
-├── Parakeet reads them only with Labs › Vocabulary help on and a boost
-│   other than Off; Whisper and Qwen3-ASR read them as a prompt
+├── Parakeet reads them only with a boost other than Off; Whisper and
+│   Qwen3-ASR read them as a prompt
 ├── A capture with terms for a model that reads them uses its whole-clip run
 │   rather than a live stream's text: a stream fixes its vocabulary when it
 │   starts, so the text arrives after release with a little more latency
@@ -137,10 +133,46 @@ Words on screen (Labs › Words on screen, macOS)  // vocabulary.screen
     // acronyms, long all-caps words, stoplist and log levels, hashes, ordinals,
     // times, units, random tokens, the 24-term cap, dedup against the saved
     // list), a_captures_screen_terms_come_last_and_leave_with_it and
-    // parakeet_terms_need_the_biasing_lab_and_a_boost in vocabulary.rs,
+    // parakeet_terms_need_a_boost in vocabulary.rs,
     // a_cancelled_capture_leaves_no_stale_screen_terms and
     // one_screen_read_runs_at_a_time in screen_vocabulary.rs; not observed on
     // a real Mac
+
+Learn from corrections (Labs › Learn from corrections, macOS)  // vocabulary.learn
+├── Off by default; after a dictation is pasted, Hex watches only the field it
+│   pasted into, reading it about every 100 ms for up to 5 minutes
+├── The first read retries for up to a second until the app shows the paste;
+│   it compares what Hex actually inserted, never the transcript
+├── It stops on a focus change, an empty or vanished field, a newer paste, or
+│   the timeout; the lab turned off stops it too and learns nothing, and a
+│   read a newer paste overtook is discarded
+├── Only a real Paste starts a watch: a copy, a Service or Print output, a
+│   YOLO send, and Hex's own window start none
+├── It compares the final text with what it pasted and adds up to 5 name-like
+│   corrected words to Vocabulary: capitalized mid-sentence, all caps, mixed
+│   case, letters with digits, and short phrases of those. A word after a
+│   line break, colon, or sentence end is never name-like; neither is I'm
+├── Password fields, fields over 20,000 characters, text over 400 words,
+│   rewrites (more than 3 inserted words and over 60% changed), plain
+│   lowercase words, and terms already in Vocabulary are skipped
+├── A learned term is saved like `hex vocabulary add` (vocabulary.add on the
+│   saved list, then one settings update that applies it, and an open window
+│   adopts it; vocabulary.cli)
+└── Nothing leaves the Mac; the one logged event holds the term count only
+    // checks: learn_from_corrections_is_its_own_switch_and_macos_only in
+    // labs.rs; a_tick_stops_in_the_order_the_watch_reads,
+    // a_reading_a_newer_paste_overtook_is_discarded,
+    // only_the_lab_turning_off_discards_a_correction,
+    // only_a_paste_the_person_can_still_fix_is_watched,
+    // learned_terms_join_the_list_the_way_hex_vocabulary_add_does, and
+    // a_full_list_keeps_its_terms_and_takes_no_more in correction_watch.rs;
+    // learns_a_short_correction_past_its_sixty_percent,
+    // ignores_a_long_rewrite, the_pasted_text_matches_only_on_word_boundaries,
+    // a_punctuation_edge_needs_no_word_boundary, an_im_word_is_never_a_name,
+    // a_name_with_an_apostrophe_is_learned, a_line_break_starts_a_sentence,
+    // a_colon_starts_a_sentence, and
+    // a_closing_quote_after_a_period_still_starts_a_sentence in
+    // correction_terms.rs; not observed on a real Mac
 
 Recognition hints, folded in                // vocabulary.hints
 ├── Loading settings.json -> `recognition_hints` of the selected model and the

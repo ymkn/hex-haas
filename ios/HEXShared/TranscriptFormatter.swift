@@ -46,8 +46,29 @@ nonisolated enum TranscriptFormatter {
     ///
     /// `lists` (Settings › Dictation › Format lists) writes spoken lists and line breaks as
     /// lines (`SpokenLists`) after the fillers and before the style's punctuation, in every
-    /// style but Verbatim, which keeps the model's exact words.
-    static func format(_ raw: String, style: DictationStyle, language: String? = nil, lists: Bool = false) -> String {
+    /// style but Verbatim, which keeps the model's exact words. `punctuation` (Settings ›
+    /// Dictation › Spoken punctuation) then writes punctuation said by name as the mark
+    /// (`SpokenPunctuation`), in the same styles.
+    ///
+    /// `endsWithPeriod` (Settings › Dictation › End with a period) off, no line ends with a full
+    /// stop ("." or "。"), whether the speech model or the style put it there: a question or an
+    /// exclamation keeps its mark, and marks inside a line stay. Verbatim keeps the model's.
+    static func format(
+        _ raw: String,
+        style: DictationStyle,
+        language: String? = nil,
+        lists: Bool = false,
+        punctuation: Bool = false,
+        endsWithPeriod: Bool = true
+    ) -> String {
+        let styled = formatted(raw, style: style, language: language, lists: lists, punctuation: punctuation)
+        guard !endsWithPeriod, style != .verbatim else { return styled }
+        return styled.components(separatedBy: "\n").map(droppingFinalFullStop).joined(separator: "\n")
+    }
+
+    private static func formatted(
+        _ raw: String, style: DictationStyle, language: String?, lists: Bool, punctuation: Bool
+    ) -> String {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "" }
         let fillers = fillerPattern(for: language)
@@ -58,21 +79,24 @@ nonisolated enum TranscriptFormatter {
             return collapseHorizontalSpaces(in: trimmed)
 
         case .polished:
-            let cleaned = listed(stripStandaloneFillers(in: trimmed, fillers: fillers), lists, language)
+            let cleaned = spoken(stripStandaloneFillers(in: trimmed, fillers: fillers), lists, punctuation, language)
             return polishSentences(cleaned, english: english)
 
         case .casual:
-            let cleaned = listed(stripStandaloneFillers(in: trimmed, fillers: fillers), lists, language)
+            let cleaned = spoken(stripStandaloneFillers(in: trimmed, fillers: fillers), lists, punctuation, language)
             return casualMessage(cleaned, english: english)
 
         case .notes:
-            let cleaned = listed(stripStandaloneFillers(in: trimmed, fillers: fillers), lists, language)
+            let cleaned = spoken(stripStandaloneFillers(in: trimmed, fillers: fillers), lists, punctuation, language)
             return formatNotes(cleaned, english: english)
         }
     }
 
-    private static func listed(_ text: String, _ lists: Bool, _ language: String?) -> String {
-        lists ? SpokenLists.format(text, language: language) : text
+    /// Spoken lists, then spoken punctuation: lists first, so "dash … dash …" stays a list and
+    /// "comma, new line" keeps its comma.
+    private static func spoken(_ text: String, _ lists: Bool, _ punctuation: Bool, _ language: String?) -> String {
+        let listed = lists ? SpokenLists.format(text, language: language) : text
+        return punctuation ? SpokenPunctuation.format(listed, language: language) : listed
     }
 
     /// Joins dictated text cleanly with existing text around the insertion cursor: one space
@@ -213,9 +237,31 @@ nonisolated enum TranscriptFormatter {
         return line + (usesIdeographicFullStop(last) ? "。" : ".")
     }
 
-    /// What may end a sentence already: its mark, or a closing quote or bracket after one.
+    /// `line` without the full stop that ends it ("." "。" "．" "｡", before any closing quotes or
+    /// brackets). An ellipsis, an abbreviation's ("etc.") or an initialism's ("U.S.") stays.
+    static func droppingFinalFullStop(_ line: String) -> String {
+        var chars = Array(line)
+        var stop = chars.count - 1
+        while stop >= 0, "\"”’')]」』）".contains(chars[stop]) { stop -= 1 }
+        guard stop >= 0, ".。．｡".contains(chars[stop]) else { return line }
+        if chars[stop] == "." {
+            var start = stop
+            while start > 0, !chars[start - 1].isWhitespace { start -= 1 }
+            let word = String(chars[start..<stop]).lowercased()
+            let initials = word.split(separator: ".", omittingEmptySubsequences: false)
+            let isInitialism = initials.count >= 2 && initials.allSatisfy { $0.count == 1 && $0.first!.isLetter }
+            if word.hasSuffix(".") || isInitialism || abbreviations.contains(word) {
+                return line
+            }
+        }
+        chars.remove(at: stop)
+        return String(chars)
+    }
+
+    /// What may end a sentence already: its mark, or a closing quote or bracket after one. A
+    /// line ending in a comma or semicolon ("Hi Sarah," before a line break) is no sentence.
     private static let sentenceClosers: Set<Character> = [
-        ".", "!", "?", "…", "\"", "”", ")", "]", ":", "。", "！", "？", "」", "』", "）",
+        ".", "!", "?", "…", "\"", "”", ")", "]", ":", ",", ";", "。", "！", "？", "」", "』", "）",
     ]
 
     /// Marks that end a sentence. A full stop counts only before a space, a line break, or the
@@ -570,8 +616,9 @@ nonisolated enum TranscriptFormatter {
     }
 
     private static func fixSpacingBeforePunctuation(in text: String) -> String {
+        // Never before an emoticon (":-)", ";)"), which follows a space.
         var result = text.replacingOccurrences(
-            of: #"\s+([,.;:!?])"#,
+            of: #"\s+([,.;:!?])(?!-?[()])"#,
             with: "$1",
             options: .regularExpression
         )

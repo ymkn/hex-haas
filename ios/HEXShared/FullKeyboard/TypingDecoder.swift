@@ -142,6 +142,21 @@ nonisolated final class TypingDecoderModel: @unchecked Sendable {
         return index(ofCodes: bytes)
     }
 
+    /// Whether the model has `second` following `first` as a pair.
+    func hasPair(_ first: String, _ second: String) -> Bool {
+        guard let a = index(of: first), let b = index(of: second) else { return false }
+        return bigramCost(a, b) != nil
+    }
+
+    /// -ln P(word | previous) with the decoder's backoff to the unigram (0.92 nats), or nil
+    /// when the model lacks the word.
+    func cost(of word: String, after previous: String?) -> Double? {
+        guard let i = index(of: word) else { return nil }
+        let backoff = 0.92 + unigramCost(i)
+        guard let previous, let a = index(of: previous), let pair = bigramCost(a, i) else { return backoff }
+        return min(pair, backoff)
+    }
+
     /// The three most probable allowed continuations of a completed word. Scan just its
     /// mapped bigram row and keep three entries, even for a word with thousands of followers.
     func nextWords(after previous: String, allowing: (String) -> Bool) -> [String] {
@@ -341,6 +356,16 @@ nonisolated struct TypingDecoder {
         var insertionCost = 7.0
         var transpositionCost = 5.0
         var spaceOmissionCost = 6.0
+        /// A tap on the bottom row's upper half read as a space the finger missed ("ofbthe"):
+        /// this, plus `spaceTapWeight` times how much nearer its letter row than the space bar
+        /// it landed (the bar's Gaussian likelihood against the row's). Below the row's centre
+        /// such a tap costs `spaceOmissionCost`.
+        var spaceTapCost = 5.0
+        var spaceTapWeight = 0.25
+        /// A space tap is read as a letter meant on the row above ("deli ate" for "delicate")
+        /// only when the row is at most this many nats less likely than the space bar for it:
+        /// within about the bar's top fifth, a little deeper than the system keyboard merges.
+        var mergeReach = 3.0
         var maxEdits = 1
         var beam = 48
         /// Nats the best reading must beat what you typed by to replace it on space.
@@ -369,6 +394,9 @@ nonisolated struct TypingDecoder {
         static func tuned(for language: String) -> Parameters {
             var p = Parameters()
             if language == "en" { p.lmWeight = 1.5 }
+            // Spanish's many one- and two-letter words ("a", "es", "va") make a letter read as
+            // a space too cheap a split ("vaxes" -> "va es"): there, only below the row's centre.
+            if language == "es" { p.spaceTapCost = .infinity }
             return p
         }
     }
@@ -379,11 +407,15 @@ nonisolated struct TypingDecoder {
         var pitch: CGSize
         /// The bottom letter row's centre, below which a tap may have been meant for space.
         var bottomRowY: CGFloat
+        /// The space bar's keycap as on the unsplit keyboard (both bars on a split one), or
+        /// nil when unknown: a bottom-row tap above it may have been meant for space.
+        var space: CGRect?
 
-        init(centres: [Character: CGPoint], pitch: CGSize, bottomRowY: CGFloat) {
+        init(centres: [Character: CGPoint], pitch: CGSize, bottomRowY: CGFloat, space: CGRect? = nil) {
             self.centres = centres
             self.pitch = pitch
             self.bottomRowY = bottomRowY
+            self.space = space
         }
 
         /// The letter keys of `layout` (nil off the letters page). `offsets` (in points, by
@@ -392,6 +424,12 @@ nonisolated struct TypingDecoder {
             guard layout.layer == .letters else { return nil }
             var centres: [Character: CGPoint] = [:]
             var bottom: CGFloat = 0
+            var space: CGRect?
+            for key in layout.keys where key.kind == .space {
+                let minX = layout.unsplitX(key.frame.minX), maxX = layout.unsplitX(key.frame.maxX)
+                let bar = CGRect(x: minX, y: key.frame.minY, width: max(0, maxX - minX), height: key.frame.height)
+                space = space.map { $0.union(bar) } ?? bar
+            }
             for key in layout.keys {
                 guard let c = key.character, c.count == 1, let letter = c.first, letter.isLetter else { continue }
                 let shift = offsets[letter] ?? .zero
@@ -407,7 +445,8 @@ nonisolated struct TypingDecoder {
                     width: layout.isSplit ? SplitGeometry.pitch : layout.letterWidth + m.gap,
                     height: m.keyHeight + m.rowGap
                 ),
-                bottomRowY: bottom
+                bottomRowY: bottom,
+                space: space
             )
         }
     }
@@ -420,7 +459,8 @@ nonisolated struct TypingDecoder {
     struct Decision: Equatable, Sendable {
         /// What space should put in place of what you typed, or nil to keep it.
         var replacement: String?
-        /// Readings better than what you typed, best first, for the suggestion strip.
+        /// Readings for the suggestion strip, best first: better than what you typed, or a
+        /// missed-space fallback that costs more than the flat cost of a word nothing knows.
         var readings: [Reading]
         var literalCost: Double
     }
@@ -522,7 +562,7 @@ nonisolated struct TypingDecoder {
             }
         }
         if parameters.splits, letters.count >= 3 {
-            readings += splitReadings(costs, taps: taps, keys: keys, prev: prev)
+            readings += splitReadings(costs, taps: taps, letters: letters, keys: keys, prev: prev)
         }
         readings.sort { $0.cost < $1.cost }
         var seen = Set<String>()
@@ -537,6 +577,22 @@ nonisolated struct TypingDecoder {
                 margin = min(margin, parameters.accentMargin)
             }
             if literalCost - best.cost >= margin { replacement = best.text }
+        }
+        // Nothing above could read a word that is no word and no dictionary's: a missed
+        // space may still explain it, with a slip in the second word or three or more
+        // words run together. Never second-guess a dictionary word, one of yours, or a
+        // likelier reading that only missed the margin. German is left out: its model is
+        // lowercase and its nouns take their capital in the single-word path.
+        if replacement == nil, literalIndex == nil, !literalIsValid, !literalIsYours,
+           model.language != "de", parameters.splits, letters.count >= 5,
+           let fallback = missedSpaceReading(costs: costs, letters: letters, prev: prev, literalCost: literalCost) {
+            let best = readings.first
+            if best == nil || fallback.cost <= best!.cost
+                || best!.text.lowercased() == fallback.text.lowercased() {
+                replacement = fallback.text
+                readings.removeAll { $0.text.lowercased() == fallback.text.lowercased() }
+                readings.insert(fallback, at: 0)
+            }
         }
         return Decision(replacement: replacement, readings: Array(readings.prefix(3)), literalCost: literalCost)
     }
@@ -687,16 +743,23 @@ nonisolated struct TypingDecoder {
     }
 
     /// Two words where the taps had no space, or one meant for space ("seehow", "seenhow").
-    /// Each half is read with substitutions only, which keeps this cheap.
-    private func splitReadings(_ costs: [[Double]], taps: [CGPoint], keys: Keys, prev: Int?) -> [Reading] {
+    /// Each half is read with substitutions only, which keeps this cheap; around a tap on
+    /// the bottom row's upper half read as a space ("ofbthe"), only as the letters typed, so
+    /// a name's middle letter ("rima") is never a space with slips around it.
+    private func splitReadings(_ costs: [[Double]], taps: [CGPoint], letters: [UInt8], keys: Keys, prev: Int?) -> [Reading] {
         let n = costs.count
         var out: [Reading] = []
-        func pair(left: Range<Int>, right: Range<Int>, extra: Double) {
+        func pair(left: Range<Int>, right: Range<Int>, extra: Double, exact: Bool = false) {
             guard !left.isEmpty, !right.isEmpty else { return }
             let never = neverSuggest
-            let lefts = search(model, costs, range: left, limit: 3, maxEdits: 0, skipping: never.words).filter { canStandAlone($0.0) }
+            func halves(_ range: Range<Int>) -> [(Int, Double)] {
+                guard exact else { return search(model, costs, range: range, limit: 3, maxEdits: 0, skipping: never.words) }
+                guard let word = model.index(ofCodes: Array(letters[range])), !never.words.contains(word) else { return [] }
+                return [(word, range.reduce(0) { $0 + costs[$1][Int(letters[$1])] })]
+            }
+            let lefts = halves(left).filter { canStandAlone($0.0) }
             guard !lefts.isEmpty else { return }
-            let rights = search(model, costs, range: right, limit: 3, maxEdits: 0, skipping: never.words).filter { canStandAlone($0.0) }
+            let rights = halves(right).filter { canStandAlone($0.0) }
             for (l, ls) in lefts {
                 let lcost = ls + parameters.lmWeight * lmCost(l, after: prev)
                 for (r, rs) in rights where !never.follows(r, after: l) {
@@ -707,16 +770,305 @@ nonisolated struct TypingDecoder {
         }
         for k in 1..<n {
             pair(left: 0..<k, right: k..<n, extra: parameters.spaceOmissionCost)
-            if k < n - 1, taps[k].y > keys.bottomRowY {
+            guard k < n - 1 else { continue }
+            if taps[k].y > keys.bottomRowY {
                 pair(left: 0..<k, right: (k + 1)..<n, extra: parameters.spaceOmissionCost)
+            } else if let extra = spaceCost(of: taps[k], keys: keys) {
+                pair(left: 0..<k, right: (k + 1)..<n, extra: extra, exact: true)
             }
         }
         return out
+    }
+
+    /// The cost of reading a tap on the bottom row's upper half as a space the finger missed,
+    /// or nil when it can't be one: above the space bar, priced by how much nearer the row's
+    /// centre than the bar's it landed.
+    private func spaceCost(of tap: CGPoint, keys: Keys) -> Double? {
+        guard parameters.spaceTapCost.isFinite, let bar = keys.space, bar.width > 0 else { return nil }
+        let slack = keys.pitch.width / 2
+        guard tap.x >= bar.minX - slack, tap.x <= bar.maxX + slack,
+              tap.y > keys.bottomRowY - keys.pitch.height / 2 else { return nil }
+        let sy = Double(keys.pitch.height) * parameters.sigmaY
+        let toBar = (Double(tap.y) - Double(bar.midY)) / sy
+        let toRow = (Double(tap.y) - Double(keys.bottomRowY)) / sy
+        let likelierRow = max(0, 0.5 * (toBar * toBar - toRow * toRow))
+        return parameters.spaceTapCost + parameters.spaceTapWeight * likelierRow
+    }
+
+    /// How much likelier the space bar than the bottom letter row a space tap was, in nats
+    /// (0 when the row is likelier), or nil when it isn't above a bottom-row letter.
+    private func rowCost(of tap: CGPoint, keys: Keys) -> Double? {
+        guard let bar = keys.space, bar.width > 0 else { return nil }
+        let slack = keys.pitch.width / 2
+        guard tap.x >= bar.minX - slack, tap.x <= bar.maxX + slack else { return nil }
+        let sy = Double(keys.pitch.height) * parameters.sigmaY
+        let toBar = (Double(tap.y) - Double(bar.midY)) / sy
+        let toRow = (Double(tap.y) - Double(keys.bottomRowY)) / sy
+        return max(0, 0.5 * (toRow * toRow - toBar * toBar))
+    }
+
+    /// One word where a space was tapped for a letter on the row above ("deli ate" for
+    /// "delicate", "a out" for "about"): the likeliest reading of the first word's taps, the
+    /// space tap as a letter and the second word's taps, when it beats the two words as they
+    /// read by the margin and the tap was near enough the row (`mergeReach`). Nil to keep them.
+    func merge(
+        first: String, firstTaps: [CGPoint], space: CGPoint, second: String, secondTaps: [CGPoint],
+        previous: String?, firstIsValid: Bool, secondIsValid: Bool, keys: Keys
+    ) -> String? {
+        guard firstTaps.count == first.count, secondTaps.count == second.count, !second.isEmpty,
+              let firstCodes = model.encode(first.lowercased()), let secondCodes = model.encode(second.lowercased()),
+              let reach = rowCost(of: space, keys: keys), reach <= parameters.mergeReach else { return nil }
+        let taps = firstTaps + [space] + secondTaps
+        let centres = codeCentres(keys)
+        let costs = taps.map { tapCosts($0, centres: centres, keys: keys) }
+        let prev = previous.flatMap { model.index(of: $0) }
+        // The two words as space would leave them: each as typed or its likeliest reading
+        // ("i dkdnt" is "I didn't", never "obedient").
+        func reading(_ codes: [UInt8], at range: Range<Int>, after before: Int?, valid: Bool) -> (cost: Double, word: Int?) {
+            let typed = model.index(ofCodes: codes)
+            var spatial = 0.0
+            for (i, code) in codes.enumerated() { spatial += costs[range.lowerBound + i][Int(code)] }
+            var best = (cost: spatial + parameters.lmWeight * (typed.map { lmCost($0, after: before) }
+                ?? (valid ? parameters.unknownValidCost : parameters.unknownCost)), word: typed)
+            for (word, s) in search(model, costs, range: range, limit: 3, maxEdits: parameters.maxEdits, skipping: neverSuggest.words) {
+                let cost = s + parameters.lmWeight * lmCost(word, after: before)
+                if cost < best.cost { best = (cost, word) }
+            }
+            return best
+        }
+        let firstRange = 0..<firstCodes.count
+        let firstReading = reading(firstCodes, at: firstRange, after: prev, valid: firstIsValid)
+        let secondReading = reading(secondCodes, at: (firstCodes.count + 1)..<taps.count, after: firstReading.word, valid: secondIsValid)
+        let split = firstReading.cost + secondReading.cost
+        guard split.isFinite else { return nil }
+        var best: (word: Int, cost: Double)?
+        for (word, spatial) in search(model, costs, range: 0..<costs.count, limit: 3, maxEdits: parameters.maxEdits, skipping: neverSuggest.words)
+        where model.length(word) > max(first.count, second.count) && !neverSuggest.follows(word, after: prev) {
+            let cost = spatial + parameters.lmWeight * lmCost(word, after: prev) + reach
+            if cost < best?.cost ?? .infinity { best = (word, cost) }
+        }
+        guard let best else { return nil }
+        let margin = firstIsValid && secondIsValid ? parameters.validMargin : parameters.autoMargin
+        return split - best.cost >= margin ? model.word(best.word) : nil
     }
 
     /// A word that may stand alone in a split: two or more letters, or a common one-letter
     /// word ("a" and "i" in English; "y", "a", "o" in Spanish).
     private func canStandAlone(_ i: Int) -> Bool {
         model.length(i) >= 2 || model.unigramCost(i) < parameters.oneLetterWordCost
+    }
+
+    /// What a missed space can still make of taps nothing above could read. `decide` asks
+    /// only when the word is not a word, not a dictionary word and not one of yours, so this
+    /// may take a reading the ordinary margin would not: the taps are no word at all, and a
+    /// word or three are likelier than a spelling nobody knows. The missed spaces are the
+    /// hypothesis, not evidence: a reading is taken only when its words, without them, cost
+    /// no more than the run nothing knows does.
+    private func missedSpaceReading(costs: [[Double]], letters: [UInt8], prev: Int?, literalCost: Double) -> Reading? {
+        let slipped = slippedSecondWord(costs, letters: letters, prev: prev)
+        let segmented = exactSegmentation(costs, letters: letters, prev: prev)
+        func affordable(_ reading: Reading?) -> Reading? {
+            guard let reading else { return nil }
+            let words = reading.text.split(separator: " ").count
+            let wordsCost = reading.cost - parameters.spaceOmissionCost * Double(words - 1)
+            return wordsCost <= literalCost ? reading : nil
+        }
+        switch (affordable(slipped), affordable(segmented)) {
+        case let (slipped?, segmented?): return segmented.cost < slipped.cost ? segmented : slipped
+        case let (slipped?, nil): return slipped
+        case let (nil, segmented?): return segmented
+        case (nil, nil): return nil
+        }
+    }
+
+    /// The first letters as a word and the rest read as one word after it, when the rest is
+    /// one slip from a word and clears the margin it would get typed after that first word
+    /// ("specialchsracter" -> "special character"). A rest that is already a word is left to
+    /// `splitReadings`: there is nothing there to fix. The first word is at least two letters:
+    /// a lone "i" with a slip after it would read almost any run as two words.
+    private func slippedSecondWord(_ costs: [[Double]], letters: [UInt8], prev: Int?) -> Reading? {
+        let n = letters.count
+        guard n >= 5 else { return nil }
+        var best: Reading?
+        for k in 2...(n - 3) {
+            guard let left = model.index(ofCodes: Array(letters[0..<k])),
+                  canStandAlone(left), !neverSuggest.words.contains(left),
+                  !neverSuggest.follows(left, after: prev),
+                  model.index(ofCodes: Array(letters[k...])) == nil else { continue }
+            var leftSpatial = 0.0, rightLiteral = 0.0
+            for i in 0..<k { leftSpatial += costs[i][Int(letters[i])] }
+            for i in k..<n { rightLiteral += costs[i][Int(letters[i])] }
+            rightLiteral += parameters.lmWeight * parameters.unknownCost
+            let leftCost = leftSpatial + parameters.lmWeight * lmCost(left, after: prev)
+            for (right, spatial) in search(model, costs, range: k..<n, limit: 5, maxEdits: parameters.maxEdits, skipping: neverSuggest.words)
+            where !neverSuggest.follows(right, after: left) {
+                let rightCost = spatial + parameters.lmWeight * lmCost(right, after: left)
+                guard rightLiteral - rightCost >= parameters.autoMargin else { continue }
+                let cost = leftCost + rightCost + parameters.spaceOmissionCost
+                if best == nil || cost < best!.cost {
+                    best = Reading(text: model.word(left) + " " + model.word(right), cost: cost)
+                }
+            }
+        }
+        return best
+    }
+
+    private struct SegmentPath {
+        var words: [Int]
+        var cost: Double
+    }
+
+    private struct SegmentKey: Hashable {
+        var last: Int
+        var count: Int
+    }
+
+    /// Three to six words typed with no spaces, every one spelled as typed
+    /// ("seeyoutomorrow" -> "see you tomorrow"). Dynamic programming keeps the cheapest
+    /// path per end position, last word and word count: two paths there can only continue
+    /// through that last word, and only their count decides whether one can still grow.
+    private func exactSegmentation(_ costs: [[Double]], letters: [UInt8], prev: Int?) -> Reading? {
+        let n = letters.count
+        guard n >= 5, n <= 32 else { return nil }
+        var spatial = [Double](repeating: 0, count: n + 1)
+        for i in 0..<n { spatial[i + 1] = spatial[i] + costs[i][Int(letters[i])] }
+        var states = [[SegmentKey: SegmentPath]](repeating: [:], count: n + 1)
+        states[0][SegmentKey(last: -1, count: 0)] = SegmentPath(words: [], cost: 0)
+        var best: SegmentPath?
+        for start in 0..<n {
+            guard !states[start].isEmpty else { continue }
+            // Every word that starts here, found by narrowing the model's list one letter at
+            // a time: the prefix walk stops as soon as no word carries those letters.
+            var ends: [(end: Int, word: Int)] = []
+            var lo = 0, hi = model.wordCount
+            for end in (start + 1)...n {
+                (lo, hi) = model.narrow(lo, hi, depth: end - start - 1, byte: Int(letters[end - 1]))
+                guard lo < hi else { break }
+                if model.length(lo) == end - start, canStandAlone(lo), !neverSuggest.words.contains(lo) {
+                    ends.append((end, lo))
+                }
+            }
+            guard !ends.isEmpty else { continue }
+            for (key, path) in states[start] {
+                for (end, word) in ends {
+                    if neverSuggest.follows(word, after: key.last >= 0 ? key.last : prev) { continue }
+                    var words = path.words
+                    words.append(word)
+                    let cost = path.cost + (spatial[end] - spatial[start])
+                        + parameters.lmWeight * lmCost(word, after: key.last >= 0 ? key.last : prev)
+                        + (key.count == 0 ? 0 : parameters.spaceOmissionCost)
+                    if end == n {
+                        if words.count >= 3, words.count <= 6, best == nil || cost < best!.cost {
+                            best = SegmentPath(words: words, cost: cost)
+                        }
+                        continue
+                    }
+                    guard words.count < 6 else { continue }
+                    let next = SegmentKey(last: word, count: words.count)
+                    if let known = states[end][next], known.cost <= cost { continue }
+                    states[end][next] = SegmentPath(words: words, cost: cost)
+                }
+            }
+        }
+        return best.map { Reading(text: $0.words.map { model.word($0) }.joined(separator: " "), cost: $0.cost) }
+    }
+}
+
+extension TypingDecoder {
+    /// Whether `decide` with `keys` would put `reading` (one word) in place of what you typed:
+    /// it beats the literal by the margin. Nil for a two-word reading, which only `decide` can
+    /// tell. Adaptive touch asks with the centres read without it, so a correction it applies
+    /// is one the keyboard would apply anyway.
+    func replaces(with reading: String, taps: [CGPoint], typed: String, previous: String?, literalIsValid: Bool, keys: Keys) -> Bool? {
+        guard !reading.contains(" ") else { return nil }
+        guard taps.count == typed.count, !typed.isEmpty, let letters = model.encode(typed),
+              !letters.contains(where: { $0 == model.apostropheCode }),
+              let codes = model.encode(reading.lowercased()) else { return false }
+        let centres = codeCentres(keys)
+        let costs = taps.map { tapCosts($0, centres: centres, keys: keys) }
+        let prev = previous.flatMap { model.index(of: $0) }
+        var literalCost = 0.0
+        for (i, code) in letters.enumerated() {
+            let c = costs[i][Int(code)]
+            guard c.isFinite else { return false }
+            literalCost += c
+        }
+        let literalIndex = model.index(ofCodes: letters)
+        let literalIsYours = userWords.index(of: letters) != nil
+        var literalLM = literalIndex.map { lmCost($0, after: prev) }
+            ?? (literalIsValid ? parameters.unknownValidCost : parameters.unknownCost)
+        if literalIsYours { literalLM = min(literalLM, parameters.userWordCost) }
+        literalCost += parameters.lmWeight * literalLM
+
+        var readingLM = Double.infinity
+        if let index = model.index(ofCodes: codes), !neverSuggest.words.contains(index) {
+            readingLM = lmCost(index, after: prev)
+        }
+        if userWords.index(of: codes) != nil { readingLM = min(readingLM, parameters.userWordCost) }
+        guard readingLM.isFinite else { return false }
+        var margin = (literalIndex != nil || literalIsValid || literalIsYours) ? parameters.validMargin : parameters.autoMargin
+        if margin > parameters.accentMargin, Self.withoutAccents(reading.lowercased()) == Self.withoutAccents(typed) {
+            margin = parameters.accentMargin
+        }
+        // Usually one alignment the search would also try already clears it: no search then.
+        if let bound = alignedCost(codes, costs), literalCost - (bound + parameters.lmWeight * readingLM) >= margin {
+            return true
+        }
+        guard let spatial = search(OneWord(codes: codes), costs, range: 0..<costs.count, limit: 1, maxEdits: parameters.maxEdits).first?.1
+        else { return false }
+        return literalCost - (spatial + parameters.lmWeight * readingLM) >= margin
+    }
+
+    /// The cost of `codes` read letter for letter from the taps, or with one letter you didn't
+    /// type at its cheapest place: never below what the search finds, so a bound to clear.
+    /// Nil when neither fits (another edit, a tap past `maxTapCost`).
+    private func alignedCost(_ codes: [UInt8], _ costs: [[Double]]) -> Double? {
+        let n = costs.count
+        var letters: [Int] = []
+        letters.reserveCapacity(codes.count)
+        for (depth, code) in codes.enumerated() {
+            if code == model.apostropheCode {
+                guard depth > 0 else { return nil }
+                continue
+            }
+            letters.append(Int(code))
+        }
+        func tap(_ i: Int, _ code: Int) -> Double? {
+            let c = costs[i][code]
+            return c <= parameters.maxTapCost ? c : nil
+        }
+        if letters.count == n {
+            var total = 0.0
+            for i in 0..<n {
+                guard let c = tap(i, letters[i]) else { return nil }
+                total += c
+            }
+            return total
+        }
+        guard letters.count == n + 1, parameters.maxEdits >= 1 else { return nil }
+        var prefix = [Double](repeating: .infinity, count: n + 1)
+        prefix[0] = 0
+        for i in 0..<n {
+            guard let c = tap(i, letters[i]) else { break }
+            prefix[i + 1] = prefix[i] + c
+        }
+        var best = Double.infinity
+        var suffix = 0.0
+        for j in stride(from: n, through: 0, by: -1) {
+            if j < n {
+                guard let c = tap(j, letters[j + 1]) else { break }
+                suffix += c
+            }
+            best = min(best, prefix[j] + suffix)
+        }
+        return best.isFinite ? best + parameters.deletionCost : nil
+    }
+
+    /// One word, searched as a word list.
+    private struct OneWord: TypingDecoderWords {
+        let codes: [UInt8]
+        var wordCount: Int { 1 }
+        func length(_ i: Int) -> Int { codes.count }
+        func byte(_ i: Int, _ depth: Int) -> Int { depth < codes.count ? Int(codes[depth]) : -1 }
     }
 }

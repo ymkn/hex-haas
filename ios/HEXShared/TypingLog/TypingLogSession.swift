@@ -20,6 +20,18 @@ nonisolated struct TypingLogSettings {
         nonmutating set { defaults?.set(newValue, forKey: Self.enabledKey) }
     }
 
+    /// Set once `turnOffOnce()` has run; a later version turns it off again under a new key.
+    static let turnedOffKey = "migrations.typingLogsOff.v1"
+
+    /// Once per App Group (Nov 2026): Record typing logs goes off for everyone who had it on,
+    /// so the bar's Logging mark goes. The logs already recorded stay, and so does the switch
+    /// in Settings › Privacy › Advanced, which turns it back on for good.
+    func turnOffOnce() {
+        guard let defaults, !defaults.bool(forKey: Self.turnedOffKey) else { return }
+        if isEnabled { isEnabled = false }
+        defaults.set(true, forKey: Self.turnedOffKey)
+    }
+
     static let launchArgument = "--experiment-typing-logs"
 
     /// Simulator scenes pass `--experiment-typing-logs` to turn the experiment on.
@@ -98,6 +110,28 @@ extension TypingLogTraits {
         isSecure = traits.isSecureTextEntry ?? false
         enablesReturnKeyAutomatically = traits.enablesReturnKeyAutomatically ?? false
         self.document = document?.uuidString
+    }
+
+    /// `UITextDocumentProxy.documentIdentifier`, or nil while UIKit has none. UIKit declares it
+    /// non-optional, but the keyboard's proxy returns nil early on (in `viewDidLoad`, and at
+    /// times later), and reading that nil as Swift's `UUID` traps (Debug keyboard crashes in
+    /// `viewDidLoad` and on a field change). Read through key-value coding instead.
+    static func documentIdentifier(of proxy: AnyObject) -> UUID? {
+        guard let object = proxy as? NSObject,
+              object.responds(to: NSSelectorFromString("documentIdentifier")) else { return nil }
+        return object.value(forKey: "documentIdentifier") as? UUID
+    }
+
+    /// Whether `next` is another field, or this field with other traits. A document UIKit
+    /// couldn't name yet (nil) matches any, so a field isn't split in two when it's named.
+    func isOtherField(than next: TypingLogTraits) -> Bool {
+        var current = self
+        var next = next
+        if current.document == nil || next.document == nil {
+            current.document = nil
+            next.document = nil
+        }
+        return current.signature != next.signature
     }
 
     static func name(_ type: UIKeyboardType) -> String {

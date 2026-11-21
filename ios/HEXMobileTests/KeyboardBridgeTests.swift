@@ -31,6 +31,211 @@ final class KeyboardBridgeTests: XCTestCase {
         XCTAssertFalse(closedWithResult.hasDeliverableResult(at: now + 26))
     }
 
+    /// TestFlight build 56: dictate in the keyboard, dismiss it, dictate again (Hex opens and
+    /// records), swipe back. Hex ended mid-job and its last snapshot still said recording, so
+    /// every keyboard after showed a recording nothing would finish: Done and Cancel went to
+    /// no one, and no text came until Hex was opened again.
+    func testAJobHexStoppedHeartbeatingForNoLongerHoldsTheKeyboard() {
+        let t0 = 10_000.0
+        let recording = KeyboardSnapshot(
+            state: .recording,
+            heartbeat: t0,
+            expiresAt: t0 + 900,
+            recordingStartedAt: t0 - 3,
+            audioLevel: 0.4,
+            jobID: "handoff"
+        )
+        let model = KeyboardViewModel()
+        func show(_ snapshot: KeyboardSnapshot, at now: TimeInterval, on model: KeyboardViewModel) {
+            model.applyBridgeState(
+                hasFullAccess: true,
+                snapshot: snapshot,
+                isModelInstalled: true,
+                style: .polished,
+                now: now,
+                animated: false
+            )
+        }
+
+        show(recording, at: t0, on: model)
+        XCTAssertEqual(model.stagePhase, .recording)
+        show(recording, at: t0 + 5, on: model)
+        XCTAssertEqual(model.stagePhase, .recording, "a late heartbeat isn't a Hex that ended")
+
+        // Done, sent to a Hex that will never read it.
+        model.setPendingCommand(
+            KeyboardViewModel.PendingCommand(kind: .stop, jobID: "handoff", sentAt: t0 + 6),
+            now: t0 + 6,
+            animated: false
+        )
+        XCTAssertEqual(model.stagePhase, .transcribing)
+        show(recording, at: t0 + 7, on: model)
+        XCTAssertEqual(model.stagePhase, .idle, "the job is over: the Hex key dictates again")
+        XCTAssertNil(model.pendingCommand)
+        XCTAssertNil(model.currentSnapshot.jobID)
+        XCTAssertFalse(model.isWarmAvailable)
+
+        // A keyboard opened later, in this process or a new one, reads the same snapshot the same way.
+        let later = KeyboardViewModel()
+        show(recording, at: t0 + 600, on: later)
+        XCTAssertEqual(later.stagePhase, .idle)
+        let transcribing = KeyboardSnapshot(state: .transcribing, heartbeat: t0, expiresAt: 0, jobID: "handoff")
+        show(transcribing, at: t0 + 2, on: later)
+        XCTAssertEqual(later.stagePhase, .transcribing)
+        show(transcribing, at: t0 + 7, on: later)
+        XCTAssertEqual(later.stagePhase, .idle)
+        XCTAssertTrue(
+            KeyboardSnapshot(state: .recording, heartbeat: 0, expiresAt: 0, jobID: "handoff").isOrphanedJob(at: t0),
+            "never heartbeated"
+        )
+
+        // A result the snapshot carries still arrives, and a Hex heartbeating again is live again.
+        let finished = KeyboardSnapshot(
+            state: .transcribing,
+            heartbeat: t0,
+            expiresAt: 0,
+            jobID: "handoff",
+            resultID: "result",
+            resultExpiresAt: t0 + 30,
+            transcript: "Ship it."
+        )
+        XCTAssertTrue(finished.droppingOrphanedJob(at: t0 + 7).hasDeliverableResult(at: t0 + 7))
+        let back = KeyboardSnapshot(state: .recording, heartbeat: t0 + 600, expiresAt: t0 + 900, jobID: "next")
+        show(back, at: t0 + 600, on: later)
+        XCTAssertEqual(later.stagePhase, .recording)
+    }
+
+    /// TestFlight: "The another app is using audio message seems inaccurate cause it's showing
+    /// for me all the time although it's working fine", and "telling me another app is using
+    /// the microphone". Hex writes its snapshot only while it runs, so a failure stayed in the
+    /// App Group: every keyboard after showed it, and the full keyboard's Hex key sent its
+    /// dictations to Hex's warm session, which ignored them while marked failed. A message now
+    /// shows for a few seconds after Hex wrote it; one with no time (an earlier build's) never.
+    func testAFailureHexWroteAWhileAgoIsOver() {
+        let t0 = 20_000.0
+        let busy = "Another app is using the microphone. Try again."
+        func show(_ snapshot: KeyboardSnapshot, at now: TimeInterval, on model: KeyboardViewModel) {
+            model.applyBridgeState(
+                hasFullAccess: true,
+                snapshot: snapshot,
+                isModelInstalled: true,
+                style: .polished,
+                now: now,
+                animated: false
+            )
+        }
+
+        // A warm session's dictation failed just now: the keyboard says so and dictates itself.
+        let model = KeyboardViewModel()
+        show(
+            KeyboardSnapshot(state: .failed, heartbeat: t0 + 1, expiresAt: t0 + 900, message: busy, messageAt: t0),
+            at: t0 + 1,
+            on: model
+        )
+        XCTAssertEqual(model.stagePhase, .failed)
+        XCTAssertEqual(model.statusMessage, busy)
+        XCTAssertTrue(model.isWarmAvailable)
+        XCTAssertFalse(model.dictatesThroughHex, "the Hex key dictates in the keyboard, as Dictate does")
+
+        // Seconds later, with the session still up, it's over and the Hex key uses the session.
+        let later = KeyboardSnapshot(state: .failed, heartbeat: t0 + 9, expiresAt: t0 + 900, message: busy, messageAt: t0)
+        XCTAssertTrue(later.hasStaleMessage(at: t0 + 9))
+        show(later, at: t0 + 9, on: model)
+        XCTAssertEqual(model.stagePhase, .idle)
+        XCTAssertNil(model.statusMessage)
+        XCTAssertTrue(model.dictatesThroughHex)
+
+        // Hex suspended since, or an earlier build's snapshot with no time: never shown.
+        for stale in [
+            KeyboardSnapshot(state: .failed, heartbeat: 0, expiresAt: 0, message: busy, messageAt: t0),
+            KeyboardSnapshot(state: .failed, heartbeat: 0, expiresAt: 0, message: busy),
+        ] {
+            let next = KeyboardViewModel()
+            show(stale, at: t0 + 3_600, on: next)
+            XCTAssertEqual(next.stagePhase, .idle)
+            XCTAssertNil(next.statusMessage)
+        }
+
+        // A note beside a live session ("Interrupted") goes the same way, the session staying.
+        let noted = KeyboardViewModel()
+        show(KeyboardSnapshot(state: .ready, heartbeat: t0 + 1, expiresAt: t0 + 900, message: "Interrupted", messageAt: t0), at: t0 + 1, on: noted)
+        XCTAssertEqual(noted.statusMessage, "Interrupted")
+        show(KeyboardSnapshot(state: .ready, heartbeat: t0 + 9, expiresAt: t0 + 900, message: "Interrupted", messageAt: t0), at: t0 + 9, on: noted)
+        XCTAssertNil(noted.statusMessage)
+        XCTAssertTrue(noted.dictatesThroughHex)
+
+        // The keyboard's own failure keeps its snapshot live for its 6 s, which is no session:
+        // the full keyboard's Hex key tries again in the keyboard instead of sending to no one.
+        let own = KeyboardViewModel()
+        show(
+            KeyboardSnapshot(state: .failed, heartbeat: t0 + 1, expiresAt: t0 + 6, message: busy, messageAt: t0 + 1),
+            at: t0 + 1,
+            on: own
+        )
+        XCTAssertEqual(own.stagePhase, .failed)
+        XCTAssertTrue(own.isWarmAvailable)
+        XCTAssertFalse(own.dictatesThroughHex)
+
+        let encoded = KeyboardSnapshot(state: .failed, heartbeat: t0, expiresAt: 0, message: busy, messageAt: t0)
+        XCTAssertEqual(
+            try JSONDecoder().decode(KeyboardSnapshot.self, from: JSONEncoder().encode(encoded)).messageAt,
+            t0
+        )
+    }
+
+    /// The same keyboard's own dictation: one still recording or transcribing when the keyboard
+    /// was dismissed finishes without it, goes back into its field when the keyboard returns
+    /// there while it's fresh, and is offered as Paste dictation anywhere else or later. A
+    /// capture that went quiet or a transcription that never returns resets the keyboard.
+    func testADictationTheKeyboardFinishedAfterItHidReachesTheNextKeyboard() {
+        let suiteName = "hex.tests.heldDictation.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let bridge = KeyboardBridge(defaults: defaults)
+        let field = UUID()
+        let held = KeyboardHeldDictation(
+            id: "held",
+            text: "Meet at ten.",
+            heard: "meet at ten",
+            document: field,
+            finishedAt: 1_000
+        )
+
+        XCTAssertNil(bridge.heldDictation)
+        bridge.heldDictation = held
+        XCTAssertEqual(KeyboardBridge(defaults: defaults).heldDictation, held, "a new keyboard process finds it")
+        XCTAssertEqual(held.delivery(in: field, at: 1_010), .insert)
+        XCTAssertEqual(held.delivery(in: nil, at: 1_010), .insert, "a field UIKit hasn't named yet")
+        XCTAssertEqual(held.delivery(in: UUID(), at: 1_010), .offer, "another field")
+        XCTAssertEqual(held.delivery(in: field, at: 1_031), .offer, "back after its time to go in by itself")
+        XCTAssertEqual(held.delivery(in: field, at: 1_000 + KeyboardSnapshot.resultOfferWindow), .expired)
+        bridge.heldDictation = nil
+        XCTAssertNil(KeyboardBridge(defaults: defaults).heldDictation)
+
+        XCTAssertFalse(KeyboardJobWatchdog.isStalled(.recording, lastProgress: 100, now: 105), "a capture still starting")
+        XCTAssertTrue(KeyboardJobWatchdog.isStalled(.recording, lastProgress: 100, now: 107), "no audio for 7 s")
+        XCTAssertFalse(KeyboardJobWatchdog.isStalled(.transcribing, lastProgress: 100, now: 160), "a long dictation")
+        XCTAssertTrue(KeyboardJobWatchdog.isStalled(.transcribing, lastProgress: 100, now: 230))
+    }
+
+    /// Hex's text that came after its time to go in by itself (Done in Hex, then back late)
+    /// is offered as Paste dictation for ten minutes rather than lost.
+    func testAResultPastItsTimeToGoInIsOfferedForTenMinutes() {
+        let snap = KeyboardSnapshot(
+            state: .offline,
+            heartbeat: 0,
+            expiresAt: 0,
+            resultID: "result",
+            resultExpiresAt: 5_030,
+            transcript: "Ship it."
+        )
+        XCTAssertTrue(snap.hasDeliverableResult(at: 5_029))
+        XCTAssertFalse(snap.hasDeliverableResult(at: 5_031))
+        XCTAssertTrue(snap.hasOfferableResult(at: 5_031))
+        XCTAssertFalse(snap.hasOfferableResult(at: 5_030 + KeyboardSnapshot.resultOfferWindow))
+        XCTAssertFalse(KeyboardSnapshot.offline.hasOfferableResult(at: 5_031))
+    }
+
     func testKeyboardMessagesRoundTripThroughJSON() throws {
         let command = KeyboardCommand(
             id: "command",
@@ -77,6 +282,36 @@ final class KeyboardBridgeTests: XCTestCase {
         )
     }
 
+    /// Hex's result tells the keyboard why it went in as spoken, through the App Group, and a
+    /// snapshot from a build without the field still reads.
+    func testSnapshotCarriesWhyATranslationWentInAsSpoken() throws {
+        let defaults = UserDefaults(suiteName: "hex.tests.\(UUID().uuidString)")!
+        let bridge = KeyboardBridge(defaults: defaults)
+        let failure = TranslationFailure(
+            .failed,
+            source: Locale.Language(identifier: "zh-CN"),
+            target: Locale.Language(identifier: "en"),
+            detail: "TranslationErrorDomain 16"
+        )
+        bridge.publish(KeyboardSnapshot(
+            state: .ready, heartbeat: 1, expiresAt: 2, resultID: "r", transcript: "我们明天见。", translationFailure: failure
+        ))
+        XCTAssertEqual(bridge.snapshot().translationFailure, failure)
+
+        let old = #"{"state":"ready","heartbeat":1,"expiresAt":2,"audioLevel":0,"resultID":"r","transcript":"hi"}"#
+        let decoded = try JSONDecoder().decode(KeyboardSnapshot.self, from: Data(old.utf8))
+        XCTAssertNil(decoded.translationFailure)
+        XCTAssertEqual(decoded.transcript, "hi")
+    }
+
+    func testTranslationSettingsLaunchOpensAPageWithoutAHandoff() {
+        let request = KeyboardLaunchRequest.translationSettings
+        XCTAssertEqual(request.url.absoluteString, "hex-dictation://keyboard/translation")
+        XCTAssertEqual(KeyboardLaunchRequest(url: request.url), request)
+        XCTAssertTrue(request.opensPage)
+        XCTAssertFalse(KeyboardLaunchRequest.startSession(requestedAt: nil).opensPage)
+    }
+
     func testKeyboardSetupLaunchRoundTripsWithoutAHandoff() {
         let request = KeyboardLaunchRequest.setup
         XCTAssertEqual(request.url.absoluteString, "hex-dictation://keyboard/setup")
@@ -97,6 +332,87 @@ final class KeyboardBridgeTests: XCTestCase {
     }
 
     @MainActor
+    func testFullAccessReportsAreStoredInTheAppGroup() {
+        let suiteName = "hex.tests.fullAccessReports.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let bridge = KeyboardBridge(defaults: defaults)
+
+        XCTAssertNil(bridge.fullAccessOnReport)
+        XCTAssertNil(bridge.fullAccessOffReport)
+        bridge.fullAccessSeenAt = 50
+        XCTAssertEqual(
+            bridge.fullAccessOnReport,
+            KeyboardFullAccessReport(isOn: true, at: 50, launchedAt: 0),
+            "an earlier keyboard's word counts, as from the oldest process"
+        )
+
+        let on = KeyboardFullAccessReport(isOn: true, at: 100, launchedAt: 90)
+        let off = KeyboardFullAccessReport(isOn: false, at: 200, launchedAt: 190)
+        bridge.recordFullAccess(on)
+        bridge.recordFullAccess(off)
+        let reread = KeyboardBridge(defaults: defaults)
+        XCTAssertEqual(reread.fullAccessOnReport, on)
+        XCTAssertEqual(reread.fullAccessOffReport, off)
+        XCTAssertEqual(reread.fullAccessSeenAt, 100, "an on still sets the key earlier builds read")
+    }
+
+    func testFullAccessTrustsTheNewestReportFromANewerKeyboard() {
+        func report(_ isOn: Bool, at: TimeInterval, launched: TimeInterval) -> KeyboardFullAccessReport {
+            KeyboardFullAccessReport(isOn: isOn, at: at, launchedAt: launched)
+        }
+        let resolve = KeyboardFullAccess.resolve
+        XCTAssertEqual(resolve(nil, nil, 0), .unconfirmed)
+        XCTAssertEqual(resolve(report(true, at: 10, launched: 5), nil, 1_000), .on, "an on stays on")
+        XCTAssertEqual(resolve(nil, report(false, at: 120, launched: 110), 100), .off, "seen off since Hex came back")
+        XCTAssertEqual(
+            resolve(nil, report(false, at: 80, launched: 70), 100), .unconfirmed,
+            "seen off before Hex came back from Settings: Full Access may have been turned on since"
+        )
+        XCTAssertEqual(
+            resolve(report(true, at: 150, launched: 140), report(false, at: 120, launched: 110), 100), .on,
+            "the grant is newer"
+        )
+        XCTAssertEqual(
+            resolve(report(true, at: 150, launched: 140), report(false, at: 160, launched: 110), 100), .on,
+            "a keyboard started before the grant still says off: stale"
+        )
+        XCTAssertEqual(
+            resolve(report(true, at: 150, launched: 140), report(false, at: 160, launched: 140), 100), .off,
+            "the same keyboard saw it turned off"
+        )
+        XCTAssertEqual(
+            resolve(report(true, at: 50, launched: 40), report(false, at: 80, launched: 70), 100), .unconfirmed,
+            "turned off after the last on, then Hex went to the background: it may be on again"
+        )
+    }
+
+    @MainActor
+    func testSetupMonitorFollowsTheKeyboardsReports() {
+        let suiteName = "hex.tests.setupMonitor.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let bridge = KeyboardBridge(defaults: defaults)
+        let monitor = KeyboardSetupMonitor(bridge: bridge, activeSince: 1_000)
+        XCTAssertEqual(monitor.fullAccess, .unconfirmed)
+
+        bridge.recordFullAccess(KeyboardFullAccessReport(isOn: false, at: 1_010, launchedAt: 1_005))
+        monitor.refresh()
+        XCTAssertEqual(monitor.fullAccess, .off, "the keyboard said off while Hex was up")
+        monitor.cameToForeground(at: 1_020)
+        XCTAssertEqual(monitor.fullAccess, .unconfirmed, "back from Settings: off is no longer known")
+
+        // No refresh call: the keyboard's Darwin notification brings the report in.
+        bridge.recordFullAccess(KeyboardFullAccessReport(isOn: true, at: 1_030, launchedAt: 1_025))
+        let deadline = Date().addingTimeInterval(3)
+        while monitor.fullAccess != .on, Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        }
+        XCTAssertEqual(monitor.fullAccess, .on)
+        XCTAssertTrue(monitor.fullAccessOn)
+    }
+
+    @MainActor
     func testEmptyKeyboardDictationIsNotedInTheAppGroup() {
         let suiteName = "hex.tests.emptyDictation.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -110,12 +426,37 @@ final class KeyboardBridgeTests: XCTestCase {
         XCTAssertNil(KeyboardBridge(defaults: defaults).lastEmptyDictationAt)
     }
 
+    func testHexKeyboardIsShownFromAppearingUntilItHides() {
+        XCTAssertFalse(KeyboardPresence.isShown(shownAt: nil, hiddenAt: nil, heartbeat: nil, now: 1_000), "never shown")
+        XCTAssertTrue(KeyboardPresence.isShown(shownAt: 999, hiddenAt: 990, heartbeat: nil, now: 1_000))
+        XCTAssertFalse(KeyboardPresence.isShown(shownAt: 990, hiddenAt: 999, heartbeat: nil, now: 1_000), "another keyboard or iOS's dictation took over")
+        XCTAssertFalse(KeyboardPresence.isShown(shownAt: 980, hiddenAt: nil, heartbeat: 985, now: 1_000), "no sign of life: the process ended")
+        XCTAssertTrue(KeyboardPresence.isShown(shownAt: 900, hiddenAt: 890, heartbeat: 995, now: 1_000), "the Full Access report it repeats while shown")
+
+        let suiteName = "hex.tests.presence.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let bridge = KeyboardBridge(defaults: defaults)
+        let now = Date().timeIntervalSince1970
+        XCTAssertFalse(bridge.isKeyboardShown(now: now))
+        bridge.recordKeyboardShown(at: now - 1)
+        XCTAssertTrue(KeyboardBridge(defaults: defaults).isKeyboardShown(now: now))
+        bridge.recordKeyboardHidden(at: now)
+        XCTAssertFalse(KeyboardBridge(defaults: defaults).isKeyboardShown(now: now))
+    }
+
     func testOnboardingPracticeCountsADictationOrAFewTypedWords() {
-        XCTAssertFalse(OnboardingPractice.isDone(text: "S", dictated: false, fullAccessOn: true), "one letter")
-        XCTAssertFalse(OnboardingPractice.isDone(text: "See you", dictated: false, fullAccessOn: true))
-        XCTAssertTrue(OnboardingPractice.isDone(text: "See you at", dictated: false, fullAccessOn: true))
-        XCTAssertFalse(OnboardingPractice.isDone(text: "See you at ten", dictated: false, fullAccessOn: false), "not the Hex keyboard")
-        XCTAssertTrue(OnboardingPractice.isDone(text: "", dictated: true, fullAccessOn: false), "a dictation arrived")
+        XCTAssertFalse(OnboardingPractice.isDone(text: "S", dictated: false, typedWithHex: 1, fullAccessOn: true), "one letter")
+        XCTAssertFalse(OnboardingPractice.isDone(text: "See you", dictated: false, typedWithHex: 2, fullAccessOn: true))
+        XCTAssertTrue(OnboardingPractice.isDone(text: "See you at", dictated: false, typedWithHex: 3, fullAccessOn: true))
+        XCTAssertFalse(OnboardingPractice.isDone(text: "See you at ten", dictated: false, typedWithHex: 4, fullAccessOn: false), "not the Hex keyboard")
+        XCTAssertFalse(OnboardingPractice.isDone(text: "See you at ten", dictated: false, typedWithHex: 0, fullAccessOn: true), "iOS's dictation or another keyboard typed it")
+        XCTAssertFalse(OnboardingPractice.isDone(text: "See you at ten", dictated: false, typedWithHex: 2, fullAccessOn: true), "two words from Hex, the rest from elsewhere")
+        XCTAssertTrue(OnboardingPractice.isDone(text: "", dictated: true, typedWithHex: 0, fullAccessOn: false), "a dictation arrived")
+        XCTAssertEqual(OnboardingPractice.wordsAdded(from: "See yo", to: "See you"), 0, "a letter inside a word")
+        XCTAssertEqual(OnboardingPractice.wordsAdded(from: "See you ", to: "See you a"), 1)
+        XCTAssertEqual(OnboardingPractice.wordsAdded(from: "", to: "See you at ten"), 4, "a dictation's words at once")
+        XCTAssertEqual(OnboardingPractice.wordsAdded(from: "See you at", to: "See you"), 0, "a deletion")
         XCTAssertGreaterThanOrEqual(OnboardingPractice.words(in: "我们十点见"), 2, "Chinese splits into words without spaces")
     }
 
@@ -356,6 +697,21 @@ final class KeyboardBridgeTests: XCTestCase {
         }
     }
 
+    /// A keyboard's optional launch work (language lists, the capture page) runs only after
+    /// its first frame, and never once memory is short (TestFlight build 56's blank panel).
+    func testOptionalLaunchWorkWaitsForTheFirstFrameAndForMemory() {
+        let budget = KeyboardLaunchWork.optionalHeadroomNeeded
+        XCTAssertGreaterThan(KeyboardLaunchWork.afterFirstFrame, 0, "never in the turn that draws the keys")
+        XCTAssertGreaterThan(KeyboardLaunchWork.optionalWorkDelay, KeyboardLaunchWork.afterFirstFrame)
+        XCTAssertTrue(KeyboardLaunchWork.allowsOptionalWork(headroom: 0, memoryWarned: false), "iOS doesn't say")
+        XCTAssertTrue(KeyboardLaunchWork.allowsOptionalWork(headroom: budget, memoryWarned: false))
+        XCTAssertTrue(KeyboardLaunchWork.allowsOptionalWork(headroom: 200 * 1_048_576, memoryWarned: false))
+        XCTAssertFalse(KeyboardLaunchWork.allowsOptionalWork(headroom: budget - 1, memoryWarned: false))
+        XCTAssertFalse(KeyboardLaunchWork.allowsOptionalWork(headroom: 8 * 1_048_576, memoryWarned: false))
+        XCTAssertFalse(KeyboardLaunchWork.allowsOptionalWork(headroom: 0, memoryWarned: true), "after a memory warning")
+        XCTAssertFalse(KeyboardLaunchWork.allowsOptionalWork(headroom: 200 * 1_048_576, memoryWarned: true))
+    }
+
     private func snapshot(
         state: KeyboardDictationState,
         heartbeat: TimeInterval,
@@ -378,7 +734,7 @@ final class KeyboardBridgeTests: XCTestCase {
 
 /// The keyboard's quick dictation-language switch.
 final class DictationLanguageSwitchTests: XCTestCase {
-    private let supported = ["en-US", "en-GB", "es-ES", "es-MX", "de-DE", "nb-NO", "he-IL", "fr-FR"]
+    private let supported = ["en-US", "en-GB", "es-ES", "es-US", "es-MX", "de-DE", "nb-NO", "he-IL", "fr-FR"]
 
     func testOffersTheCurrentThenRecentThenPreferredLanguages() {
         XCTAssertEqual(
@@ -397,11 +753,131 @@ final class DictationLanguageSwitchTests: XCTestCase {
             current: nil,
             recent: [],
             preferred: ["nn-NO", "es-419", "es", "en-AU", "tlh", "fr-CA", "en-GB", "de-AT"],
-            supported: supported
+            supported: supported,
+            region: "US"
         )
-        // Nynorsk is Bokmål; "es-419" and "es" find Spain's Spanish; Klingon has none.
-        XCTAssertEqual(choices, ["nb-NO", "es-ES", "en-US", "fr-FR", "en-GB"])
+        // Nynorsk is Bokmål; "es-419" finds the Americas' Spanish (es-US); "es" adds no
+        // second Spanish; Klingon has none; one variant per language.
+        XCTAssertEqual(choices, ["nb-NO", "es-US", "en-US", "fr-FR", "de-DE"])
         XCTAssertEqual(choices.count, DictationLanguageSwitch.maxChoices)
+    }
+
+    /// Apple Speech has three Spanish variants: Spain's es-ES, and es-US and es-MX for the
+    /// Americas. A Latin American or US iPhone that speaks Spanish speaks Latin American
+    /// Spanish, so its dictation is es-US where Apple has it, es-MX next, and never Spain's.
+    func testSpanishFindsTheAmericasVariant() {
+        let all = ["en-US", "es-ES", "es-MX", "es-US"]
+        XCTAssertEqual(DictationLanguageSwitch.supportedMatch(for: "es-419", in: all), "es-US")
+        XCTAssertEqual(DictationLanguageSwitch.supportedMatch(for: "es-CO", in: all), "es-US")
+        XCTAssertEqual(DictationLanguageSwitch.supportedMatch(for: "es-AR", in: all), "es-US")
+        XCTAssertEqual(DictationLanguageSwitch.supportedMatch(for: "es-US", in: all), "es-US", "exact")
+        XCTAssertEqual(DictationLanguageSwitch.supportedMatch(for: "es-MX", in: all), "es-MX", "exact")
+        XCTAssertEqual(DictationLanguageSwitch.supportedMatch(for: "es-ES", in: all), "es-ES", "exact")
+        XCTAssertEqual(DictationLanguageSwitch.supportedMatch(for: "es-GQ", in: all), "es-ES", "Equatorial Guinea is Spain's")
+        XCTAssertEqual(
+            DictationLanguageSwitch.supportedMatch(for: "es-419", in: ["en-US", "es-ES", "es-MX"]),
+            "es-MX",
+            "es-US missing"
+        )
+        XCTAssertEqual(DictationLanguageSwitch.supportedMatch(for: "es-419", in: ["en-US", "es-ES"]), "es-ES")
+        XCTAssertEqual(DictationLanguageSwitch.supportedMatch(for: "es-419", in: []), "es-419", "not listed yet")
+    }
+
+    /// Plain "es" names no region, so Spanish follows the iPhone's Region: Mexico's own
+    /// Spanish, the United States' and Latin America's es-US, and Spain's es-ES elsewhere.
+    func testPlainSpanishFollowsTheIPhonesRegion() {
+        let all = ["en-US", "es-ES", "es-MX", "es-US"]
+        XCTAssertEqual(DictationLanguageSwitch.supportedMatch(for: "es", in: all, region: "MX"), "es-MX")
+        XCTAssertEqual(DictationLanguageSwitch.supportedMatch(for: "es", in: all, region: "US"), "es-US")
+        XCTAssertEqual(DictationLanguageSwitch.supportedMatch(for: "es", in: all, region: "PR"), "es-US")
+        XCTAssertEqual(DictationLanguageSwitch.supportedMatch(for: "es", in: all, region: "CO"), "es-US")
+        XCTAssertEqual(DictationLanguageSwitch.supportedMatch(for: "es", in: all, region: "ES"), "es-ES")
+        XCTAssertEqual(DictationLanguageSwitch.supportedMatch(for: "es", in: all, region: "FR"), "es-ES")
+        XCTAssertEqual(DictationLanguageSwitch.supportedMatch(for: "es", in: all, region: nil), "es-ES")
+        XCTAssertEqual(
+            DictationLanguageSwitch.supportedMatch(for: "es", in: ["en-US", "es-MX"], region: "US"),
+            "es-MX",
+            "es-US missing"
+        )
+    }
+
+    /// One chip per language: the current variant first, then the first of the recents, then
+    /// the preferred languages, so es-US and es-ES never both appear.
+    func testOneVariantPerLanguageInTheChoices() {
+        XCTAssertEqual(
+            DictationLanguageSwitch.choices(
+                current: "es-MX",
+                recent: ["es-US", "en-GB", "es-ES"],
+                preferred: ["fr-FR", "en-US"],
+                supported: ["en-US", "en-GB", "es-ES", "es-MX", "es-US", "fr-FR"],
+                region: "US"
+            ),
+            ["es-MX", "en-GB", "fr-FR"]
+        )
+    }
+
+    /// A picked variant drops its siblings from the recents; Norwegian's nb/nn/no aliases and
+    /// Hinglish's Hindi stay one language each.
+    func testPickingAVariantDropsItsSiblingsFromTheRecents() throws {
+        let suite = "hex.tests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = LanguageSettings(defaults: defaults)
+        settings.chooseDictationLanguage("es-US")
+        settings.chooseDictationLanguage("en-GB")
+        settings.chooseDictationLanguage("es-MX")
+        XCTAssertEqual(settings.recentDictationLanguages, ["es-MX", "en-GB"])
+        settings.chooseDictationLanguage("nn-NO")
+        settings.chooseDictationLanguage("nb-NO")
+        XCTAssertEqual(settings.recentDictationLanguages, ["nb-NO", "es-MX", "en-GB"])
+        settings.chooseDictationLanguage("hi-IN")
+        XCTAssertEqual(settings.recentDictationLanguages, ["hi-IN", "nb-NO", "es-MX", "en-GB"])
+    }
+
+    /// Chinese is more than one spoken language: Mandarin's zh-CN, Taiwan's zh-TW and
+    /// Cantonese's zh-HK are told apart by script and region, so each keeps a chip and
+    /// picking one leaves the others in the recents.
+    func testChineseVariantsStayApart() throws {
+        let chinese = ["en-US", "zh-CN", "zh-TW", "zh-HK"]
+        XCTAssertEqual(
+            DictationLanguageSwitch.choices(
+                current: "zh-CN",
+                recent: ["zh-HK"],
+                preferred: ["zh-TW"],
+                supported: chinese,
+                region: "US"
+            ),
+            ["zh-CN", "zh-HK", "zh-TW"],
+            "one chip per language, but not one for all of Chinese"
+        )
+        let suite = "hex.tests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = LanguageSettings(defaults: defaults)
+        settings.chooseDictationLanguage("zh-CN")
+        settings.chooseDictationLanguage("zh-HK")
+        XCTAssertEqual(settings.recentDictationLanguages, ["zh-HK", "zh-CN"])
+        settings.chooseDictationLanguage("zh-TW")
+        XCTAssertEqual(settings.recentDictationLanguages, ["zh-TW", "zh-HK", "zh-CN"])
+    }
+
+    /// A language with more than one variant in Apple Speech names its region, as Apple's own
+    /// keyboards do; one with a single variant keeps its plain name.
+    func testNamesTheRegionOnlyWhereAppleHasMoreThanOneVariant() {
+        let supported = ["en-US", "en-GB", "es-ES", "es-MX", "es-US", "nb-NO", "fr-FR"]
+        XCTAssertEqual(
+            DictationLanguageSwitch.nativeNames(for: ["es-US", "en-GB", "nb-NO"], supported: supported),
+            ["es-US": "Español (US)", "en-GB": "English (GB)", "nb-NO": "Norsk"]
+        )
+        XCTAssertEqual(
+            DictationLanguageSwitch.nativeName(for: "es-ES", supported: supported),
+            "Español (ES)"
+        )
+        XCTAssertEqual(
+            DictationLanguageSwitch.nativeNames(for: ["es-US", "en-GB", "nb-NO"]),
+            ["es-US": "Español", "en-GB": "English", "nb-NO": "Norsk"],
+            "without Apple's list, one variant each"
+        )
     }
 
     func testWithoutAListEveryLanguageIsOffered() {
@@ -469,5 +945,55 @@ final class DictationLanguageSwitchTests: XCTestCase {
         settings.chooseDictationLanguage(nil)
         XCTAssertNil(settings.dictationLanguage, "Automatic")
         XCTAssertEqual(settings.recentDictationLanguages.first, "es-ES", "Automatic isn't a recent")
+    }
+
+    /// TestFlight build 56: a language couldn't be taken off the keyboard's switch. Removed, a
+    /// recent or one of the iPhone's own languages stays off until it is picked again; the one
+    /// set goes back to Automatic.
+    func testARemovedLanguageStaysOffUntilPickedAgain() throws {
+        let suite = "hex.tests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = LanguageSettings(defaults: defaults)
+        settings.supportedDictationLanguages = supported
+        settings.chooseDictationLanguage("he-IL")
+        settings.chooseDictationLanguage("es-ES")
+        let preferred = ["zh-Hans-CN", "nb-NO", "en-US"]
+        XCTAssertEqual(
+            settings.keyboardLanguageChoices(preferred: preferred, hinglish: false, region: "ES"),
+            ["es-ES", "he-IL", "nb-NO", "en-US"]
+        )
+
+        settings.removeDictationLanguage("es-ES")
+        XCTAssertNil(settings.dictationLanguage, "the one set goes back to Automatic")
+        XCTAssertEqual(settings.recentDictationLanguages, ["he-IL"])
+        settings.removeDictationLanguage("nb-NO")
+        XCTAssertEqual(
+            settings.keyboardLanguageChoices(preferred: preferred, hinglish: false, region: "ES"),
+            ["he-IL", "en-US"]
+        )
+
+        settings.chooseDictationLanguage("nb-NO")
+        XCTAssertEqual(settings.removedDictationLanguages, ["es-ES"])
+        XCTAssertEqual(
+            settings.keyboardLanguageChoices(preferred: preferred, hinglish: false, region: "ES"),
+            ["nb-NO", "he-IL", "en-US"]
+        )
+        XCTAssertEqual(
+            DictationLanguageSwitch.choices(current: "es-ES", recent: [], preferred: [], supported: supported, removed: ["es-ES"]),
+            ["es-ES"],
+            "the one set always shows"
+        )
+    }
+
+    /// More languages… lists every other language Apple Speech has, the iPhone's own first
+    /// (with their other regions), then the rest by name.
+    func testMoreLanguagesPutsTheIPhonesOwnFirst() {
+        let supported = ["en-US", "en-GB", "es-ES", "de-DE", "zh-CN", "zh-TW", "fr-FR", "nb-NO"]
+        XCTAssertEqual(
+            DictationLanguageSwitch.more(choices: ["en-US", "de-DE"], preferred: ["zh-Hans-CN", "en-US"], supported: supported),
+            ["zh-CN", "zh-TW", "en-GB", "es-ES", "fr-FR", "nb-NO"]
+        )
+        XCTAssertEqual(DictationLanguageSwitch.more(choices: [], preferred: ["en-US"], supported: []), [], "no list yet")
     }
 }

@@ -39,6 +39,8 @@ struct ContentView: View {
     @Bindable var dictation: DictationController
     @Binding var openedFromKeyboard: Bool
     @Binding var showSetup: Bool
+    /// A settings page the keyboard asked for (`KeyboardLaunchRequest.translationSettings`).
+    var openPage: Binding<SettingsPage?> = .constant(nil)
     @State private var setupMonitor = KeyboardSetupMonitor()
     @State private var keyboardSpeech = KeyboardSpeechPreparation()
     @State private var onboardingPage = OnboardingProgress.launchPage
@@ -74,6 +76,14 @@ struct ContentView: View {
             }
         }
         .preferredColorScheme(.dark)
+        .background {
+            // Translate what I say's session before iOS 26 (TranslationSessionHost).
+            if #available(iOS 26.0, *) {
+                EmptyView()
+            } else {
+                TranslationSessionHostView()
+            }
+        }
         .task { keyboardSpeech.start { dictation.engineName } }
         .animation(HexMotion.reducedFade, value: openedFromKeyboard)
         .animation(HexMotion.reducedFade, value: onboardingPage == nil)
@@ -141,6 +151,11 @@ struct ContentView: View {
                 .navigationDestination(for: SettingsPage.self) { page in
                     settingsPage(page)
                 }
+        }
+        .onChange(of: openPage.wrappedValue, initial: true) { _, page in
+            guard let page else { return }
+            settingsPath = [page]
+            openPage.wrappedValue = nil
         }
         .tint(HexTheme.textBase)
         .sheet(isPresented: $showSetup) {
@@ -415,9 +430,12 @@ struct ContentView: View {
             .padding(.horizontal, Self.stageInset)
 
             HStack(spacing: 12) {
-                Text("Preparing model…")
+                Text(dictation.modelPreparation.detail)
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(HexTheme.textMuted)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+                    .layoutPriority(1)
                 ProgressView(value: dictation.modelPreparation.fractionCompleted)
                     .tint(HexTheme.textBase)
             }
@@ -781,7 +799,7 @@ struct ContentView: View {
         case .requestingPermission:
             return String(localized: "Allow microphone access")
         case .preparingModel:
-            return String(localized: "Preparing model…")
+            return dictation.modelPreparation.detail
         case .transcribing:
             return String(localized: "Transcribing…")
         case .ready where dictation.keyboardSessionEnabled:

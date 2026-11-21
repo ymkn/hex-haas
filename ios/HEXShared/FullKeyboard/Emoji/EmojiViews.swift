@@ -14,18 +14,21 @@ extension UIScrollView {
     }
 }
 
-/// One emoji in the grid or a row, drawn as text, with a pressed fill.
+/// One emoji in the grid or a row, its bitmap from the panel's `EmojiGlyphRenderer`, with a
+/// pressed fill.
 @MainActor
 final class EmojiCell: UICollectionViewCell {
     static let reuseID = "emoji"
-    private let label = UILabel()
+    private let glyphLayer = CALayer()
+    private var glyph: EmojiGlyph?
     private var pressedFill: UIColor = .clear
+    /// What the cell shows, for tests.
+    private(set) var emoji: String?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        label.textAlignment = .center
-        label.isAccessibilityElement = false
-        contentView.addSubview(label)
+        glyphLayer.actions = ["contents": NSNull(), "bounds": NSNull(), "position": NSNull()]
+        contentView.layer.addSublayer(glyphLayer)
         contentView.layer.cornerRadius = 8
         contentView.layer.cornerCurve = .continuous
         isAccessibilityElement = true
@@ -35,27 +38,44 @@ final class EmojiCell: UICollectionViewCell {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
-    func configure(emoji: String, name: String, fontSize: CGFloat, palette: FullKeyboardPalette) {
-        if label.text != emoji { label.text = emoji }
-        if label.font.pointSize != fontSize { label.font = .systemFont(ofSize: fontSize) }
+    func configure(
+        emoji: String,
+        name: String,
+        fontSize: CGFloat,
+        palette: FullKeyboardPalette,
+        renderer: EmojiGlyphRenderer,
+        scale: CGFloat
+    ) {
+        self.emoji = emoji
+        glyph = renderer.glyph(for: emoji, size: fontSize, scale: scale)
+        glyphLayer.contents = glyph?.image
+        glyphLayer.contentsScale = max(1, scale)
         accessibilityLabel = name
         pressedFill = palette.keyPressedFill
         contentView.backgroundColor = isHighlighted ? pressedFill : .clear
+        setNeedsLayout()
     }
 
     override var isHighlighted: Bool {
         didSet { contentView.backgroundColor = isHighlighted ? pressedFill : .clear }
     }
 
-    /// Off screen: drop the text, and with it the label's bitmap. (Cells waiting for reuse
-    /// kept theirs: scrolling every section held 353 bitmaps, 35 MB.)
+    /// Off screen: drop the bitmap (the renderer's cache keeps the recent ones).
     func clear() {
-        label.text = nil
+        glyph = nil
+        emoji = nil
+        glyphLayer.contents = nil
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        label.frame = contentView.bounds
+        guard let glyph else { return }
+        // Where a centred label would draw it, on whole pixels.
+        let scale = max(1, glyphLayer.contentsScale)
+        let bounds = contentView.bounds
+        let x = ((bounds.midX + glyph.rect.minX) * scale).rounded() / scale
+        let y = ((bounds.midY + glyph.rect.minY) * scale).rounded() / scale
+        glyphLayer.frame = CGRect(x: x, y: y, width: glyph.rect.width, height: glyph.rect.height)
     }
 }
 
@@ -71,7 +91,7 @@ final class EmojiSectionHeader: UICollectionReusableView {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        label.font = .systemFont(ofSize: 12, weight: .medium)
+        label.font = .systemFont(ofSize: 13, weight: .semibold)
         label.isAccessibilityElement = false
         addSubview(label)
     }
@@ -81,7 +101,7 @@ final class EmojiSectionHeader: UICollectionReusableView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        label.frame = CGRect(x: 6 + shift, y: 0, width: max(0, bounds.width - 6 - shift), height: bounds.height)
+        label.frame = CGRect(x: 10 + shift, y: 0, width: max(0, bounds.width - 10 - shift), height: bounds.height)
     }
 
     override func prepareForReuse() {
@@ -110,6 +130,9 @@ final class EmojiRowView: UIView, UICollectionViewDataSource, UICollectionViewDe
     }
 
     private(set) var items: [(emoji: String, name: String)] = []
+    /// Draws the emoji; the panel shares its own.
+    var renderer: EmojiGlyphRenderer?
+    private lazy var ownRenderer = EmojiGlyphRenderer()
     private let layout = UICollectionViewFlowLayout()
     private let collection: UICollectionView
     private let emptyLabel = UILabel()
@@ -183,7 +206,14 @@ final class EmojiRowView: UIView, UICollectionViewDataSource, UICollectionViewDe
         let cell = collectionView.dequeueReusableCell(withReuseIdentifier: EmojiCell.reuseID, for: indexPath)
         if let cell = cell as? EmojiCell {
             let item = items[indexPath.item]
-            cell.configure(emoji: item.emoji, name: item.name, fontSize: fontSize, palette: palette)
+            cell.configure(
+                emoji: item.emoji,
+                name: item.name,
+                fontSize: fontSize,
+                palette: palette,
+                renderer: renderer ?? ownRenderer,
+                scale: collectionView.traitCollection.displayScale
+            )
         }
         return cell
     }
@@ -212,32 +242,59 @@ final class EmojiRowView: UIView, UICollectionViewDataSource, UICollectionViewDe
     }
 }
 
-/// The bar under the grid: one icon per section, the current one on a chip.
+/// The bar under the grid: one icon per section, the current one on a chip. It tracks the
+/// finger itself, as the system emoji keyboard's does (black box, iOS 27.2 simulator): a tap
+/// on a category jumps the grid to its start when the finger lifts, and a finger that slides
+/// along the bar scrubs the grid live, each icon's slot running through its own section from
+/// start to end. The panel sends it every touch in the band under the grid.
 @MainActor
 final class EmojiCategoryBar: UIView {
     var palette = FullKeyboardPalette(isDark: false) { didSet { if palette != oldValue { refresh() } } }
+    /// A tap picked the category.
     var onSelect: ((Int) -> Void)?
+    /// A slide is over the category, this far (0 to 1) across its slot.
+    var onScrub: ((Int, CGFloat) -> Void)?
+    /// A slide moved onto another category (a light tick).
+    var onScrubStep: (() -> Void)?
     var selected = 0 {
         didSet { if selected != oldValue { refresh() } }
     }
 
-    private var buttons: [UIButton] = []
+    /// Whether a finger is sliding along the bar: the grid follows it, not the other way.
+    private(set) var isScrubbing = false
+    /// How far (points) a finger moves along the bar before a tap becomes a slide.
+    static let scrubThreshold: CGFloat = 8
+    private var touchStartX: CGFloat?
+
+    private final class BarButton: UIButton {
+        var activate: (() -> Void)?
+
+        override func accessibilityActivate() -> Bool {
+            activate?()
+            return true
+        }
+    }
+
+    private var buttons: [BarButton] = []
     private let chip = UIView()
 
     init(items: [(symbol: String, title: String)]) {
         super.init(frame: .zero)
+        isMultipleTouchEnabled = false
         chip.isUserInteractionEnabled = false
         chip.layer.cornerCurve = .continuous
         addSubview(chip)
         for (index, item) in items.enumerated() {
-            let button = UIButton(type: .custom)
+            let button = BarButton(type: .custom)
             button.tag = index
             button.accessibilityLabel = item.title
             button.setImage(
-                UIImage(systemName: item.symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .medium)),
+                UIImage(systemName: item.symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .medium)),
                 for: .normal
             )
-            button.addTarget(self, action: #selector(tapped(_:)), for: .touchUpInside)
+            // The bar takes the touches; the buttons draw and speak (VoiceOver activates them).
+            button.isUserInteractionEnabled = false
+            button.activate = { [weak self] in self?.onSelect?(index) }
             addSubview(button)
             buttons.append(button)
         }
@@ -247,15 +304,73 @@ final class EmojiCategoryBar: UIView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
-    @objc private func tapped(_ sender: UIButton) {
-        onSelect?(sender.tag)
+    /// The section whose slot is under `x` (the bar's coordinates; outside it, the nearest),
+    /// and how far across that slot `x` is.
+    func slot(atX x: CGFloat) -> (index: Int, fraction: CGFloat) {
+        guard !buttons.isEmpty, bounds.width > 0 else { return (0, 0) }
+        let width = bounds.width / CGFloat(buttons.count)
+        let position = min(max(0, x), bounds.width - 0.001) / width
+        let index = min(buttons.count - 1, Int(position))
+        return (index, position - CGFloat(index))
+    }
+
+    // MARK: - Touches (UIKit's, or a test's)
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard let touch = touches.first else { return }
+        touchBegan(atX: touch.location(in: self).x)
+    }
+
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard let touch = touches.first else { return }
+        touchMoved(toX: touch.location(in: self).x)
+    }
+
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard let touch = touches.first else { return }
+        touchEnded(atX: touch.location(in: self).x)
+    }
+
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        touchCancelled()
+    }
+
+    func touchBegan(atX x: CGFloat) {
+        touchStartX = x
+        isScrubbing = false
+    }
+
+    func touchMoved(toX x: CGFloat) {
+        guard let start = touchStartX else { return }
+        if !isScrubbing {
+            guard abs(x - start) > Self.scrubThreshold else { return }
+            isScrubbing = true
+        }
+        let (index, fraction) = slot(atX: x)
+        if index != selected {
+            selected = index
+            onScrubStep?()
+        }
+        onScrub?(index, fraction)
+    }
+
+    func touchEnded(atX x: CGFloat) {
+        defer { touchCancelled() }
+        guard touchStartX != nil, !isScrubbing else { return }
+        onSelect?(slot(atX: x).index)
+    }
+
+    func touchCancelled() {
+        touchStartX = nil
+        isScrubbing = false
     }
 
     private func refresh() {
         chip.backgroundColor = palette.chipFill
         for (index, button) in buttons.enumerated() {
             let isSelected = index == selected
-            button.tintColor = isSelected ? palette.textBase : palette.textMuted
+            // The chip marks the section; the icons stay one grey, as the system keyboard's.
+            button.tintColor = palette.textMuted
             button.accessibilityTraits = isSelected ? [.button, .selected] : .button
         }
         setNeedsLayout()

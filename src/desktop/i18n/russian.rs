@@ -1,16 +1,16 @@
-//! Russian (ru) interface strings, keyed by the English source string like
-//! [`super::TRANSLATIONS`]; used for any Russian system language. Not yet
-//! reviewed by a native speaker. Terms: dictation is "диктовка", shortcut
-//! "сочетание клавиш", Settings "Настройки", meetings "встречи", and
-//! vocabulary "словарь".
+//! Russian (ru) interface strings; not yet reviewed by a native speaker.
+//! Terms: dictation is "диктовка", shortcut "сочетание клавиш", Settings
+//! "Настройки", meetings "встречи", and vocabulary "словарь".
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
+use super::screenshots::{Language, merged};
+
 /// The Russian strings by their English source.
 pub(super) fn table() -> &'static HashMap<&'static str, &'static str> {
     static TABLE: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
-    TABLE.get_or_init(|| TRANSLATIONS.iter().copied().collect())
+    TABLE.get_or_init(|| merged(TRANSLATIONS, Language::Russian))
 }
 
 #[rustfmt::skip]
@@ -165,6 +165,7 @@ const TRANSLATIONS: &[(&str, &str)] = &[
     ("Try unfinished features. They may change or break.", "Попробуйте незавершённые функции. Они могут измениться или сломаться."),
     ("On while the Hex Microphone driver is installed. Uninstall the driver in Voice Filter to turn it off.", "Включено, пока установлен драйвер Hex Microphone. Чтобы выключить, удалите драйвер в Голосовом фильтре."),
     ("Names in the window you're dictating into help Hex spell them. Never saved", "Имена в окне, в которое вы диктуете, помогают Hex писать их правильно. Никогда не сохраняются"),
+    ("When you fix a name in text Hex just pasted, Hex adds the corrected spelling to Vocabulary. It watches only that field, for up to 5 minutes, and never sends it anywhere.", "Когда вы исправляете имя в тексте, который Hex только что вставил, Hex добавляет исправленное написание в словарь. Он следит только за этим полем, до 5 минут, и никуда его не отправляет."),
     ("Rewrite reads nearby text", "Переписывание читает текст рядом"),
     ("Rewrite uses the text around the cursor to spell names and terms right and fit where it pastes.", "Переписывание использует текст вокруг курсора, чтобы правильно писать имена и термины и подстраиваться под место вставки."),
     ("That text goes to the mode's OpenCode model, which may be a cloud provider. Password fields are never read.", "Этот текст отправляется модели OpenCode режима, которая может быть облачным провайдером. Поля паролей никогда не читаются."),
@@ -1421,6 +1422,7 @@ const TRANSLATIONS: &[(&str, &str)] = &[
     ("Sat", "Сб"),
     ("Vocabulary help", "Помощь со словарём"),
     ("Words on screen", "Слова на экране"),
+    ("Learn from corrections", "Обучение на исправлениях"),
     ("Free memory when idle", "Освобождать память при простое"),
     ("Left and right keys", "Левые и правые клавиши"),
     ("Model test details", "Подробности проверки моделей"),
@@ -1491,6 +1493,8 @@ const TRANSLATIONS: &[(&str, &str)] = &[
     ("Show in folder", "Показать в папке"),
     ("Could not transcribe {}", "Не удалось распознать {}"),
     ("A file could not be chosen.", "Не удалось выбрать файл."),
+    ("Agent tools for captures", "Инструменты агента для записей"),
+    ("Adds hex annotate zoom, inspect, frames, and skill so coding agents can read a capture closely", "Добавляет hex annotate zoom, inspect, frames и skill, чтобы агенты для кода могли внимательно изучить запись"),
 ];
 
 #[cfg(test)]

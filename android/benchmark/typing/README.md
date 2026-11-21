@@ -2,6 +2,50 @@
 
 **On the same iOS R1 word models and synthetic taps, Android with its default suggestion filter has 135 fewer English word errors and 13 fewer Spanish word errors than iOS.** The biggest part of the old 298-error English deficit was a missing step before spatial decoding: porting the English contraction and typo rules alone recovered 231 errors.
 
+## Against today's iOS engine
+
+The same 2,000 held-out English and Spanish sentences, typed by today's iOS engine (`origin/dev` 96b4f365, Spatial autocorrect on, iPhone 17 simulator, its taps moved onto today's layout key by key) and by the Android replay, which finishes each word with `TypingWord.finish` and moves each letter tap to the likelier next letter (`likelierKey`, touch areas tiling the rows) as the keyboard does. German and Bokmål have their own 2,000-sentence sets ([synthetic_sets.py](synthetic_sets.py)): held-out Tatoeba sentences typed with the same touch model on Android's eleven-key rows at a 36 pt pitch. iOS ships no Bokmål model and keeps German's behind an experiment, so those two have no iOS column.
+
+| Engine | English errors (WER) | Spanish | German | Bokmål |
+|---|---:|---:|---:|---:|
+| iOS today | 798 (5.75%) | 1,205 (9.06%) | — | — |
+| Android before the parity work | 1,028 (7.41%) | 1,374 (10.33%) | 825 (6.09%) | 692 (5.54%) |
+| Aimed taps, accents from the base key, a space read on the bottom row | 913 (6.58%) | 1,373 (10.32%) | 812 (5.99%) | 678 (5.43%) |
+| Words the context decides, the word before revised, a space tapped as a letter | 818 (5.90%) | 1,342 (10.09%) | 774 (5.71%) | 654 (5.24%) |
+| Names kept as typed, and capitals from the books | 770 (5.55%) | 1,133 (8.52%) | 774 (5.71%) | 654 (5.24%) |
+| The likelier next letter claims up to 5 dp of its neighbour's touch area | 721 (5.20%) | 1,090 (8.19%) | 729 (5.38%) | 647 (5.18%) |
+| A missed space with a slip after it, or three or more words run together (iOS #2244; not German) | 707 (5.10%) | 1,058 (7.95%) | 729 (5.38%) | 631 (5.05%) |
+| iOS at fc867484, with #2244 | 768 (5.54%) | 1,146 (8.62%) | — | — |
+| Real words the books use outside the models (validity lists; English's SCOWL list unchanged) | 707 (5.10%) | 1,033 (7.77%) | 714 (5.27%) | 627 (5.02%) |
+
+French and Italian have their own 2,000-sentence sets the same way (French on AZERTY, Italian on QWERTY; accented letters typed as their base key, elisions with their apostrophe). iOS types both with Apple's spelling dictionary and no typing model, and its harness maps only English and Spanish layouts, so there is no iOS column.
+
+| French and Italian | French | Italian |
+|---|---:|---:|
+| Raw hit keys | 5,316 (38.91%) | 4,778 (39.73%) |
+| Models from Google Books, words read after an elision | 1,177 (8.62%) | 895 (7.44%) |
+| Accents the words around decide ("a"/"à", "e"/"è") | 947 (6.93%) | 789 (6.56%) |
+| A missed space with a slip after it, or words run together | 939 (6.87%) | 763 (6.35%) |
+| Real words the books use outside the models | 935 (6.84%) | 753 (6.26%) |
+
+French has 13,661 reference words, Italian 12,025.
+
+The replay also counts what the suggestion strip offers, as iOS's harness does: the intended word among the slots once its last letter is typed, after its first two letters (words of three letters or more), and among the next-word predictions after the space before it.
+
+| Strip hits | English | Spanish | German | Bokmål |
+|---|---:|---:|---:|---:|
+| iOS today: word / next / after two letters | 13,253 / 2,287 / 3,235 | 12,364 / 2,073 / 2,901 | — | — |
+| Android before the strip work | 12,070 / 2,338 / 3,789 | 11,603 / 2,116 / 2,606 | 12,204 / 1,679 / 5,026 | 11,172 / 2,160 / 4,380 |
+| Android with `strip()` and the new predictions | 13,180 / 2,349 / 4,390 | 12,407 / 2,110 / 3,236 | 12,918 / 1,680 / 5,624 | 11,988 / 2,159 / 4,875 |
+| … and the likelier next letter's touch area | 13,219 / 2,349 / 4,686 | 12,398 / 2,112 / 3,455 | 12,941 / 1,679 / 6,019 | 11,991 / 2,165 / 5,148 |
+| … and a missed space with a slip, or words run together | 13,219 / 2,350 / 4,685 | 12,398 / 2,115 / 3,455 | 12,941 / 1,679 / 6,019 | 11,991 / 2,167 / 5,150 |
+| … and the validity lists | 13,219 / 2,350 / 4,685 | 12,401 / 2,113 / 3,566 | 12,949 / 1,678 / 6,019 | 11,994 / 2,166 / 5,150 |
+| iOS at fc867484, with #2244 | 13,253 / 2,289 / 3,234 | 12,364 / 2,076 / 2,901 | — | — |
+
+French and Italian strip hits (word / next / after two letters): 11,939 / 2,188 / 4,230 of 13,661 / 11,430 / 9,950, and 11,028 / 1,663 / 3,638 of 12,025 / 9,788 / 8,981.
+
+Out of 13,870 / 11,639 / 10,874 (English), 13,301 / 11,058 / 9,383 (Spanish), 13,550 / 11,326 / 12,413 (German) and 12,492 / 10,297 / 9,789 (Bokmål).
+
 ## Same-model results
 
 Each language has 2,000 held-out synthetic Tatoeba sentences. English has 13,870 reference words; Spanish has 13,301. Errors are word insertions, deletions and substitutions, ignoring case and terminal punctuation. A missing space can change the word count. No user-specific offsets are applied.
@@ -61,6 +105,10 @@ All four HXTM v3 assets are uncompressed and memory-mapped from the APK; Gradle 
 | Spanish | 110,000 | 326,366 | Google Books v3, 3 / 73 shards; existing model unchanged | RLA-ES Hunspell |
 | German | 95,000 | 368,534 | Google Books v3, all 8 / 181 German shards | German alphabetic corpus spellings |
 | Bokmål | 95,000 | 370,560 | NB N-gram 2026 book unigrams and bigrams, language `nob` | Norsk ordbank, Bokmål full forms |
+| French | 99,974 | 380,439 | Google Books v3, all 6 / 115 French shards | French corpus spellings, with the books' elided forms |
+| Italian | 99,996 | 371,292 | Google Books v3, all 2 / 60 Italian shards | Italian corpus spellings, with the books' elided forms |
+
+French and Italian go through the same German adapter: every untagged shard of the language, 1980–2019, spellings from the corpus alone. The books keep many elisions as one token ("c'est", "qu'il", Italian "dell'anno"; French "l'" and "d'" are split off), so those stay words with their apostrophe, which the decoder reads without it being typed. The same letters run together without the apostrophe, ten times rarer ("cest", "quil", 26 French and 4 Italian forms), are left out so space puts it back. A word typed right after an elided article or pronoun ("l'", "qu'", "dell'") is read as a word of its own (`TypingWord.startsWord`).
 
 The [shared iOS builder](build-typing-model.py), SHA-256 `cba009fe227632d9f8d176055f26ca34d5eb6f88a7cbd947955d8f9142878317`, sums counts from 1980–2019, selects informative pairs and writes quantized probabilities. The [German/Bokmål adapter](build-layout-model.py) uses the same writer. For German, it uses the iOS shard reader and filters lowercased words to its alphabet. For Bokmål, it NFC-normalizes and lowercases the words, filters vocabulary to standard Bokmål forms in the 1 February 2022 Ordbank `fullformsliste.txt` (`OPPSLAG`, normative and current in that snapshot), and only retains pairs whose two words are in that vocabulary. The September 2026 inflection export alone dropped common uninflected words such as `og`, `på` and `det`; it was not used in the shipped model. The complete snapshot supplied 617,139 distinct forms. Of 20,096,783 observed in-vocabulary pair types, 394,825 met the shared writer’s count and information thresholds; 370,560 fit the model budget.
 
@@ -68,6 +116,22 @@ The [shared iOS builder](build-typing-model.py), SHA-256 `cba009fe227632d9f8d176
 - [NB N-gram 2026](https://data.norge.no/nb/datasets/f2eebe8b-bd83-34e4-bcf3-c0c5e37a77f8/n-grammer-fra-nasjonalbiblioteket-2026): the National Library of Norway’s counts are **CC0 1.0**. The [Norsk ordbank – Bokmål 2005, February 2022](https://data.norge.no/en/datasets/f0db926d-a154-3a12-82b8-6573b57f6dbb/norsk-ordbank-norwegian-bokmal-2005) spelling filter is separately **CC BY 4.0**.
 - [SCOWL](https://wordlist.aspell.net/) permits commercial redistribution subject to its [included notices](../../app/src/main/assets/licenses/scowl.txt). The English literal-validity list contains 45,303 unique spellings absent from the frequency model (440,142 bytes). It is built from the same public SCOWL archive, not from benchmark outputs or personal data. It cannot supply scored candidates or word probabilities.
 - [RLA-ES es_ES/es_MX sources](https://github.com/LibreOffice/dictionaries/tree/762abe74008b94b2ff06db6f4024b59a8254c467/es) use their **MPL 1.1** option. [APK credits, source links and modification notices](../../app/src/main/assets/licenses/credits.txt) · [full licence texts](../../app/src/main/assets/licenses/).
+
+**Capitals lists** (`en.capitals`, `es.capitals`, `de.capitals`) record how often the books write a word with a capital first letter, from the same Google Books v3 1-grams (1980–2019) as each model. A word typed in lowercase takes its capital when the books nearly always write it so (95%), as iOS does where its dictionary knows a word only capitalised: "mary" → "Mary", "monday" → "Monday", German "haus" → "Haus". A word that is also an ordinary lowercase word is held below that (English: one SCOWL spells in lowercase, such as "united" or "china"; Spanish: a model word under 98%). The English and Spanish lists also hold names outside the model, three letters or more, capitalised 90% of the time and used at least once per million words ("tom" in Spanish, "sami" in English): typed as they are, they count as real words, as iOS's spelling dictionary takes them, instead of being corrected into "toma" or "swami". Two model words run together whose pair is ten times as common ("iwant", "apartir") are left out. German's list is iOS's `de.capitals` (#2169), byte for byte; [build-capitals.py](build-capitals.py) builds the other two (en: 10,984 words, 121 KB; es: 7,586 words, 85 KB).
+
+**Validity lists** (`<lang>.valid`) are what Android has for iOS's spelling dictionary: spellings outside the model that are still real words. English's is SCOWL (above). Spanish, German, French and Italian take every spelling the same Google Books v3 1-grams (1980–2019) use at least a cut-off number of times, in lowercase or with a capital; Bokmål takes Norsk ordbank's standard full forms that the NB N-gram 2026 books use at least that often. Left out: two model words run together whose pair is ten times as common ("apartir"), a French or Italian elision without its apostrophe ("cest"), and a model word with an accent changed or left out ("volvere", "brulant"), which books misspell as typists do. Each line carries the word's cost from its count, in eighths of a nat, as the model stores its own words'. The decoder reads a listed word at that cost instead of the 22 nats of a spelling nobody knows: a one-word fix still needs only the 2-nat margin, but splitting it into words needs a known word's 7, and the missed-space fallback leaves it alone. A list without costs (English) keeps the flat known-word reading (15 nats, 7-nat margin). [build-valid-words.py](build-valid-words.py) builds all six.
+
+The cut-off was chosen per language on both counts below, not on word errors alone: real words outside the model typed exactly that are now kept, and typos that are list words now wrongly kept. Errors are the replay's; the APK stores each list uncompressed.
+
+| Language | Cut-off (uses, 1980–2019) | Spellings | Adds to the APK | Word errors | Rare words typed exactly, kept | Typos wrongly kept |
+|---|---:|---:|---:|---:|---:|---:|
+| Spanish | 3,000 | 99,228 | 1.29 MB | 1,058 → 1,033 | 228 → 242 of 262 | 3 of 594 listed typos |
+| German | 10,000 | 132,272 | 2.14 MB | 729 → 714 | 83 → 94 of 107 | 3 of 199 |
+| Bokmål | 1,000 | 51,437 | 0.84 MB | 631 → 627 | 35 → 39 of 104 | 1 of 13 |
+| French | 3,000 | 108,519 | 1.45 MB | 939 → 935 | 201 → 201 of 211 | 0 of 121 |
+| Italian | 3,000 | 80,990 | 1.11 MB | 763 → 753 | 82 → 89 of 99 | 0 of 96 |
+
+Lower cut-offs kept a few more rare words for far more bytes (Spanish at 1,000: 1,030 errors, 246 kept, 3.5 MB; German at 3,000: 712, 96, 6.9 MB; Italian at 1,000: 748, 95, 3.0 MB; Bokmål at 100: 625, 41, 3.5 MB). A flat known-word reading for every listed word, as iOS gives its dictionary's, made Spanish 1,058 → 1,227 (cut-off 100): books use many typos and unaccented forms often enough to list them.
 
 The separate [never-suggest list](../../app/src/main/assets/typing/never-suggest.tsv) is
 adapted from Shutterstock's [LDNOOBW revision 5faf2ba](https://github.com/LDNOOBW/List-of-Dirty-Naughty-Obscene-and-Otherwise-Bad-Words/tree/5faf2ba42d7b1c0977169ec3611df25a3c08eb13),
@@ -105,6 +169,8 @@ adapted from Shutterstock's [LDNOOBW revision 5faf2ba](https://github.com/LDNOOB
    sh benchmark/typing/replay.sh
    ```
 
+   For German, Bokmål, French and Italian, put Tatoeba's `deu.tsv`, `nob.tsv`, `fra.tsv` and `ita.tsv` in `$T/tatoeba` and run `python3 benchmark/typing/synthetic_sets.py "$IOS_BENCH/input.json" "$T/tatoeba" "$T/bench"` first; the replay runs every set it finds and writes each sentence's output to `$T/outputs`.
+
    The Java replay shim executes the installed APK’s Kotlin classes with Android’s `app_process`. The output is aggregate WER, normalized sentences matching iOS and per-key timing (median/p95/max). Timings exclude loading, JSON parsing, evaluation, editor IPC and screen paint. Phase 3 timed the separate editor’s text-change callback from key-up (letter median/p95: 1.409/2.589 ms; space: 3.161/4.428 ms). The Phase 4 replay measures decoder work, not that end-to-end path or a physical handset.
 
 3. To rebuild the new typing models, use Python 3.9+, `curl`, `gzip` and `zstd` with scratch storage. German streams each shard and caches its counts. The Bokmål adapter resumes the two large NB archives in validated byte ranges and verifies their SHA-256 alongside the Ordbank snapshot. The SCOWL English validity list has a separate pinned-source generator:
@@ -113,7 +179,18 @@ adapted from Shutterstock's [LDNOOBW revision 5faf2ba](https://github.com/LDNOOB
    mkdir -p "$T/models" "$T/source"
    python3 benchmark/typing/build-layout-model.py de "$T/source/de" "$T/models/de.hextm"
    python3 benchmark/typing/build-layout-model.py nb "$T/source/nb" "$T/models/nb.hextm"
+   python3 benchmark/typing/build-layout-model.py fr "$T/source/fr" "$T/models/fr.hextm"
+   python3 benchmark/typing/build-layout-model.py it "$T/source/it" "$T/models/it.hextm"
    curl -fsSL https://downloads.sourceforge.net/project/wordlist/SCOWL/2020.12.07/scowl-2020.12.07.tar.gz -o "$T/source/scowl.tar.gz"
-   python3 benchmark/typing/build-valid-words.py "$T/source/scowl.tar.gz" \
+   python3 benchmark/typing/build-valid-words.py en "$T/source/scowl.tar.gz" \
      app/src/main/assets/typing/en.hextm "$T/models/en.valid"
+   for lang in es de fr it; do  # the counts build-capitals.py caches; German's are counted here first
+     python3 benchmark/typing/build-valid-words.py $lang app/src/main/assets/typing/$lang.hextm "$T/capitals/$lang" "$T/models/$lang.valid"
+   done
+   python3 benchmark/typing/build-valid-words.py nb app/src/main/assets/typing/nb.hextm "$T/source/nb-valid" "$T/models/nb.valid"
+   python3 benchmark/typing/build-capitals.py en app/src/main/assets/typing/en.hextm "$T/capitals/en" \
+     "$T/models/en.capitals" "$T/source/scowl.tar.gz"
+   for lang in es fr it; do
+     python3 benchmark/typing/build-capitals.py $lang app/src/main/assets/typing/$lang.hextm "$T/capitals/$lang" "$T/models/$lang.capitals"
+   done
    ```

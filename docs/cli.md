@@ -34,7 +34,7 @@ hex
 ├── quit [--force]                 refused while a meeting or dictation is active, or unconfirmed
 ├── restart [--force]              quit and reopen (opens Hex when it isn't running)
 ├── dictation start|stop|toggle
-│   ├── start --print              (Labs, macOS) answer with the transcript when the recording ends
+│   ├── start --print              (macOS) answer with the transcript when the recording ends
 │   ├── stop --print               print the transcript instead of pasting it (below)
 │   └── start|toggle --raw         paste the transcript as heard, skipping the Output steps
 ├── paste-last                     paste the last dictation (Option-Shift-V); refused while recording
@@ -44,6 +44,7 @@ hex
 │   ├── record [--title T]         as the menu bar's Record Meeting; needs meetings.enabled
 │   ├── stop                       Stop & Transcribe
 │   ├── copy-last                  copy the last meeting transcript to the clipboard
+│   ├── delete <id>                move a finished meeting's Markdown and recording to the Trash
 │   └── list | show | search       read-only (docs/transcript-cli.md)
 ├── settings
 │   ├── list                       every setting: key, value, kind, choices, writable, about
@@ -77,13 +78,14 @@ hex
 │   ├── list [--limit N]           the newest captures in the captures folder
 │   ├── show <capture>             one capture's words, files, and where it went
 │   ├── send <capture> [--to <session>] [--always]  send it to an OpenCode session
-│   └── route <capture> [--ask-jev]  what routing sees and decides; sends nothing
+│   ├── route <capture> [--ask-jev]  what routing sees and decides; sends nothing
+│   └── inspect|zoom|frames|skill  Labs: read a capture for a coding agent (off by default)
 ├── screenshot [--pick]           Labs (macOS): shoot the display under the pointer and print the PNG's path; --pick opens the ⌘⇧4 picker
 ├── labs [on|off <feature>]       list Labs features or turn one on/off; edits settings.json (features/labs.md)
 │   └── link <feature>             macOS: print hex://labs/<feature>, the link that opens Hex's Labs page on that lab's group
 ├── check-for-updates              check for an update now
 ├── launch-at-login [on|off]       report or change Launch at Login (macOS: installed Hex.app only; Windows Run key; Linux XDG autostart)
-├── completions <shell>            Labs › Tab completion for hex: print a completion script for hex
+├── completions <shell>            print a completion script for hex
 └── logs [--process] [-n N] [-f]   tail live.ndjson (or process.log); no running Hex needed
 ```
 
@@ -111,9 +113,8 @@ falls back to pasting. `--print` with `toggle` or `cancel` is a usage error
 and `hex paste-last` reach the listener's own queue as its shortcut would;
 Linux's `hex typed-text` does too.
 
-`dictation start --print` (Labs › Dictation for a command, off by default,
-macOS) records a dictation that belongs to the command instead of the person's
-focused app: the command blocks and answers only when the recording ends,
+`dictation start --print` (macOS) records a dictation that belongs to the
+command instead of the person's focused app: the command blocks and answers only when the recording ends,
 however it ends, with the transcript (`transcript`, exit 0) instead of pasting
 or copying it. It starts exactly as `start` does and locks the recording; the
 shortcut press that finishes it, `dictation stop`, `dictation toggle`, and a
@@ -127,8 +128,8 @@ hangs. A printing `start` while anything already records is refused with
 A plain `dictation stop` of a print-only recording answers as any plain stop
 does (`done`, or `discarded` for no audio or silence) and the transcript still
 goes to the start; `stop --print` of it answers `done` too, and both commands
-wait for the one transcript. With the lab off, or on Linux
-and Windows, it answers `disabled` or `unsupported`. The text gets the same
+wait for the one transcript. On Linux and Windows it answers `unsupported`.
+The text gets the same
 processing as a paste and History keeps it as `printed`, as `stop --print`
 does; Paste Last skips it. A printing start waits at most 31 minutes; if it
 gives up, the recording stays print-only and is never pasted. `--raw` is
@@ -204,8 +205,8 @@ stderr only when it is a terminal. Ctrl-C ends the command and its service,
 printing nothing, with exit 130. It never pastes, records History, runs mode
 processing, or logs the transcript.
 
-`completions <shell>` (Labs › Tab completion for hex, off by default) prints a
-completion script for `hex` to stdout and nothing else. The script is
+`completions <shell>` prints a completion script for `hex` to stdout and
+nothing else. The script is
 generated at runtime from the same clap definitions every command parses, so
 a new command or flag is in it without anyone writing the script out again;
 `bash`, `zsh`, `fish`, `elvish`, and `powershell` are the shells.
@@ -219,12 +220,6 @@ hex completions fish > ~/.config/fish/completions/hex.fish
 For zsh, put `~/.zfunc` on `fpath` before `compinit` runs, in `~/.zshrc`:
 `fpath=(~/.zfunc $fpath)`. Elsewhere, write the script into a directory
 already on `fpath`.
-
-It is refused with `disabled` while the lab is off, and its Labs toggle is
-what turns it on: `hex labs on shell-completions`. The command stays out of
-`hex --help`; `hex labs` lists the toggle. The lab is read from
-`settings.json` (`AppSettings::read`), as `hex labs` lists it, whether or not
-Hex is running; a running Hex saves the toggle there at once.
 
 `model import`, `rename`, `repair`, and `remove` run in this process on every
 OS; `hex models` is an alias for `hex model`. An import's id is `custom-` and
@@ -306,10 +301,44 @@ capsule's ⇧⏎ does. Its reply says what became of it (`Sent to …`,
 Scrawl's `route --explain` (`--explain` is accepted); `--ask-jev` asks Jev
 again, one network call. An unknown capture is refused with `not-found`.
 
+`inspect`, `zoom`, `frames`, and `skill` are Labs › Agent tools for captures
+(`labs.annotate_agent_tools`, off by default; `hex labs on
+annotate-agent-tools`). They run in the `hex` process on every OS, with Hex
+closed: they only read the bundle and decode its video, never starting a
+capture, sending one, or writing a setting. `frames` extracts with `ffmpeg`
+from PATH when one is installed, as the engine's own `extract_frames_range`
+does. While the lab is off they refuse
+with that switch's name. `inspect [<capture>]` prints `summary.md`; `--marks`
+prints one line per mark (`#2 ✎② 0:09 circled · m2`), or `No marks`; `--json`
+prints `scrawl.json` pretty, or with `--marks` the marks as a JSON array.
+`zoom [<capture>] (--at <M:SS|secs|phrase> | --mark <n|id> [--frame N])
+[--span secs] [--frames N] [--full]` writes a dense sheet of frames around
+that moment into `<bundle>/zoom/` and prints its path, `0:09.500 → 0:11.500,
+12 frames: #1 0:09.500, …`, and `Said: “…”` when anything was said over the
+window; for a mark it prints the mark's line first. `frames [<capture>]
+--from <M:SS|secs> --to <M:SS|secs> [--fps 4]` writes one PNG per frame into
+`<bundle>/zoom/range-*/`, clamped to the recording's length and at most 240
+frames a call, and prints each path. `skill` prints the
+[`hex-annotate`](../skills/hex-annotate/SKILL.md) skill this Hex ships: the
+same guide the Annotate pane's Agents section writes into a coding agent's
+folder while Labs › Install agent skill from Annotate is on.
+
 A CLI-started meeting is the same recording the menu bar starts: the menu-bar
 state, the recording capsule, and Stop & Transcribe all apply to it.
 `meetings record` replies once the recording has started (or after 8 s);
 `meetings stop` replies once transcription has begun.
+
+`meetings delete <id>` is the Meetings pane's Delete, carried out by the
+running Hex on every OS: it moves the meeting's exported Markdown, any
+separate notes file Hex tracks, and then its recording folder to the Trash,
+never removing anything outright, so an open Meetings window drops the row at
+its next scan and the files stay recoverable from the Trash. The id is
+exactly the one `hex meetings list --json` prints (no prefixes). An unknown
+id, or a meeting that is recording, transcribing, writing notes, or waiting for
+the final transcript of a run Hex quit during, is refused with its own code
+(see Error codes) and exit 1, and nothing moves. It asks no confirmation and
+works whether or not Meetings is on, so a caller should ask the person first
+and offer the same two-step confirmation the pane does.
 
 ## Exit codes
 
@@ -376,7 +405,7 @@ dictation {action, print?, raw?}                 action: start | stop | toggle |
                                                  print (start and stop) answers `transcript`
 paste-last
 typed-text
-meeting-record {title?} | meeting-stop | meeting-copy-last
+meeting-record {title?} | meeting-stop | meeting-copy-last | meeting-delete {id}
 settings-get {key?} | settings-set {key, value}
 model-list | model-use {model, language?} | model-install {model, language?} | model-cancel
 window-show {pane?} | window-hide | window-story {story, variant?, play}
@@ -478,7 +507,12 @@ read-only              the key can't be set here (the message says where)
 invalid-value          the value doesn't parse or is out of range
 confirmation-required  clears history; pass --yes
 shortcut-in-use        another Hex shortcut already uses that binding
-not-found              no such capture, or it has no scrawl.json yet
+not-found              no such capture (or it has no scrawl.json yet), or no meeting with that id
+meeting-recording      deleting a meeting that is still recording
+meeting-transcribing   deleting a meeting that is still transcribing
+meeting-notes          deleting a meeting while Hex writes its notes
+meeting-final-pending  deleting a meeting that is waiting for its final transcript
+                       (Hex quit during it; the next launch finishes it)
 unknown-model          no such model id (`hex model list`)
 model-unavailable      an imported model that is missing, changed, or behind its Labs toggle,
                        or one `hex transcribe` named that isn't downloaded or ready

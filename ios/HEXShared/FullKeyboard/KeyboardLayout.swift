@@ -51,9 +51,17 @@ nonisolated struct KeyboardKey: Equatable, Sendable {
 
 /// The pop-up balloon over a pressed key: a wider bubble joined to the key by a neck.
 nonisolated struct KeyBalloon: Equatable, Sendable {
-    static let bubbleHeight: CGFloat = 46
-    static let neck: CGFloat = 8
-    static let extraWidth: CGFloat = 20
+    /// iOS 27's key pop-up is a bubble floating over the key, not joined to it: 23.3 pt wider
+    /// than the key, 65 pt tall, its bottom 3.5 pt above the key's top (iPhone 17e and 17 Pro
+    /// simulators). Hex drew iOS 26's balloon, a 46 pt bubble on a stem that hid the key.
+    static let bubbleHeight: CGFloat = 65
+    /// The gap between the bubble and the key below it.
+    static let neck: CGFloat = 3.5
+    static let extraWidth: CGFloat = 23.33
+    /// Apple's bubble over row 1 rises above the keyboard; a keyboard extension can't draw
+    /// outside its view, so there Hex's shrinks to the room it has, down to this, and overlaps
+    /// the key below that.
+    static let minimumBubbleHeight: CGFloat = 50
 
     let keyFrame: CGRect
     let bubble: CGRect
@@ -62,6 +70,23 @@ nonisolated struct KeyBalloon: Equatable, Sendable {
     var offsetX: CGFloat { bubble.midX - keyFrame.midX }
     /// The balloon's whole outline, bubble through key.
     var bounds: CGRect { bubble.union(keyFrame) }
+}
+
+/// Which of Apple's iPhone key planes a screen gets (`KeyboardMetrics.phonePortrait`), by its
+/// height in points: Apple's keycaps and rows differ with it (iOS 27.2).
+nonisolated enum KeyboardPhoneSize: Equatable, Sendable {
+    /// A Home-button iPhone (the SE, 667 pt).
+    case homeButton
+    /// 844 to 874 pt (the 17e, 16, 17 and 17 Pro), and anything else under 900 pt.
+    case regular
+    /// 900 pt and taller (the Air, the Plus and Pro Max sizes).
+    case large
+
+    static func current(screenSize: CGSize) -> KeyboardPhoneSize {
+        let tall = max(screenSize.width, screenSize.height)
+        if tall < 700 { return .homeButton }
+        return tall < 900 ? .regular : .large
+    }
 }
 
 /// Where the keyboard is shown. Every iPhone is `.phone`; the iPhone Duo (a foldable) sets
@@ -99,7 +124,9 @@ nonisolated enum KeyboardPosture: Equatable, Sendable {
     var appleKeyInset: CGFloat? {
         switch self {
         case .phone: nil
-        case .cover: 7.7
+        // Folded: 6.67 pt in, a third of a point outside the 452 pt view iOS gives a third-party
+        // keyboard, so Hex's keys run to the view's edges (`KeyboardMetrics.for`).
+        case .cover: 6.67
         case .unfoldedWide: 86
         case .unfoldedTall: 19
         }
@@ -117,16 +144,31 @@ nonisolated struct KeyboardMetrics: Equatable, Sendable {
     let keysTop: CGFloat
     let keysBottom: CGFloat
     let cornerRadius: CGFloat
+    /// How much shorter row 4's keycaps are than the others: where Apple's row 4 reaches
+    /// below the bottom of a third-party keyboard's view, Hex's keeps Apple's top edge.
+    var bottomRowTrim: CGFloat = 0
+    /// Row 4 on the letter columns, as Apple's is turned and on the Duo folded: 123, the globe
+    /// and emoji one key wide on row 1's columns from q, space after them, and return from this
+    /// many letter pitches in (8, o's column, turned; 8.5, row 2's l column, on the Duo, where
+    /// Apple's dictation key sits on m before it). nil: the iPhone's portrait row.
+    var bottomRowReturnColumn: CGFloat?
+    /// Shift and delete (and #+=, 123 on row 3) as a share of a letter's width, where it isn't
+    /// the portrait rule (`KeyboardLayout.modifierWidth`): 1.33 turned, as Apple's on every iPhone.
+    var modifierLetterRatio: CGFloat?
 
-    /// The suggestion strip is the part of Apple's predictive bar below the band iOS 26 draws
-    /// over every third-party keyboard (16.3 pt on the iPhone 17 Pro, 12.5 pt on the SE, 13.3 pt
-    /// on the 17 Pro Max, iOS 27.2; nothing can draw there). Apple's bar is 44 pt from the
-    /// panel's edge, then about 8 pt to row 1's keycaps, which start 51.7, 48 and 48.3 pt down:
-    /// 35.3, 35.5 and 35 pt below this view's top on those iPhones. So the strip is 27 pt, then
-    /// the same 8 pt gap, and row 1 starts 35 pt down. Everything the strip shows (suggestions,
-    /// Undo dictation, the Full Access hint, the recording bar, the emoji panel's top row, the
-    /// Logging mark) lives in those 27 pt.
-    static let stripBarHeight: CGFloat = 27
+    /// The suggestion strip is Apple's predictive bar from the top of its suggestion pill down.
+    /// Apple's bar is 44 pt from its panel's edge, the pill around a suggested word starts 6 pt
+    /// down, and row 1's keycaps start about 8 pt under the bar (51.7 pt down, iPhone 17 Pro,
+    /// iOS 27.2). So the strip is 38 pt, then the same 8 pt gap, and row 1 starts 46 pt down.
+    /// iOS 26 and later draw about 17 pt of their own panel above a third-party keyboard in some
+    /// presentations and nothing in others (Hex, Gboard and SwiftKey alike on an iPhone 17 Pro,
+    /// iOS 27.2: Notes has it, a Safari form's first focus doesn't), and a keyboard can't tell
+    /// which, so the strip carries its own room above the words. It was 27 pt, the part of
+    /// Apple's bar below that band: without the band the words sat 9 pt under the keyboard's top
+    /// edge and a chip touched it. Everything the strip shows (suggestions, Undo dictation, the
+    /// Full Access hint, the recording bar, the emoji panel's top row, the Logging mark) lives in
+    /// those 38 pt, centred on the words' line (`stripTextCenter`).
+    static let stripBarHeight: CGFloat = 38
     static let stripGap: CGFloat = 8
     /// On the iPhone Duo iOS sets the keyboard in a platter with its own band above, and the
     /// strip is Apple's whole 44 pt bar, right on the keys.
@@ -135,53 +177,131 @@ nonisolated struct KeyboardMetrics: Equatable, Sendable {
     /// below the panel's edge (iOS 27.2), so the strip is 32 pt with the iPhone's 8 pt gap.
     static let coverStripHeight: CGFloat = 32
 
-    /// How far the strip's pills (an autocorrection, a pressed suggestion, the Hex key, the
-    /// recording bar) sit in from its top and bottom: Apple's pill fills its bar but the
-    /// edge band iOS draws, so in the 27 pt strip half a point, in the Duo's 44 pt bar 4 pt.
-    var stripInset: CGFloat { (stripHeight - stripPillHeight) / 2 }
-    /// The pills' height: the strip less half a point above and below, at most 36 pt (26 pt in
-    /// the phone's portrait strip, 36 pt in landscape and in the Duo's 44 pt bar).
-    var stripPillHeight: CGFloat { min(stripHeight - 1, 36) }
+    /// How far below the strip's top its pills (the Hex key, the recording bar) start: they
+    /// centre on the words' line, 6 pt down in the phone's portrait strip, in the Duo's 44 pt
+    /// bar 4 pt.
+    var stripInset: CGFloat { stripTextCenter - stripPillHeight / 2 }
+    /// Apple's pill starts 6 pt below its panel's edge (iOS 27.2, iPhone 17 Pro); Hex's pills
+    /// start as far below the keyboard's own top edge, which is the panel's edge whenever iOS
+    /// draws nothing above the keyboard.
+    static let barPillTop: CGFloat = 6
+    /// The pills' height. In the phone's portrait strip, even above and below the words' line
+    /// from `barPillTop` down (28 pt), inside the strip. Elsewhere it's the strip less half a
+    /// point above and below, at most 36 pt.
+    var stripPillHeight: CGFloat {
+        guard stripHeight == Self.stripBarHeight else { return min(stripHeight - 1, 36) }
+        return 2 * min(stripTextCenter - Self.barPillTop, stripHeight - stripTextCenter)
+    }
 
-    /// iOS 26 key geometry under the pinned strip: 35 pt + 218 pt of keys
-    /// (4 × 45 pt + 3 × 11 pt + 5 pt) = 253 pt.
+    /// Where the strip's words, dividers, chips and Hex mark centre. Apple's words sit midway
+    /// between the panel's edge and row 1's keycaps (25.3 pt down, keycaps at 52 pt, iPhone 17
+    /// Pro, iOS 27.2), so in the phone's portrait strip they're 26 pt above row 1, 20 pt below
+    /// the keyboard's top edge. Elsewhere the strip is Apple's bar and they centre in it.
+    static let barTextAboveKeys: CGFloat = 26
+    var stripTextCenter: CGFloat {
+        stripHeight == Self.stripBarHeight ? stripHeight + stripBottom - Self.barTextAboveKeys : stripHeight / 2
+    }
+    /// A suggestion's chip (an autocorrection, a pressed word, a revert) and the dividers: in
+    /// the phone's portrait strip a small chip around the word, 18 pt, even above and below the
+    /// words' line (not Apple's slot-wide 38 pt pill). Elsewhere the pill height.
+    static let barChipHeight: CGFloat = 18
+    var stripChipHeight: CGFloat {
+        stripHeight == Self.stripBarHeight ? Self.barChipHeight : stripPillHeight
+    }
+    /// The tallest band of the strip that is even above and below the words' line, from the
+    /// strip's top: what fills the strip (the Full Access hint, the emoji panel's top row, the
+    /// emoji search field) centres in it, so it sits on the line too. The whole strip where the
+    /// words centre in it.
+    var stripLineBand: (top: CGFloat, height: CGFloat) {
+        let half = min(stripTextCenter, stripHeight - stripTextCenter)
+        return (stripTextCenter - half, 2 * half)
+    }
+
+    /// Apple's keycap corners (iOS 27.2: the same on every iPhone, measured from screenshots
+    /// against keys Hex drew at known radii).
+    static let keyCornerRadius: CGFloat = 7.9
+
+    /// iPhone portrait key geometry, as Apple's keyboard draws it beside Hex in the same field
+    /// (iOS 27.2) on an 844 to 874 pt iPhone (17e, 17, 17 Pro): 43 pt keycaps on a 54 pt row
+    /// pitch, row 1 on the same line on screen. Apple's row 4 ends 4 pt below where a
+    /// third-party keyboard's view ends, so Hex's row 4 keeps Apple's top edge and is 4 pt
+    /// shorter: 46 pt + 201 pt of keys (4 × 43 pt + 3 × 11 pt − 4 pt) = 247 pt. Hex drew iOS 26's
+    /// 45 pt keys on a 56 pt pitch with 5 pt under them, 11 to 17 pt above Apple's rows, so
+    /// fingers used to Apple's keyboard landed low on Hex's keys.
     static let portrait = KeyboardMetrics(
-        side: 6.5, gap: 6, rowGap: 11, keyHeight: 45,
+        side: 6.5, gap: 6, rowGap: 11, keyHeight: 43,
         stripTop: 0, stripHeight: stripBarHeight, stripBottom: stripGap,
-        keysTop: 0, keysBottom: 5, cornerRadius: 8.5
+        keysTop: 0, keysBottom: 0, cornerRadius: keyCornerRadius, bottomRowTrim: 4
     )
 
     /// Turned, iOS draws no band above the keyboard (iPhone 17 Pro Max, iOS 27.2): Apple's keycaps
     /// start 50 pt below the panel's edge, so the strip is 42 pt and the same gap.
     static let landscapeStripHeight: CGFloat = 42
 
-    /// iOS 26 landscape key geometry under that strip: 50 pt + 137 pt of keys
-    /// (4 × 27.5 pt + 3 × 8 pt + 3 pt) = 187 pt.
+    /// The other iPhones' key planes (`KeyboardPhoneSize`), measured the same way: a Home-button
+    /// iPhone (SE) has 42 pt keycaps on a 54 pt pitch and 4 pt under row 4; one 900 pt or taller
+    /// (Air, Pro Max) 45 pt keycaps on a 56 pt pitch and 7 pt under row 4.
+    static func phonePortrait(_ size: KeyboardPhoneSize) -> KeyboardMetrics {
+        switch size {
+        case .regular:
+            return .portrait
+        case .homeButton:
+            return KeyboardMetrics(
+                side: 6.5, gap: 6, rowGap: 12, keyHeight: 42,
+                stripTop: 0, stripHeight: stripBarHeight, stripBottom: stripGap,
+                keysTop: 0, keysBottom: 4, cornerRadius: keyCornerRadius
+            )
+        case .large:
+            return KeyboardMetrics(
+                side: 6.5, gap: 6, rowGap: 11, keyHeight: 45,
+                stripTop: 0, stripHeight: stripBarHeight, stripBottom: stripGap,
+                keysTop: 0, keysBottom: 7, cornerRadius: keyCornerRadius
+            )
+        }
+    }
+
+    /// Turned, Apple's keys are the same on every iPhone (17e, 17 Pro, Air, 17 Pro Max and SE,
+    /// iOS 27.2, beside Hex in the same field): 32 pt keycaps on a 40 pt pitch, row 4 ending
+    /// 2 pt above the bottom of a third-party keyboard's view, 7.9 pt corners, and row 4 on the
+    /// letter columns. Under the strip: 50 pt + 154 pt of keys (4 × 32 pt + 3 × 8 pt + 2 pt) =
+    /// 204 pt. Hex drew iOS 26's 27.5 pt keys on a 35.5 pt pitch, 187 pt in all, every row
+    /// 2 to 17 pt below Apple's.
     static let landscape = KeyboardMetrics(
-        side: 4, gap: 6, rowGap: 8, keyHeight: 27.5,
+        side: 4, gap: 6, rowGap: 8, keyHeight: 32,
         stripTop: 0, stripHeight: landscapeStripHeight, stripBottom: stripGap,
-        keysTop: 0, keysBottom: 3, cornerRadius: 7.5
+        keysTop: 0, keysBottom: 2, cornerRadius: keyCornerRadius, bottomRowReturnColumn: 8,
+        modifierLetterRatio: 1.33
     )
+
+    /// Turned, a Home-button iPhone (the SE) sets Apple's keys 72 pt in from each side, 47 pt
+    /// wide, with 4 pt under row 4; Hex's ran to 4 pt from the edges, 60.5 pt wide.
+    static let homeButtonLandscape: KeyboardMetrics = {
+        var m = landscape.with(side: 72)
+        m = KeyboardMetrics(
+            side: m.side, gap: m.gap, rowGap: m.rowGap, keyHeight: m.keyHeight,
+            stripTop: m.stripTop, stripHeight: m.stripHeight, stripBottom: m.stripBottom,
+            keysTop: m.keysTop, keysBottom: 4, cornerRadius: m.cornerRadius,
+            bottomRowReturnColumn: m.bottomRowReturnColumn, modifierLetterRatio: m.modifierLetterRatio
+        )
+        return m
+    }()
 
     /// `windowInset` is how far iOS set the keyboard in from each side of the screen (the Duo).
     static func `for`(
         _ orientation: KeyboardOrientation,
         innerWidth: CGFloat? = nil,
         posture: KeyboardPosture = .phone,
-        windowInset: CGFloat = 0
+        windowInset: CGFloat = 0,
+        phoneSize: KeyboardPhoneSize = .regular
     ) -> KeyboardMetrics {
         let base: KeyboardMetrics
         if orientation == .landscape {
-            base = .landscape
-        } else if let innerWidth, posture == .phone {
-            let side: CGFloat = if innerWidth >= 390 {
-                6.5
-            } else if innerWidth >= 370 {
-                4.5
-            } else {
-                3.0
-            }
-            base = side == KeyboardMetrics.portrait.side ? .portrait : KeyboardMetrics.portrait.with(side: side)
+            base = posture == .phone && phoneSize == .homeButton ? .homeButtonLandscape : .landscape
+        } else if posture == .phone {
+            let phone = phonePortrait(phoneSize)
+            // Apple's keys start 6.5 pt in on every iPhone from the SE's 375 pt up.
+            let side: CGFloat = (innerWidth ?? 402) >= 370 ? 6.5 : 3.0
+            base = side == phone.side ? phone : phone.with(side: side)
         } else {
             base = .portrait
         }
@@ -199,22 +319,32 @@ nonisolated struct KeyboardMetrics: Equatable, Sendable {
             case .unfoldedWide:
                 keyHeight = 39
                 rowGap = 12.7
-            case .cover, .phone:
+            case .cover:
+                keyHeight = 45
+                rowGap = 11
+            case .phone:
                 break
             }
         }
         let side = orientation == .portrait
-            ? max(1, (posture.appleKeyInset ?? base.side) - windowInset)
+            ? max(0, (posture.appleKeyInset ?? base.side) - windowInset)
             : base.side
         // Measured folded and upright only; unfolded, and folded in landscape, the strip is still
-        // Apple's whole bar right on the keys.
+        // Apple's whole bar right on the keys. Folded and upright (iOS 27.2 simulator, beside
+        // Apple's keyboard) Apple's row 4 ends 7 pt above the keyboard's bottom and its keycaps
+        // round 9.8 pt; Hex drew 5 pt and 7.9 pt, its rows 2 pt low. Unfolded keeps the 5 pt
+        // under row 4 it was measured with.
         let coverPortrait = posture == .cover && orientation == .portrait
         return KeyboardMetrics(
             side: side, gap: base.gap, rowGap: rowGap, keyHeight: keyHeight,
             stripTop: base.stripTop,
             stripHeight: coverPortrait ? coverStripHeight : insetStripHeight,
             stripBottom: coverPortrait ? stripGap : 0,
-            keysTop: base.keysTop, keysBottom: base.keysBottom, cornerRadius: base.cornerRadius
+            keysTop: base.keysTop,
+            keysBottom: coverPortrait ? 7 : orientation == .portrait ? 5 : base.keysBottom,
+            cornerRadius: coverPortrait ? 9.8 : base.cornerRadius,
+            bottomRowReturnColumn: coverPortrait ? 8.5 : base.bottomRowReturnColumn,
+            modifierLetterRatio: base.modifierLetterRatio
         )
     }
 
@@ -222,12 +352,16 @@ nonisolated struct KeyboardMetrics: Equatable, Sendable {
         KeyboardMetrics(
             side: side, gap: gap, rowGap: rowGap, keyHeight: keyHeight,
             stripTop: stripTop, stripHeight: stripHeight, stripBottom: stripBottom,
-            keysTop: keysTop, keysBottom: keysBottom, cornerRadius: cornerRadius
+            keysTop: keysTop, keysBottom: keysBottom, cornerRadius: cornerRadius,
+            bottomRowTrim: bottomRowTrim, bottomRowReturnColumn: bottomRowReturnColumn,
+            modifierLetterRatio: modifierLetterRatio
         )
     }
 
     var stripArea: CGFloat { stripTop + stripHeight + stripBottom }
-    var keysArea: CGFloat { keysTop + 4 * keyHeight + 3 * rowGap + keysBottom }
+    /// Row 4's keycap height.
+    var bottomRowHeight: CGFloat { keyHeight - bottomRowTrim }
+    var keysArea: CGFloat { keysTop + 4 * keyHeight + 3 * rowGap + keysBottom - bottomRowTrim }
     var totalHeight: CGFloat { stripArea + keysArea }
 }
 
@@ -250,8 +384,17 @@ nonisolated enum HexKeyPlacement: String, CaseIterable, Sendable {
 }
 
 nonisolated struct KeyboardLayout: Equatable, Sendable {
-    /// Matches Apple's 50 pt shift/delete beside 37.3 pt letters on 440 pt Pro Max (`50 / 37.3 = 1.34`).
-    static let modifierWidthRatio: CGFloat = 1.34
+    /// Shift, delete, #+= and 123 on row 3 (and the Duo's globe and emoji keys) from the letter
+    /// pitch: Apple's are 1.227 pitches less 3 pt on every iPhone (45.5 pt on the 17 Pro's
+    /// 39.5 pt pitch, 50.2 on the Pro Max's 43.3, 42 on the SE's 36.8; iOS 27.2). A fixed
+    /// 1.34 letters was half a point narrow on the 17 Pro.
+    static func modifierWidth(letterWidth: CGFloat, gap: CGFloat, metrics: KeyboardMetrics? = nil) -> CGFloat {
+        if let ratio = metrics?.modifierLetterRatio { return ratio * letterWidth }
+        return 1.227 * (letterWidth + gap) - 3
+    }
+
+    /// Row 3's modifier width in this layout (`modifierWidth(letterWidth:gap:)`).
+    var modifierWidth: CGFloat { Self.modifierWidth(letterWidth: letterWidth, gap: metrics.gap, metrics: metrics) }
     static let bottomSwitchWidthRatio: CGFloat = 1.56
     static let returnWidthRatio: CGFloat = 2.40
     static let compactReturnWidthRatio: CGFloat = 2.18
@@ -264,6 +407,9 @@ nonisolated struct KeyboardLayout: Equatable, Sendable {
     let showsEmoji: Bool
     let horizontalInset: CGFloat
     let language: KeyboardLanguage
+    /// The letters' arrangement (Settings › Keyboard › Languages › Layout): `language`'s own
+    /// unless it offers the one asked for.
+    let letters: KeyboardLetterLayout
     let posture: KeyboardPosture
     /// Where the Hex key sits: Settings › Keyboard › Hex key picks the strip's trailing
     /// (Right) or leading (Left) end.
@@ -283,11 +429,15 @@ nonisolated struct KeyboardLayout: Equatable, Sendable {
         showsEmoji: Bool = false,
         horizontalInset: CGFloat = 0,
         language: KeyboardLanguage = .english,
+        letters: KeyboardLetterLayout? = nil,
         posture: KeyboardPosture = .phone,
         windowInset: CGFloat = 0,
-        hexPlacement: HexKeyPlacement = .stripTrailing
+        hexPlacement: HexKeyPlacement = .stripTrailing,
+        phoneSize: KeyboardPhoneSize = .regular
     ) {
         self.width = width
+        let letters = language.offered(letters)
+        self.letters = letters
         self.hexPlacement = hexPlacement
         self.orientation = orientation
         self.layer = layer
@@ -298,7 +448,9 @@ nonisolated struct KeyboardLayout: Equatable, Sendable {
         self.language = language
         self.posture = posture
         let innerWidth = width - 2 * self.horizontalInset
-        let metrics = KeyboardMetrics.for(orientation, innerWidth: innerWidth, posture: posture, windowInset: windowInset)
+        let metrics = KeyboardMetrics.for(
+            orientation, innerWidth: innerWidth, posture: posture, windowInset: windowInset, phoneSize: phoneSize
+        )
         self.metrics = metrics
         if posture.splitsKeyboard, orientation == .portrait {
             let built = Self.buildSplitKeys(
@@ -310,6 +462,7 @@ nonisolated struct KeyboardLayout: Equatable, Sendable {
                 showsEmoji: showsEmoji,
                 inset: self.horizontalInset,
                 language: language,
+                letters: letters,
                 hexPlacement: hexPlacement
             )
             self.keys = built.keys
@@ -324,6 +477,7 @@ nonisolated struct KeyboardLayout: Equatable, Sendable {
                 showsEmoji: showsEmoji,
                 inset: self.horizontalInset,
                 language: language,
+                letters: letters,
                 hexPlacement: hexPlacement
             )
             self.split = nil
@@ -336,8 +490,12 @@ nonisolated struct KeyboardLayout: Equatable, Sendable {
     /// it (the recording bar's ✕ and ✓, its menu, the Full Access hint's Open Hex) mirrors.
     var hexOnLeading: Bool { hexPlacement == .stripLeading }
 
-    static func height(for orientation: KeyboardOrientation, posture: KeyboardPosture = .phone) -> CGFloat {
-        KeyboardMetrics.for(orientation, posture: posture).totalHeight
+    static func height(
+        for orientation: KeyboardOrientation,
+        posture: KeyboardPosture = .phone,
+        phoneSize: KeyboardPhoneSize = .regular
+    ) -> CGFloat {
+        KeyboardMetrics.for(orientation, posture: posture, phoneSize: phoneSize).totalHeight
     }
 
     var totalHeight: CGFloat { metrics.totalHeight }
@@ -419,10 +577,13 @@ nonisolated struct KeyboardLayout: Equatable, Sendable {
     /// holds 11 keys (Norwegian letters).
     var characterWidth: CGFloat {
         if isSplit { return SplitGeometry.keyWidth }
+        if layer == .letters, letters == .dvorak {
+            return Self.dvorakLetterWidth(innerWidth: width - 2 * horizontalInset, metrics: metrics)
+        }
         return Self.letterWidth(
             innerWidth: width - 2 * horizontalInset,
             metrics: metrics,
-            columns: Self.columns(Self.characterRows(for: layer, language: language))
+            columns: Self.columns(Self.characterRows(for: layer, language: language, letters: letters))
         )
     }
 
@@ -441,16 +602,19 @@ nonisolated struct KeyboardLayout: Equatable, Sendable {
     func balloon(for key: KeyboardKey) -> KeyBalloon? {
         guard showsBalloons, key.character != nil else { return nil }
         let bubbleWidth = key.frame.width + KeyBalloon.extraWidth
-        let bubbleY = max(0, key.frame.minY - KeyBalloon.neck - KeyBalloon.bubbleHeight)
-        let minX = max(0, horizontalInset + 2)
-        let maxX = max(minX, width - horizontalInset - 2 - bubbleWidth)
+        let room = key.frame.minY - KeyBalloon.neck
+        let bubbleHeight = room >= KeyBalloon.bubbleHeight ? KeyBalloon.bubbleHeight : max(KeyBalloon.minimumBubbleHeight, room)
+        let bubbleY = max(0, key.frame.minY - KeyBalloon.neck - bubbleHeight)
+        // An edge key's bubble is pushed in just far enough to stay on screen, as Apple's is.
+        let minX = max(0, horizontalInset)
+        let maxX = max(minX, width - horizontalInset - bubbleWidth)
         var x = key.frame.midX - bubbleWidth / 2
         x = max(minX, min(maxX, x))
         let bubble = CGRect(
             x: x,
             y: bubbleY,
             width: bubbleWidth,
-            height: KeyBalloon.bubbleHeight
+            height: bubbleHeight
         )
         return KeyBalloon(keyFrame: key.frame, bubble: bubble)
     }
@@ -461,26 +625,41 @@ nonisolated struct KeyboardLayout: Equatable, Sendable {
         (innerWidth - 2 * metrics.side - CGFloat(columns - 1) * metrics.gap) / CGFloat(columns)
     }
 
+    /// Dvorak's letter keys: narrower than a 10-key row's, so shift and nine letters fill row 3
+    /// edge to edge, as on Apple's (iOS 27.0 simulator: a 38.3 pt pitch where QWERTY's is 39.5 pt
+    /// on a 402 pt iPhone).
+    static func dvorakLetterWidth(innerWidth: CGFloat, metrics: KeyboardMetrics) -> CGFloat {
+        let modifier = modifierWidth(letterWidth: letterWidth(innerWidth: innerWidth, metrics: metrics), gap: metrics.gap, metrics: metrics)
+        return (innerWidth - 2 * metrics.side - modifier) / 9 - metrics.gap
+    }
+
     /// Keys across the widest of rows 1 and 2, never fewer than 10.
     static func columns(_ rows: [[String]]) -> Int {
         max(10, rows.prefix(2).map(\.count).max() ?? 10)
     }
 
-    static func characterRows(for layer: KeyboardLayer, language: KeyboardLanguage = .english) -> [[String]] {
-        let punctuation = [".", ",", "?", "!", "'"]
+    static func characterRows(
+        for layer: KeyboardLayer,
+        language: KeyboardLanguage = .english,
+        letters: KeyboardLetterLayout? = nil
+    ) -> [[String]] {
+        // Greek's pages, as the system Greek keyboard shows them: ; is its question mark, so it
+        // takes ?'s key on both, the ano teleia · takes ;'s key on 123, and ? takes |'s on #+=.
+        let greek = language == .greek
+        let punctuation = [".", ",", greek ? ";" : "?", "!", "'"]
         switch layer {
         case .letters:
-            return language.letterRows
+            return language.letterRows(language.offered(letters))
         case .numbers:
             return [
                 "1234567890".map(String.init),
-                ["-", "/", ":", ";", "(", ")", "$", "&", "@", "\""],
+                ["-", "/", ":", greek ? "·" : ";", "(", ")", "$", "&", "@", "\""],
                 punctuation,
             ]
         case .symbols:
             return [
                 ["[", "]", "{", "}", "#", "%", "^", "*", "+", "="],
-                ["_", "\\", "|", "~", "<", ">", "€", "£", "¥", "•"],
+                ["_", "\\", greek ? "?" : "|", "~", "<", ">", "€", "£", "¥", "•"],
                 punctuation,
             ]
         }
@@ -495,15 +674,19 @@ nonisolated struct KeyboardLayout: Equatable, Sendable {
         showsEmoji: Bool,
         inset: CGFloat,
         language: KeyboardLanguage,
+        letters: KeyboardLetterLayout,
         hexPlacement placement: HexKeyPlacement
     ) -> [KeyboardKey] {
         let innerWidth = width - 2 * inset
-        let rows = characterRows(for: layer, language: language)
+        let rows = characterRows(for: layer, language: language, letters: letters)
+        let dvorak = layer == .letters && letters == .dvorak
         // Modifiers and the bottom row keep the 10-key sizes; an 11-key layout narrows only
         // its character keys, and row 3's letters sit centred between shift and delete.
         let referenceW = letterWidth(innerWidth: innerWidth, metrics: m)
-        let lw = letterWidth(innerWidth: innerWidth, metrics: m, columns: columns(rows))
-        let modW = referenceW * modifierWidthRatio
+        let lw = dvorak
+            ? dvorakLetterWidth(innerWidth: innerWidth, metrics: m)
+            : letterWidth(innerWidth: innerWidth, metrics: m, columns: columns(rows))
+        let modW = modifierWidth(letterWidth: referenceW, gap: m.gap, metrics: m)
         let left = inset + m.side
         let right = width - inset - m.side
 
@@ -514,7 +697,8 @@ nonisolated struct KeyboardLayout: Equatable, Sendable {
         var drawn: [(KeyKind, Int, CGRect, String)] = []
 
         func add(_ kind: KeyKind, row: Int, x: CGFloat, w: CGFloat, label: String) {
-            drawn.append((kind, row, CGRect(x: x, y: rowY(row), width: w, height: m.keyHeight), label))
+            let h = row == 3 ? m.bottomRowHeight : m.keyHeight
+            drawn.append((kind, row, CGRect(x: x, y: rowY(row), width: w, height: h), label))
         }
 
         func addCharacters(_ chars: [String], row: Int, startX: CGFloat, keyWidth: CGFloat) {
@@ -530,8 +714,20 @@ nonisolated struct KeyboardLayout: Equatable, Sendable {
             return inset + (innerWidth - total) / 2
         }
 
+        if dvorak {
+            // Apple's Dvorak: row 1's seven letters end at a delete key a pitch and a half wide,
+            // row 2's ten start at the edge, and row 3 is shift and nine letters, edge to edge.
+            let pitch = lw + m.gap
+            let deleteW = 1.5 * pitch - m.gap
+            add(.delete, row: 0, x: right - deleteW, w: deleteW, label: "delete")
+            addCharacters(rows[0], row: 0, startX: right - deleteW - CGFloat(rows[0].count) * pitch, keyWidth: lw)
+            addCharacters(rows[1], row: 1, startX: left, keyWidth: lw)
+            add(.shift, row: 2, x: left, w: modW, label: "shift")
+            addCharacters(rows[2], row: 2, startX: left + modW + m.gap, keyWidth: lw)
+        }
+
         // Rows 1 and 2.
-        for row in 0..<2 {
+        for row in 0..<2 where !dvorak {
             let chars = rows[row]
             addCharacters(chars, row: row, startX: centredStart(count: chars.count, keyWidth: lw), keyWidth: lw)
         }
@@ -543,24 +739,26 @@ nonisolated struct KeyboardLayout: Equatable, Sendable {
         let row3ModW = layer == .letters
             ? min(modW, (innerWidth - 2 * m.side - CGFloat(middle.count) * lw - CGFloat(middle.count + 1) * m.gap) / 2)
             : modW
-        switch layer {
-        case .letters:
-            add(.shift, row: 2, x: left, w: row3ModW, label: "shift")
-        case .numbers:
-            add(.layerSwitch(.symbols), row: 2, x: left, w: modW, label: "#+=")
-        case .symbols:
-            add(.layerSwitch(.numbers), row: 2, x: left, w: modW, label: "123")
+        if !dvorak {
+            switch layer {
+            case .letters:
+                add(.shift, row: 2, x: left, w: row3ModW, label: "shift")
+            case .numbers:
+                add(.layerSwitch(.symbols), row: 2, x: left, w: modW, label: "#+=")
+            case .symbols:
+                add(.layerSwitch(.numbers), row: 2, x: left, w: modW, label: "123")
+            }
+            if layer == .letters {
+                addCharacters(middle, row: 2, startX: centredStart(count: middle.count, keyWidth: lw), keyWidth: lw)
+            } else {
+                // Apple's punctuation row: five wide keys aligned to the s..k columns between modifiers.
+                let edgeGap = 1.5 * (lw + m.gap) - modW
+                let count = CGFloat(middle.count)
+                let middleW = (innerWidth - 2 * m.side - 2 * modW - 2 * edgeGap - (count - 1) * m.gap) / count
+                addCharacters(middle, row: 2, startX: left + modW + edgeGap, keyWidth: middleW)
+            }
+            add(.delete, row: 2, x: right - row3ModW, w: row3ModW, label: "delete")
         }
-        if layer == .letters {
-            addCharacters(middle, row: 2, startX: centredStart(count: middle.count, keyWidth: lw), keyWidth: lw)
-        } else {
-            // Apple's punctuation row: five wide keys aligned to the s..k columns between modifiers.
-            let edgeGap = 1.5 * (lw + m.gap) - modW
-            let count = CGFloat(middle.count)
-            let middleW = (innerWidth - 2 * m.side - 2 * modW - 2 * edgeGap - (count - 1) * m.gap) / count
-            addCharacters(middle, row: 2, startX: left + modW + edgeGap, keyWidth: middleW)
-        }
-        add(.delete, row: 2, x: right - row3ModW, w: row3ModW, label: "delete")
 
         // Row 4: 123/ABC, globe?, emoji?, space, field extras (@ . / . /), Hex, return.
         let isCompactBottomRow = showsGlobe || showsEmoji || field != .text
@@ -596,19 +794,79 @@ nonisolated struct KeyboardLayout: Equatable, Sendable {
         }
         trailing.append((.returnKey, returnW, "return"))
 
-        let fixed = (leading + trailing).reduce(0) { $0 + $1.1 }
-        let itemCount = CGFloat(leading.count + trailing.count + 1)
-        let spaceW = max(lw, (right - left) - fixed - (itemCount - 1) * m.gap)
-        var x = left
-        for (kind, w, label) in leading {
-            add(kind, row: 3, x: x, w: w, label: label)
-            x += w + m.gap
-        }
-        add(.space, row: 3, x: x, w: spaceW, label: "space")
-        x += spaceW + m.gap
-        for (kind, w, label) in trailing {
-            add(kind, row: 3, x: x, w: w, label: label)
-            x += w + m.gap
+        if field == .text, let returnColumn = m.bottomRowReturnColumn {
+            // Turned, and on the Duo folded: each key before the space bar one letter wide on
+            // row 1's columns, space up to return's column (on the Duo, Apple's dictation key
+            // sits just before return: Hex has none, so space runs on) and a Hex key right of
+            // space one pitch before return.
+            let pitch = referenceW + m.gap
+            let returnStart = left + returnColumn * pitch
+            let kColumn = returnStart - pitch
+            var lead: [(KeyKind, String)] = [leading[0].0 == .layerSwitch(.numbers) ? (.layerSwitch(.numbers), "123") : (.layerSwitch(.letters), "ABC")]
+            if showsGlobe { lead.append((.globe, "globe")) }
+            if showsEmoji { lead.append((.emoji, "emoji")) }
+            if placement == .leftOfSpace { lead.append((.hex, "hex")) }
+            for (i, (kind, label)) in lead.enumerated() {
+                add(kind, row: 3, x: left + CGFloat(i) * pitch, w: referenceW, label: label)
+            }
+            let spaceStart = left + CGFloat(lead.count) * pitch
+            var spaceEnd = returnStart - m.gap
+            if placement == .rightOfSpace {
+                add(.hex, row: 3, x: kColumn, w: returnStart - m.gap - kColumn, label: "hex")
+                spaceEnd = kColumn - m.gap
+            }
+            add(.space, row: 3, x: spaceStart, w: max(lw, spaceEnd - spaceStart), label: "space")
+            add(.returnKey, row: 3, x: returnStart, w: right - returnStart, label: "return")
+        } else if field == .text, m.keyHeight >= 40 {
+            // Apple's portrait bottom row stands on row 3's letter columns: 123 (and emoji, or
+            // the globe on a Home-button iPhone) share the width from the edge to z's right edge,
+            // the space bar runs from x to n, and return from m to the edge. With no emoji key
+            // (Emoji not among the keyboards), Apple's 123 takes the whole first block. Hex's Hex
+            // key, left or right of space, comes out of the space bar.
+            let pitch = referenceW + m.gap
+            let blockEnd = left + 2.5 * pitch - m.gap
+            let returnStart = left + 7.5 * pitch
+            var block: [(KeyKind, String)] = [leading[0].0 == .layerSwitch(.numbers) ? (.layerSwitch(.numbers), "123") : (.layerSwitch(.letters), "ABC")]
+            if showsGlobe { block.append((.globe, "globe")) }
+            // Beside the globe, the emoji key takes x's column, where Apple's dictation key is.
+            let emojiInColumn = showsEmoji && showsGlobe
+            if showsEmoji, !emojiInColumn { block.append((.emoji, "emoji")) }
+            let blockW = (blockEnd - left - CGFloat(block.count - 1) * m.gap) / CGFloat(block.count)
+            var x = left
+            for (kind, label) in block {
+                add(kind, row: 3, x: x, w: blockW, label: label)
+                x += blockW + m.gap
+            }
+            if emojiInColumn {
+                add(.emoji, row: 3, x: x, w: referenceW, label: "emoji")
+                x += referenceW + m.gap
+            }
+            var spaceEnd = returnStart - m.gap
+            if placement == .leftOfSpace {
+                add(.hex, row: 3, x: x, w: modW, label: "hex")
+                x += modW + m.gap
+            }
+            if placement == .rightOfSpace {
+                add(.hex, row: 3, x: spaceEnd - modW, w: modW, label: "hex")
+                spaceEnd -= modW + m.gap
+            }
+            add(.space, row: 3, x: x, w: max(lw, spaceEnd - x), label: "space")
+            add(.returnKey, row: 3, x: returnStart, w: right - returnStart, label: "return")
+        } else {
+            let fixed = (leading + trailing).reduce(0) { $0 + $1.1 }
+            let itemCount = CGFloat(leading.count + trailing.count + 1)
+            let spaceW = max(lw, (right - left) - fixed - (itemCount - 1) * m.gap)
+            var x = left
+            for (kind, w, label) in leading {
+                add(kind, row: 3, x: x, w: w, label: label)
+                x += w + m.gap
+            }
+            add(.space, row: 3, x: x, w: spaceW, label: "space")
+            x += spaceW + m.gap
+            for (kind, w, label) in trailing {
+                add(kind, row: 3, x: x, w: w, label: label)
+                x += w + m.gap
+            }
         }
 
         // Touch targets: split every gap down the middle; outer keys reach the edges, and row 1
@@ -623,11 +881,18 @@ nonisolated struct KeyboardLayout: Equatable, Sendable {
             for (i, item) in rowKeys.enumerated() {
                 let x0 = i == 0 ? 0 : (rowKeys[i - 1].2.maxX + item.2.minX) / 2
                 let x1 = i == rowKeys.count - 1 ? width : (item.2.maxX + rowKeys[i + 1].2.minX) / 2
+                var hit = CGRect(x: x0, y: y0, width: x1 - x0, height: y1 - y0)
+                if item.0 == .emoji, row == 3, m.keyHeight >= 40 {
+                    // Apple's emoji key takes taps only well inside its keycap, 6 pt in from each
+                    // side and 7.5 pt below its top, and the margins around it type nothing:
+                    // a finger aimed at 123 or space that lands near it doesn't switch keyboards.
+                    hit = CGRect(x: item.2.minX + 6, y: item.2.minY + 7.5, width: item.2.width - 12, height: y1 - item.2.minY - 7.5)
+                }
                 keys.append(KeyboardKey(
                     kind: item.0,
                     row: row,
                     frame: item.2,
-                    hitFrame: CGRect(x: x0, y: y0, width: x1 - x0, height: y1 - y0),
+                    hitFrame: hit,
                     label: item.3
                 ))
             }
@@ -639,7 +904,9 @@ nonisolated struct KeyboardLayout: Equatable, Sendable {
             let x = placement == .stripLeading ? left : right - width
             let frame = CGRect(x: x, y: m.stripTop + m.stripInset, width: width, height: height)
             let target = frame.insetBy(dx: -4, dy: -4)
-            let hitFrame = CGRect(x: target.minX, y: target.minY, width: target.width, height: top - target.minY)
+            // Up to the strip's top at least: the room above the pill belongs to the key too.
+            let targetTop = min(target.minY, m.stripTop)
+            let hitFrame = CGRect(x: target.minX, y: targetTop, width: target.width, height: top - targetTop)
             keys.append(KeyboardKey(kind: .hex, row: -1, frame: frame, hitFrame: hitFrame, label: "hex"))
         }
         return keys
@@ -696,10 +963,12 @@ extension KeyboardLayout {
         showsEmoji: Bool,
         inset: CGFloat,
         language: KeyboardLanguage,
+        letters: KeyboardLetterLayout = .own,
         hexPlacement placement: HexKeyPlacement
     ) -> (keys: [KeyboardKey], split: SplitGeometry) {
         typealias G = SplitGeometry
-        let rows = characterRows(for: layer, language: language)
+        // Dvorak splits like the other layouts, delete ending row 3 (Apple's split Dvorak unobserved).
+        let rows = characterRows(for: layer, language: language, letters: letters)
         let left = inset + m.side
         let right = width - inset - m.side
         let p = G.pitch

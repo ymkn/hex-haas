@@ -9,6 +9,10 @@ testing and training keyboard prediction and per-user touch models on a Mac.
 Nothing is sent anywhere; Privacy › Advanced › Typing logs shares a day's file (or
 all of them) through the share sheet, for example by AirDrop.
 
+Once per App Group, the app and the keyboard turn it off at launch for anyone who
+had it on (`migrations.typingLogsOff.v1`, `TypingLogSettings.turnOffOnce`). The
+logs already recorded stay, and turning it back on afterwards keeps it on.
+
 It is separate from Learn how I type, which keeps only word pairs and per-key
 averages and is unchanged.
 
@@ -113,12 +117,14 @@ Written when the key layout or shift changes, and when a session starts.
   (view size or safe area only), `layer_key` (123/#+=/ABC pressed),
   `layer_auto` (space or return went back to letters), `layer_slide` (hold 123,
   slide, let go), `shift_key`, `typed` (a one-shot shift turned off), `auto`
-  (auto-capitalization), `cancel`, `language` (the keyboard layout changed).
+  (auto-capitalization), `cancel`, `language` (the keyboard layout changed),
+  `letters` (its letters' arrangement changed).
 - `layer` (`letters`/`numbers`/`symbols`), `shift` (`off`/`on`/`locked`),
   `shiftHeld` (only when true), `field` (`text`/`url`/`email`), `orientation`,
   `width`, `height` (the keys' layout), `view` `[w, h]`, `safeArea`,
   `horizontalInset` (landscape), `globe`, `hexPlacement`, `language`
-  (`en`/`nb`/`es`/`de`).
+  (`en`/`nb`/`es`/`de`), `letters` (`own`/`qwerty`/`qwertz`/`azerty`/`dvorak`,
+  Settings › Keyboard › Languages › Layout).
 - The first time a hash appears in a day's file the line also has:
   - `letterWidth` (a 10-key row's; 11-key Norwegian and German letters are
     narrower, see `keys`), `metrics` (`side`, `gap`, `rowGap`, `keyHeight`,
@@ -176,14 +182,14 @@ cursor, for every `edit` (and `dictation`) line remove `deleted` (a string;
 | `delete` | `deleted` (the character), `src`: `key` (on press), `repeat` (held, 75 ms), `repeat_fast` (after 0.85 s, two at a time), `bar` |
 | `delete_word` | `deleted`, `src`: `repeat_word` (held past 1.4 s) |
 | `autocorrect` | `from`, `to`, `deleted` (= `from`), `inserted` (`to` + space). Applied on space. |
-| `autocorrect_undo` | `deleted` (the correction and its space), `inserted` (what was typed): one backspace right after a correction undid it. |
+| `autocorrect_undo` | `deleted` (the correction, without its space or mark), `inserted` (what was typed), `src`: `strip`. The strip's revert, offered once delete took the correction's space or mark (or the cursor came back to its end), put back what was typed. |
 | `suggestion` | `slot` (0 left, 1 centre, 2 right), `text` (as shown), `deleted` (the word being typed), `inserted` (the replacement + space), `candidates` (as in `candidates`) |
 | `double_space_period` | `deleted`: `" "`, `inserted`: `". "` |
 | `space_swallowed` | `after`: `suggestion`. A space right after a suggestion typed its own changed nothing. |
 | `return` | `inserted`: `"\n"`, `returnKeyType`, `send` (the key said Send); `ignored: true` and no `inserted` when the key was disabled (empty field) |
 | `paste` | `inserted`: the strip's Paste chip |
 | `undo_dictation` | `deleted` (the dictation), or `deletedCount` when the host showed only its end |
-| `cursor` | `offset`: characters the spacebar trackpad moved the cursor (negative is left) |
+| `cursor` | `offset`: UTF-16 units the spacebar trackpad moved the cursor (negative is left) |
 
 ### `candidates`
 
@@ -198,7 +204,7 @@ dictation, a status, or the clipboard chips.
 
 The host's text around the cursor, as `documentContextBeforeInput` /
 `AfterInput` give it. `why`: `session_start`, `space`, `return`,
-`suggestion`, `delete_word`, `autocorrect_undo`, `paste`, `trackpad`,
+`suggestion`, `delete_word`, `autocorrect_undo`, `revert`, `paste`, `trackpad`,
 `undo_dictation`, `dictation`, `session_end`, or `text_did_change` (the host
 changed the text or moved the cursor: written once things settle for 0.3 s, at
 once when the field emptied). `before` (the last 200 characters), `after` (the
@@ -213,8 +219,8 @@ Taps that aren't text: `action`:
 
 - `accent_open` (`id`, `key`, `options`), `accent_pick` (`id`, `index`, `chosen`,
   `rollover` when another key committed it), `accent_cancel`;
-- `trackpad_start` (`id`; `hold: true` when holding space still for 0.4 s
-  started it), `trackpad_end` (`id`, `offset`: total characters);
+- `trackpad_start` (`id`; `hold: true`, as only holding the space bar starts it;
+  older logs without it had a 10 pt slide start it), `trackpad_end` (`id`, `offset`: total UTF-16 units);
 - `language_swipe` (`id`, `step`: 1 the next language, -1 the one before) and
   `keyboard_language` (`language`: the layout it switched to), with two or more
   keyboard languages;

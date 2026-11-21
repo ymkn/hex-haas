@@ -5,11 +5,18 @@ import UIKit
 /// right of space, long-press accents, and the recording panel that replaces both while Hex records.
 /// Dictation state comes from the same `KeyboardViewModel` the dictation bar uses.
 @MainActor
-final class FullKeyboardView: UIView, UIInputViewAudioFeedback {
+final class FullKeyboardView: UIView {
     let model: KeyboardViewModel
     let engine: FullKeyboardEngine
     weak var hostController: UIInputViewController? {
-        didSet { configureGlobe() }
+        didSet {
+            configureGlobe()
+            // `init` resolves the language before the controller attaches (it is the caller's
+            // to set), so report what is already known, not only later changes.
+            if let reportedInputModeLanguage {
+                hostController?.primaryLanguage = reportedInputModeLanguage
+            }
+        }
     }
 
     /// Fixtures force light or dark and portrait or landscape; the keyboard follows its field.
@@ -43,7 +50,14 @@ final class FullKeyboardView: UIView, UIInputViewAudioFeedback {
     private(set) var showsRecording = false
     /// The Hex key's last tap or hold started a dictation here (not by opening Hex).
     private var dictatingFromHexKey = false
-    private var lastDictation: String?
+    /// A finger on the bar where no word is: holding it dictates as holding the Hex key does.
+    private var barHold = HexKeyGesture()
+    private var barHoldTouch: UITouch?
+    private var barHoldWork: DispatchWorkItem?
+    private var lastDictation: DictationUndo?
+    /// A word you typed whose slot you held: the strip offers Add to vocabulary until the text
+    /// changes (`FullKeyboardView+Vocabulary`).
+    var vocabularyOffer: String?
     private var undoHideWork: DispatchWorkItem?
     /// The Hex key was tapped without Full Access: the strip says what dictation needs.
     private(set) var showsFullAccessHint = false
@@ -51,8 +65,36 @@ final class FullKeyboardView: UIView, UIInputViewAudioFeedback {
     /// How long the Full Access hint stays unless a key or the strip is used first.
     static let fullAccessHintDuration: TimeInterval = 8
     private let haptics = UIImpactFeedbackGenerator(style: .light)
+    /// Every key's touch-down tick (letters, space, delete and its repeats, shift, 123,
+    /// return, suggestions), as hard as Settings › Keyboard › Strength asks. The Hex key's hold
+    /// and its menu keep `haptics`' fuller thud.
+    var hapticStrength: KeyHapticStrength = .medium {
+        didSet {
+            guard hapticStrength != oldValue else { return }
+            keyTicks = UIImpactFeedbackGenerator(style: Self.keyTickStyle(hapticStrength))
+            if allowsHaptics() { keyTicks.prepare() }
+        }
+    }
+    private var keyTicks = UIImpactFeedbackGenerator(style: FullKeyboardView.keyTickStyle(.medium))
+
+    /// Apple's key haptic is a crisp tick, so every strength is a rigid impact (the sharpest
+    /// style) but Strong, a fuller medium one. Medium, the default, is 0.8 of a rigid tap;
+    /// Hex's was a 0.65 light impact, which testers found much weaker than Apple's.
+    static func keyTickStyle(_ strength: KeyHapticStrength) -> UIImpactFeedbackGenerator.FeedbackStyle {
+        strength == .strong ? .medium : .rigid
+    }
+
+    static func keyTickIntensity(_ strength: KeyHapticStrength) -> CGFloat {
+        switch strength {
+        case .light: 0.5
+        case .medium: 0.8
+        case .strong: 1
+        }
+    }
     private let selectionHaptics = UISelectionFeedbackGenerator()
     private let clipboard = KeyboardClipboardTracker()
+    /// What the strip's Paste chip offers now.
+    private var stripOffer: KeyboardClipboardOffer?
     /// A paste iOS asked about or refused: the strip points to the setting that stops it.
     private var showsAllowPasteHint = false
     private var allowPasteHintHideWork: DispatchWorkItem?
@@ -64,6 +106,8 @@ final class FullKeyboardView: UIView, UIInputViewAudioFeedback {
     let routedTarget: EmojiRoutedTarget
     /// Fixtures turn the emoji experiment on or off; otherwise the App Group's switch.
     var emojiOverride: Bool? { didSet { refreshEmojiKey() } }
+    /// Fixtures and tests turn the ABC experiment on or off; otherwise the App Group's switch.
+    var emojiLettersUnderEmojiKeyOverride: Bool? { didSet { setNeedsLayout() } }
     /// Where emoji use is kept; fixtures give a seeded store.
     var makeEmojiUsage: () -> EmojiUsageStore = { EmojiUsageStore() }
     var emojiLibrary: EmojiLibrary?
@@ -107,9 +151,19 @@ final class FullKeyboardView: UIView, UIInputViewAudioFeedback {
             }
             self.engine.acceptSuggestion(suggestion)
         }
+        stripView.onHoldSuggestion = { [weak self] suggestion in self?.offerVocabulary(suggestion) }
         stripView.onUndoDictation = { [weak self] in self?.undoDictation() }
         stripView.onPaste = { [weak self] in self?.pasteFromClipboard() }
         stripView.onOpenHexFromHint = { [weak self] in self?.openSetupFromHint() }
+        stripView.onOpenNotice = { [weak self] in
+            guard let self else { return }
+            self.keyFeedback()
+            if let word = self.vocabularyOffer {
+                self.addToVocabulary(word)
+                return
+            }
+            self.model.onOpenURL?(KeyboardLaunchRequest.translationSettings.url)
+        }
         stripView.onNextKeyboard = { [weak self] in
             self?.typingLog?.ui("next_keyboard")
             self?.hostController?.advanceToNextInputMode()
@@ -148,6 +202,7 @@ final class FullKeyboardView: UIView, UIInputViewAudioFeedback {
                 return
             }
             self.hideUndo()
+            self.vocabularyOffer = nil
             self.hideFullAccessHint()
             self.hideAllowPasteHint()
             self.refreshReturnKey()
@@ -174,6 +229,7 @@ final class FullKeyboardView: UIView, UIInputViewAudioFeedback {
 
         engine.autocorrect.isEnabled = FullKeyboardSettings().autocorrect
         engine.autocorrect.allowsSwearing = FullKeyboardSettings().suggestSwearWords
+        engine.autocorrect.setVocabulary(CustomVocabularySettings().terms)
         engine.autoCapitalizes = FullKeyboardSettings().autoCapitalization
         engine.showsKeyPopups = FullKeyboardSettings().keyPopups
         syncHexPlacement()
@@ -229,7 +285,7 @@ final class FullKeyboardView: UIView, UIInputViewAudioFeedback {
     }
 
     var preferredHeight: CGFloat {
-        KeyboardLayout.height(for: orientation, posture: engine.posture) + lift
+        KeyboardLayout.height(for: orientation, posture: engine.posture, phoneSize: engine.phoneSize) + lift
     }
 
     /// Room above the strip for the emoji search results. The strip itself keeps its height in
@@ -241,7 +297,7 @@ final class FullKeyboardView: UIView, UIInputViewAudioFeedback {
 
     /// How much of the lift the view actually has yet, so nothing jumps before the host grows it.
     private var appliedLift: CGFloat {
-        max(0, min(lift, bounds.height - KeyboardLayout.height(for: orientation, posture: engine.posture)))
+        max(0, min(lift, bounds.height - KeyboardLayout.height(for: orientation, posture: engine.posture, phoneSize: engine.phoneSize)))
     }
 
     /// Reads which device and posture the keyboard is on, and how far iOS set it in from the
@@ -252,8 +308,10 @@ final class FullKeyboardView: UIView, UIInputViewAudioFeedback {
         let size = screen.bounds.size
         let posture = KeyboardPosture.current(screenSize: size, isFoldable: Self.isFoldable)
         let inset = posture == .phone ? 0 : max(0, (size.width - bounds.width) / 2)
-        let heightChanges = posture != engine.posture
+        let phoneSize = KeyboardPhoneSize.current(screenSize: size)
+        let heightChanges = posture != engine.posture || phoneSize != engine.phoneSize
         engine.posture = posture
+        engine.phoneSize = phoneSize
         engine.windowInset = inset
         if heightChanges { onPreferredHeightChange?() }
     }
@@ -273,12 +331,16 @@ final class FullKeyboardView: UIView, UIInputViewAudioFeedback {
 
     // MARK: - Host events
 
-    var enableInputClicksWhenVisible: Bool { true }
-
     func warmUpTextCheckerAsync() {
         DispatchQueue.main.async { [weak self] in
             guard let self, let checker = self.engine.autocorrect.checker as? SystemTextChecker else { return }
             checker.warmUp()
+            // German's capitalisation list reads with the dictionary, off the open path, and only
+            // while the German model is on: the dictionary engine never asks for it.
+            if self.engine.language == .german, self.engine.letterOdds != nil,
+               self.engine.autocorrect.germanCapitals == nil {
+                self.engine.autocorrect.germanCapitals = GermanCapitals.bundled()
+            }
             self.engine.refreshSuggestions()
         }
     }
@@ -296,6 +358,13 @@ final class FullKeyboardView: UIView, UIInputViewAudioFeedback {
         didSet { syncLanguage() }
     }
 
+    /// Fixtures pin how the letters are arranged; otherwise Settings › Keyboard › Languages ›
+    /// Layout for the keys' language. Without the App Group (an iPhone that keeps it from a
+    /// keyboard without Full Access) every language types on its own layout, as before.
+    var letterLayoutOverride: KeyboardLetterLayout? {
+        didSet { syncLanguage() }
+    }
+
     /// Where Languages and the language last switched to are kept; tests give their own.
     var languageSettings = LanguageSettings() {
         didSet { syncLanguage() }
@@ -303,6 +372,9 @@ final class FullKeyboardView: UIView, UIInputViewAudioFeedback {
 
     /// The languages the space bar switches between and the one typing now.
     private(set) var languages = KeyboardLanguageList(languages: [.english], current: .english)
+    /// The input mode's language last reported to the host (`UIInputViewController.primaryLanguage`),
+    /// so the host's spelling and autocorrection follow the language typing.
+    private(set) var reportedInputModeLanguage: String?
     /// The language this keyboard last switched to, ahead of the App Group's copy, which an
     /// iPhone may not let a keyboard without Full Access write.
     private var switchedLanguage: KeyboardLanguage?
@@ -333,9 +405,20 @@ final class FullKeyboardView: UIView, UIInputViewAudioFeedback {
                 )
             )
         }
-        guard list != languages || engine.language != list.current else { return }
+        // The keys' language's layout: with English and Spanish on one keyboard, the first one's.
+        let letters = letterLayoutOverride.map(list.layout.offered) ?? settings.letterLayout(for: list.layout)
+        // The host spells and autocorrects in the input mode's language, which supersedes the
+        // Info.plist's en-US (`primaryLanguage`): report every change, a space-bar switch too.
+        let identifier = list.current.inputModeLanguage
+        if identifier != reportedInputModeLanguage {
+            reportedInputModeLanguage = identifier
+            hostController?.primaryLanguage = identifier
+        }
+        guard list != languages || engine.language != list.current || engine.letterLayout != letters else { return }
         languages = list
         engine.switchesLanguage = list.switches
+        engine.layoutLanguage = list.layout == list.current ? nil : list.layout
+        engine.letterLayout = letters
         engine.language = list.current
         engine.partnerLanguage = list.partner(available: Self.spellCheckLanguages)
         syncSpatialAutocorrect()
@@ -345,8 +428,9 @@ final class FullKeyboardView: UIView, UIInputViewAudioFeedback {
     }
 
     /// A swipe along the space bar: the next or previous language (its letters, accents and
-    /// autocorrect), kept for next time, and with Switch dictation too the dictation
-    /// language with it.
+    /// autocorrect), kept for next time. Dictation on Automatic follows it
+    /// (`LanguageSettings.keyboardDictationLanguage`); with Switch dictation too, a dictation
+    /// language picked by hand goes back to Automatic, so it follows too.
     func switchLanguage(by step: Int) {
         guard languages.switches, languageOverride == nil else { return }
         let next = languages.switched(by: step)
@@ -356,12 +440,8 @@ final class FullKeyboardView: UIView, UIInputViewAudioFeedback {
         selectionFeedback()
         syncLanguage()
         guard languageSettings.dictationFollowsKeyboard, model.hasFullAccess,
-              let dictation = next.dictationLanguage(
-                  supported: languageSettings.supportedDictationLanguages,
-                  preferred: preferredLanguages
-              ),
-              languageSettings.dictationLanguage != dictation else { return }
-        model.onLanguageSelected?(dictation)
+              languageSettings.dictationLanguage != nil else { return }
+        model.onLanguageSelected?(nil)
     }
 
     /// With two or more languages the space bar names the keyboard's; otherwise, with Full
@@ -372,17 +452,35 @@ final class FullKeyboardView: UIView, UIInputViewAudioFeedback {
 
     func syncSettings() {
         syncLanguage()
+        // Learn each language separately: each keyboard language's own learned words, and the
+        // partner's own; Learn how I type's journal filters its fixes the same way.
+        let learnsPerLanguage = TypingJournalSettings().learnsPerLanguage
+        if engine.autocorrect.learnsPerLanguage != learnsPerLanguage {
+            engine.autocorrect.learnsPerLanguage = learnsPerLanguage
+            engine.refreshSuggestions()
+        }
         let journal = TypingJournal.sharedIfEnabled()
         if engine.journal !== journal {
             engine.journal = journal
         }
+        // Adaptive touch keeps its averages on disk only with Full Access; without, in memory.
+        let adaptive = AdaptiveTouch.sharedIfEnabled(persistent: hostController?.hasFullAccess == true)
+        if engine.adaptiveTouch !== adaptive {
+            engine.adaptiveTouch = adaptive
+        }
         engine.showsKeyPopups = FullKeyboardSettings().keyPopups
         engine.autoCapitalizes = FullKeyboardSettings().autoCapitalization
+        hapticStrength = FullKeyboardSettings().hapticStrength
         syncHexPlacement()
         refreshEmojiKey()
         let wantsAutocorrect = FullKeyboardSettings().autocorrect
         if engine.autocorrect.isEnabled != wantsAutocorrect {
             engine.autocorrect.isEnabled = wantsAutocorrect
+            engine.refreshSuggestions()
+        }
+        let vocabulary = CustomVocabularySettings().terms
+        if engine.autocorrect.vocabulary != vocabulary {
+            engine.autocorrect.setVocabulary(vocabulary)
             engine.refreshSuggestions()
         }
         let wantsSwearing = FullKeyboardSettings().suggestSwearWords
@@ -414,11 +512,13 @@ final class FullKeyboardView: UIView, UIInputViewAudioFeedback {
 
     /// Settings › Keyboard › Swipe typing (on by default): on the English and Spanish layouts, a
     /// drag across the letters types a word, read with the layout language's bundled model.
-    /// Off under VoiceOver, which has its own way to type.
+    /// Off under VoiceOver, which has its own way to type. German stays out of it:
+    /// `supportsSwipeTyping` lists English and Spanish only, and the experiment does not add it.
     private func syncSwipeTyping() {
-        let on = (swipeOverride ?? FullKeyboardSettings().swipeTyping) && engine.language.supportsSwipeTyping
+        let settings = FullKeyboardSettings()
+        let on = (swipeOverride ?? settings.swipeTyping) && engine.language.supportsSwipeTyping
             && !UIAccessibility.isVoiceOverRunning
-        let model = on ? TypingDecoderModel.bundled(engine.language.rawValue) : nil
+        let model = on ? settings.typingModel(for: engine.language) : nil
         if plane.swipe?.model !== model {
             plane.swipe = model.map { SwipeTyping(engine: engine, model: $0) }
         } else {
@@ -427,23 +527,25 @@ final class FullKeyboardView: UIView, UIInputViewAudioFeedback {
     }
 
     /// Settings › Keyboard › Spatial autocorrect (on by default): maps the layout language's
-    /// bundled model when the keyboard opens (English and Spanish today; others keep `UITextChecker`),
-    /// and moves the keys' centres to where Learn how I type saw you tap. The same word list
-    /// lets the likely next letter claim a few points of its neighbour's touch target whether
-    /// or not the experiment is on (`FullKeyboardEngine.letterOdds`; only while autocorrecting).
+    /// bundled model when the keyboard opens (English, Spanish, and German while its experiment
+    /// in Settings › Experiments is on; others keep `UITextChecker`), and moves the keys'
+    /// centres to where Learn how I type saw you tap. The same word list lets the likely next
+    /// letter claim a few points of its neighbour's touch target whether or not Spatial
+    /// autocorrect is on (`FullKeyboardEngine.letterOdds`; only while autocorrecting).
     private func syncSpatialAutocorrect() {
-        let words = TypingDecoderModel.bundled(engine.language.rawValue)
+        let settings = FullKeyboardSettings()
+        let words = settings.typingModel(for: engine.language)
         if engine.letterOdds !== words {
             engine.letterOdds = words
         }
-        let model = FullKeyboardSettings().spatialAutocorrect ? words : nil
+        let model = settings.spatialAutocorrect ? words : nil
         if engine.autocorrect.decoder?.model !== model {
             engine.autocorrect.decoder = model.map { TypingDecoder(model: $0) }
             engine.refreshSuggestions()
         }
         // Bilingual autocorrect reads the same taps with the other language's model, where it has one.
         if let partner = engine.autocorrect.partner {
-            let theirs = FullKeyboardSettings().spatialAutocorrect ? TypingDecoderModel.bundled(partner.language.rawValue) : nil
+            let theirs = settings.spatialAutocorrect ? settings.typingModel(for: partner.language) : nil
             if partner.decoder?.model !== theirs {
                 partner.decoder = theirs.map { TypingDecoder(model: $0) }
                 engine.refreshSuggestions()
@@ -471,6 +573,10 @@ final class FullKeyboardView: UIView, UIInputViewAudioFeedback {
         } else {
             engine.textDidChange()
         }
+        // Moved somewhere it can't take the dictation back from: no button that does nothing.
+        if let undo = lastDictation, undoPlan(undo) == nil {
+            hideUndo()
+        }
         refreshReturnKey()
         refreshStrip()
     }
@@ -487,7 +593,7 @@ final class FullKeyboardView: UIView, UIInputViewAudioFeedback {
         refreshStrip()
         dismissStyleMenu()
         if allowsHaptics() {
-            haptics.prepare()
+            keyTicks.prepare()
             selectionHaptics.prepare()
         }
     }
@@ -498,6 +604,7 @@ final class FullKeyboardView: UIView, UIInputViewAudioFeedback {
         if emojiPanel == nil {
             emojiLibrary = nil
         }
+        emojiPanel?.glyphs.purge()
         if !showsRecording, let panel = recordingPanel {
             panel.tearDown()
             panel.removeFromSuperview()
@@ -505,9 +612,10 @@ final class FullKeyboardView: UIView, UIInputViewAudioFeedback {
         }
     }
 
-    /// Hex inserted a dictation; offer to take it back until the next edit.
-    func didInsertDictation(_ text: String) {
-        lastDictation = text
+    /// Hex inserted a dictation between `before` and `after`; offer to take it back until the
+    /// next edit, or until it can't be found from the cursor.
+    func didInsertDictation(_ text: String, before: String = "", after: String = "") {
+        lastDictation = DictationUndo(text: text, before: before, after: after)
         refreshStrip()
         undoHideWork?.cancel()
         let work = DispatchWorkItem { [weak self] in self?.hideUndo() }
@@ -526,11 +634,8 @@ final class FullKeyboardView: UIView, UIInputViewAudioFeedback {
     /// Fixtures: show a key's accent callout with `option` selected.
     func debugHoldAccent(_ character: String, selecting option: String) {
         debugHoldAccent(character)
-        guard let menu = engine.activeAccentMenu,
-              let index = menu.options.firstIndex(of: option),
-              let key = engine.layout.key(.character(character)) else { return }
-        let cell = menu.cellFrames[index]
-        engine.touchMoved(id: -2, to: CGPoint(x: cell.midX, y: key.frame.midY))
+        guard let index = engine.activeAccentMenu?.options.firstIndex(of: option) else { return }
+        engine.debugSelectAccent(index)
     }
 
     /// Fixtures: show a key's long-press accent callout.
@@ -539,12 +644,7 @@ final class FullKeyboardView: UIView, UIInputViewAudioFeedback {
         let center = CGPoint(x: key.frame.midX, y: key.frame.midY)
         engine.touchBegan(id: -2, at: center)
         _ = engine.openAccentMenuIfEligible(forTouch: -2)
-        if let selectIndex,
-           let menu = engine.activeAccentMenu,
-           selectIndex >= 0, selectIndex < menu.cellFrames.count {
-            let cell = menu.cellFrames[selectIndex]
-            engine.touchMoved(id: -2, to: CGPoint(x: cell.midX, y: center.y))
-        }
+        if let selectIndex { engine.debugSelectAccent(selectIndex) }
     }
 
     // MARK: - Layout
@@ -568,13 +668,17 @@ final class FullKeyboardView: UIView, UIInputViewAudioFeedback {
         stripView.frame = layout.stripFrame.offsetBy(dx: 0, dy: lift)
         stripView.slotFrames = layout.stripSlotFrames.map { $0.offsetBy(dx: -layout.stripFrame.minX, dy: -layout.stripFrame.minY) }
         stripView.pillInset = layout.metrics.stripInset
+        stripView.textCenterY = layout.metrics.stripTextCenter
+        stripView.chipHeight = layout.metrics.stripChipHeight
         stripView.hexOnLeading = layout.hexOnLeading
+        stripView.barMidX = layout.stripBarFrame.midX - layout.stripFrame.minX
 
         hexKey.cornerRadius = layout.metrics.cornerRadius
         if let hex = layout.key(.hex) {
             hexKey.inStrip = hex.row < 0
             hexKey.frame = hex.hitFrame.offsetBy(dx: 0, dy: lift)
             hexKey.keycapFrame = hex.frame.offsetBy(dx: -hex.hitFrame.minX, dy: -hex.hitFrame.minY)
+            hexKey.markCenterY = layout.metrics.stripTop + layout.metrics.stripTextCenter - hex.hitFrame.minY
         }
         if let globe = layout.key(.globe), emojiPanel == nil || routedTarget.isSearching {
             globeButton.isHidden = false
@@ -588,7 +692,7 @@ final class FullKeyboardView: UIView, UIInputViewAudioFeedback {
             panel.frame = recordingPanelFrame
             panel.horizontalInset = layout.horizontalInset
             panel.metrics = layout.metrics
-            panel.sideKeyWidth = layout.letterWidth * KeyboardLayout.modifierWidthRatio
+            panel.sideKeyWidth = layout.modifierWidth
             panel.hexOnLeading = layout.hexOnLeading
         }
         if let menu = styleMenu, let hex = layout.key(.hex) {
@@ -624,36 +728,15 @@ final class FullKeyboardView: UIView, UIInputViewAudioFeedback {
     }
 
     func refreshReturnKey() {
-        let type = engine.target.returnKeyType ?? .default
-        plane.returnLabel = switch type {
-        case .go: "go"
-        case .google, .yahoo, .search: "search"
-        case .join: "join"
-        case .next: "next"
-        case .route: "route"
-        case .send: "send"
-        case .done: "done"
-        case .emergencyCall: "SOS"
-        case .continue: "continue"
-        default: "return"
-        }
-        plane.returnSymbol = switch type {
-        case .send: "arrow.up"
-        case .go, .continue, .route, .join: "arrow.right"
-        case .google, .yahoo, .search: "magnifyingglass"
-        case .done: "checkmark"
-        case .emergencyCall: nil
-        default: "return"
-        }
-        plane.returnIsAction = switch type {
-        case .go, .google, .yahoo, .search, .join, .route, .send, .done, .continue, .emergencyCall: true
-        default: false
-        }
-        plane.returnIsEnabled = !(engine.target.enablesReturnKeyAutomatically == true && !engine.target.hasText)
+        plane.returnStyle = ReturnKeyStyle(engine.target.returnKeyType)
+        plane.returnIsEnabled = ReturnKeyStyle.isEnabled(
+            automatically: engine.target.enablesReturnKeyAutomatically,
+            hasText: engine.target.hasText
+        )
     }
 
     private func refreshFromModel() {
-        hexKey.isWarm = model.hasFullAccess && model.isWarmAvailable
+        hexKey.isWarm = model.dictatesThroughHex
         hexKey.translatingTo = model.translatingTo
         if engine.showsGlobe != model.needsGlobeKey {
             engine.showsGlobe = model.needsGlobeKey
@@ -680,6 +763,7 @@ final class FullKeyboardView: UIView, UIInputViewAudioFeedback {
         menu.dictationLanguage = model.dictationLanguage
         menu.automaticLanguage = model.automaticLanguage
         menu.languageChoices = model.showsLanguageSwitch ? model.languageChoices : []
+        menu.moreLanguages = model.showsLanguageSwitch ? model.moreLanguages : []
         menu.translationTarget = model.showsTranslationSwitch ? model.translationLanguage : nil
         menu.isTranslating = model.isTranslating
         menu.translationTargets = model.translationTargetChoices
@@ -695,10 +779,18 @@ final class FullKeyboardView: UIView, UIInputViewAudioFeedback {
         } else {
             nil
         }
-        let clipboardOffer = clipboard.offer(
+        var clipboardOffer = clipboard.offer(
             textContentType: engine.target.textContentType,
+            keyboardType: engine.target.keyboardType,
+            autocorrectionType: engine.target.autocorrectionType,
+            fieldIsEmpty: !engine.target.hasText,
             hasFullAccess: model.hasFullAccess
         )
+        // A dictation that didn't go in by itself comes before a copy, but not in a code field.
+        if model.hasFullAccess, model.offeredDictation != nil {
+            if case .code = clipboardOffer {} else { clipboardOffer = .dictation }
+        }
+        stripOffer = clipboardOffer
         var suggestions = engine.suggestions
         if showsAllowPasteHint, status != nil {
             // The pasted text's last word would otherwise hide where to stop Allow Paste.
@@ -721,8 +813,16 @@ final class FullKeyboardView: UIView, UIInputViewAudioFeedback {
             showsUndo: lastDictation != nil,
             statusText: status,
             clipboard: clipboardOffer,
-            fullAccessHint: showsFullAccessHint && !model.hasFullAccess
+            fullAccessHint: showsFullAccessHint && !model.hasFullAccess,
+            notice: vocabularyNotice ?? translationNotice
         )
+    }
+
+    /// The last dictation went in as spoken while Translate what I say was on: what happened,
+    /// the fix, and Open Hex, which opens Settings › Dictation.
+    private var translationNotice: KeyboardStripNotice? {
+        guard model.hasFullAccess, let note = model.translationNote else { return nil }
+        return KeyboardStripNotice(title: TranslationFailure.note, detail: note.fix, button: String(localized: "Open Hex"))
     }
 
     // MARK: - Without Full Access
@@ -759,6 +859,13 @@ final class FullKeyboardView: UIView, UIInputViewAudioFeedback {
     }
 
     private func pasteFromClipboard() {
+        if stripOffer == .dictation {
+            keyFeedback()
+            typingLog?.ui("paste_dictation")
+            model.onPasteDictation?()
+            refreshStrip()
+            return
+        }
         let pasteboard = UIPasteboard.general
         // The read blocks while iOS asks Allow Paste, so its length tells whether it asked.
         let start = ProcessInfo.processInfo.systemUptime
@@ -977,6 +1084,7 @@ final class FullKeyboardView: UIView, UIInputViewAudioFeedback {
 
     private func updateCallout() {
         if let menu = engine.activeAccentMenu {
+            endCalloutLinger()
             callout.show(nil, label: "")
             accentCallout.show(menu)
             return
@@ -984,19 +1092,51 @@ final class FullKeyboardView: UIView, UIInputViewAudioFeedback {
         accentCallout.show(nil)
         let layout = engine.layout
         if engine.showsKeyPopups, let key = engine.previewKey, let balloon = layout.balloon(for: key) {
-            callout.show(balloon, label: engine.displayLabel(for: key))
-        } else {
+            endCalloutLinger()
+            let label = KeyboardKeyPlaneView.keycapLabel(engine.displayLabel(for: key))
+            callout.show(balloon, label: label, style: KeyCalloutView.style(for: label))
+            shownPreviewKind = key.kind
+        } else if let kind = shownPreviewKind, calloutLingerWork == nil, engine.touches.isEmpty {
+            // The finger lifted: Apple's pop-up and its grey key stay up 3 frames more (about
+            // 50 ms after the letter lands, iOS 27.2 at 60 fps), then go in one frame.
+            plane.lingeringKind = kind
+            let work = DispatchWorkItem { [weak self] in self?.endCalloutLinger() }
+            calloutLingerWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + KeyCalloutView.linger, execute: work)
+        } else if calloutLingerWork == nil {
+            shownPreviewKind = nil
+            callout.show(nil, label: "")
+        }
+    }
+
+    /// The key whose pop-up is up, or lingering after the finger lifted.
+    private var shownPreviewKind: KeyKind?
+    private var calloutLingerWork: DispatchWorkItem?
+
+    private func endCalloutLinger() {
+        calloutLingerWork?.cancel()
+        calloutLingerWork = nil
+        guard plane.lingeringKind != nil || shownPreviewKind != nil else { return }
+        plane.lingeringKind = nil
+        if engine.previewKey == nil {
+            shownPreviewKind = nil
             callout.show(nil, label: "")
         }
     }
 
     // MARK: - Actions
 
+    /// The system key click (`KeyboardInputView`), one for every key, delete and shift too:
+    /// Apple's keyboard plays other sounds for those, but the click is the only keyboard sound
+    /// a keyboard may play. Tests count it.
+    var playInputClick: () -> Void = { UIDevice.current.playInputClick() }
+
+    /// A key went down (or delete repeated): its click, and its tick while haptics are allowed.
     func keyFeedback() {
-        UIDevice.current.playInputClick()
+        playInputClick()
         if allowsHaptics() {
-            haptics.impactOccurred(intensity: 0.65)
-            haptics.prepare()
+            keyTicks.impactOccurred(intensity: Self.keyTickIntensity(hapticStrength))
+            keyTicks.prepare()
         }
     }
 
@@ -1007,8 +1147,8 @@ final class FullKeyboardView: UIView, UIInputViewAudioFeedback {
         }
     }
 
-    /// A tap or still hold on the Hex key.
-    private func hexKeyHeld() {
+    /// A tap or still hold on the Hex key, or a hold on the bar where no word is (`from`).
+    private func hexKeyHeld(from source: String = "hex_key") {
         if allowsHaptics() { haptics.impactOccurred() }
         dismissStyleMenu()
         guard model.hasFullAccess else {
@@ -1019,15 +1159,15 @@ final class FullKeyboardView: UIView, UIInputViewAudioFeedback {
             return
         }
         if hexKey.isWarm {
-            typingLog?.ui("hex_key", [TypingLogField("dictation", .string("warm"))])
+            typingLog?.ui(source, [TypingLogField("dictation", .string("warm"))])
             dictatingFromHexKey = true
             model.onDictateTap?()
         } else if let local = model.onLocalDictateTap {
-            typingLog?.ui("hex_key", [TypingLogField("dictation", .string("keyboard"))])
+            typingLog?.ui(source, [TypingLogField("dictation", .string("keyboard"))])
             dictatingFromHexKey = true
             local()
         } else {
-            typingLog?.ui("hex_key", [TypingLogField("dictation", .string("open_hex"))])
+            typingLog?.ui(source, [TypingLogField("dictation", .string("open_hex"))])
             dictatingFromHexKey = false
             model.onOpenURL?(model.coldStartURL)
         }
@@ -1035,11 +1175,89 @@ final class FullKeyboardView: UIView, UIInputViewAudioFeedback {
 
     /// Push to talk: lifting the finger after a hold finishes the dictation the hold started,
     /// as Done does. A hold that opened Hex has nothing to finish here.
-    private func hexKeyReleased() {
+    private func hexKeyReleased(from source: String = "hex_key_release") {
         guard dictatingFromHexKey else { return }
         dictatingFromHexKey = false
-        typingLog?.ui("dictation_stop", [TypingLogField("from", .string("hex_key_release"))])
+        typingLog?.ui("dictation_stop", [TypingLogField("from", .string(source))])
         model.onStopTap?()
+    }
+
+    // MARK: - Holding the bar
+
+    /// Apple's long press: a still finger this long on the bar where no word is dictates.
+    static let barHoldDuration: TimeInterval = 0.4
+
+    /// Whether a finger at `point` may hold the bar to dictate. Only touches nothing else took
+    /// reach here (an empty slot, beside the Hex key, a bar with no words); a word's slot,
+    /// the Hex key and the keys take their own. Not while the bar shows the Full Access hint
+    /// or a notice, or a dictation, the emoji panel or the style menu is up.
+    private func takesBarHold(at point: CGPoint) -> Bool {
+        let m = engine.layout.metrics
+        let bar = CGRect(x: 0, y: appliedLift, width: bounds.width, height: m.stripTop + m.stripHeight)
+        guard bar.contains(point), !showsRecording, emojiPanel == nil, styleMenu == nil,
+              !(showsFullAccessHint && !model.hasFullAccess), vocabularyNotice == nil, translationNotice == nil
+        else { return false }
+        return model.stagePhase == .idle || model.stagePhase == .failed
+    }
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard barHoldTouch == nil, let touch = touches.first, takesBarHold(at: touch.location(in: self)) else {
+            super.touchesBegan(touches, with: event)
+            return
+        }
+        barHoldTouch = touch
+        barHold.touchDown(at: touch.location(in: self))
+        let work = DispatchWorkItem { [weak self] in self?.barHoldElapsed() }
+        barHoldWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.barHoldDuration, execute: work)
+    }
+
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard let touch = barHoldTouch, touches.contains(touch) else {
+            super.touchesMoved(touches, with: event)
+            return
+        }
+        // A slide before the hold is no hold (the bar has no menu); after it, moves don't matter.
+        if barHold.touchMoved(to: touch.location(in: self)) == .openMenu { endBarHold() }
+    }
+
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard let touch = barHoldTouch, touches.contains(touch) else {
+            super.touchesEnded(touches, with: event)
+            return
+        }
+        // A tap does nothing; lifting after the hold finishes the dictation it started.
+        let output = barHold.touchUp()
+        endBarHold()
+        if output == .release { hexKeyReleased(from: "bar_release") }
+    }
+
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard let touch = barHoldTouch, touches.contains(touch) else {
+            super.touchesCancelled(touches, with: event)
+            return
+        }
+        // As the Hex key's: a hold that already fired keeps dictating (Done finishes it).
+        endBarHold()
+    }
+
+    private func barHoldElapsed() {
+        barHoldWork = nil
+        guard barHoldTouch != nil, barHold.holdElapsed() == .hold else { return }
+        guard let touch = barHoldTouch, takesBarHold(at: touch.location(in: self)) else {
+            endBarHold()
+            return
+        }
+        // The Hex key's own path: its press (in-keyboard dictation arms) then its hold.
+        model.onHexKeyPress?(Date().timeIntervalSince1970)
+        hexKeyHeld(from: "bar_hold")
+    }
+
+    private func endBarHold() {
+        barHoldWork?.cancel()
+        barHoldWork = nil
+        barHold.cancel()
+        barHoldTouch = nil
     }
 
     /// Hold and slide: light the row under the finger, and pick it on release.
@@ -1069,6 +1287,11 @@ final class FullKeyboardView: UIView, UIInputViewAudioFeedback {
             self?.typingLog?.ui("dictation_language", [TypingLogField("language", .string(language ?? "automatic"))])
             self?.model.onLanguageSelected?(language)
             self?.dismissStyleMenu()
+        }
+        // The menu stays open, so the language is seen to go.
+        menu.onRemoveLanguage = { [weak self] language in
+            self?.typingLog?.ui("dictation_language_removed", [TypingLogField("language", .string(language))])
+            self?.model.onLanguageRemoved?(language)
         }
         menu.onTranslationToggle = { [weak self] on in
             self?.typingLog?.ui("translate", [TypingLogField("on", .bool(on))])
@@ -1106,18 +1329,44 @@ final class FullKeyboardView: UIView, UIInputViewAudioFeedback {
         styleMenu?.show(page: page)
     }
 
+    /// Fixtures: the language page with Remove on a language's row.
+    func debugOfferRemove(_ language: String) {
+        showStyleMenu()
+        styleMenu?.debugOfferRemove(language)
+    }
+
+    /// Where the dictation is from the cursor, or nil when it can't be told apart from other
+    /// text: right before the cursor (perhaps only its end shown), or found once around it.
+    private func undoPlan(_ undo: DictationUndo) -> DictationUndo.Plan? {
+        let target = engine.target
+        let selected = target.selectedText
+        guard selected?.isEmpty ?? true else { return nil }
+        let text = undo.text
+        let before = target.documentContextBeforeInput ?? ""
+        let after = target.documentContextAfterInput ?? ""
+        // Right before the cursor, with what followed it when it went in still after the cursor.
+        if after.hasPrefix(undo.after) || undo.after.hasPrefix(after),
+           before.hasSuffix(text) || (!before.isEmpty && before.count < text.count && text.hasSuffix(before)) {
+            return DictationUndo.Plan(toEnd: 0, delete: text.count, back: 0)
+        }
+        return undo.plan(before: before, after: after, selected: selected)
+    }
+
     private func undoDictation() {
-        guard let text = lastDictation else { return }
+        guard let undo = lastDictation else { return }
+        let text = undo.text
         let before = engine.target.documentContextBeforeInput ?? ""
-        // Only take back text that is still right before the cursor.
-        if before.hasSuffix(text) || (!before.isEmpty && before.count < text.count && text.hasSuffix(before)) {
+        if let plan = undoPlan(undo) {
             // The host may show only the end of it; replay removes what the keys remove.
-            typingLog?.edit("undo_dictation", before.hasSuffix(text)
+            typingLog?.edit("undo_dictation", before.hasSuffix(text) || plan.toEnd != 0
                 ? [TypingLogField("deleted", .string(text))]
                 : [TypingLogField("deletedCount", .int(text.count))])
-            for _ in 0..<text.count {
+            // Moves stay inside the text the host showed, so it doesn't drop them.
+            if plan.toEnd != 0 { engine.target.adjustTextPosition(byCharacterOffset: plan.toEnd) }
+            for _ in 0..<plan.delete {
                 engine.target.deleteBackward()
             }
+            if plan.back != 0 { engine.target.adjustTextPosition(byCharacterOffset: plan.back) }
             onUndoDictation?()
         } else {
             typingLog?.ui("undo_dictation", [TypingLogField("applied", .bool(false))])

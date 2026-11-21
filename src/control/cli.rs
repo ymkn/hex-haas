@@ -7,6 +7,7 @@
 //! heard no speech. Nothing here launches Hex except `start` and `restart`.
 
 use std::io::Write;
+pub(crate) mod annotate_read;
 mod completions;
 mod embedded;
 mod human;
@@ -74,10 +75,9 @@ pub enum ControlCli {
     Dictation {
         #[arg(value_enum)]
         action: CaptureAction,
-        /// With `start` (Labs › Dictation for a command, macOS) or `stop`:
-        /// answer with the transcript instead of pasting it. A printing start
-        /// waits for its recording to end. Exits 4, printing nothing, when no
-        /// speech was heard.
+        /// With `start` (macOS) or `stop`: answer with the transcript
+        /// instead of pasting it. A printing start waits for its recording to
+        /// end. Exits 4, printing nothing, when no speech was heard.
         #[arg(long)]
         print: bool,
         /// With `start` or `toggle`: paste the transcript as heard,
@@ -207,9 +207,8 @@ pub enum ControlCli {
         #[command(subcommand)]
         command: CaptureCommand,
     },
-    /// Print a shell completion script for `hex` (Labs › Shell
-    /// completions).
-    #[command(hide = true)]
+    /// Print a shell completion script for `hex` (bash, zsh, fish, elvish,
+    /// or PowerShell).
     Completions {
         /// The shell to print a completion script for.
         #[arg(value_enum)]
@@ -832,6 +831,9 @@ fn meetings(command: crate::control::transcript_cli::MeetingsCommand) -> u8 {
         }
         MeetingsCommand::Stop { output } => send(ControlCommand::MeetingStop, output),
         MeetingsCommand::CopyLast { output } => send(ControlCommand::MeetingCopyLast, output),
+        MeetingsCommand::Delete { id, output } => {
+            send(ControlCommand::MeetingDelete { id }, output)
+        }
         command => report(crate::control::transcript_cli::meetings(&command)),
     }
 }
@@ -952,16 +954,35 @@ pub enum CaptureCommand {
         #[command(flatten)]
         output: Output,
     },
+    /// Print a capture's summary, its marks, or its manifest, for a coding agent
+    /// (Labs › Agent tools for captures).
+    Inspect(annotate_read::Inspect),
+    /// A dense sheet of frames around a moment or a mark, for a coding agent
+    /// (Labs › Agent tools for captures).
+    Zoom(annotate_read::Zoom),
+    /// Extract frames across a time range, one PNG each, for a coding agent
+    /// (Labs › Agent tools for captures).
+    Frames(annotate_read::Frames),
+    /// Print the skill that teaches a coding agent to read captures
+    /// (Labs › Agent tools for captures).
+    Skill,
 }
 
 /// Runs `hex capture`: on macOS through the running Hex; on Linux the
 /// folder reads (`list`, `show`, `route`, `send`) run here, and the
 /// recording commands go to the running Hex's listener; on Windows every
-/// command goes to the running Hex. A build without the capture engine
-/// answers `unsupported`.
+/// command goes to the running Hex. The agent reads (`inspect`, `zoom`,
+/// `frames`, and `skill`) run here, in the CLI process, on every OS. A build
+/// without the capture engine answers `unsupported`.
 pub fn capture(command: CaptureCommand) -> u8 {
     use crate::control::{ControlCommand as C, ScrawlCaptureAction as A};
+    // The reads run here, on every OS: they only touch bundle files and the
+    // video decoder, so Hex needn't be running.
     let (command, output) = match command {
+        CaptureCommand::Inspect(args) => return annotate_read::inspect(args),
+        CaptureCommand::Zoom(args) => return annotate_read::zoom(args),
+        CaptureCommand::Frames(args) => return annotate_read::frames(args),
+        CaptureCommand::Skill => return annotate_read::skill(),
         #[cfg(target_os = "linux")]
         CaptureCommand::Start {
             area: Some(area),

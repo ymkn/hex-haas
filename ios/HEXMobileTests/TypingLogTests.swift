@@ -165,6 +165,33 @@ final class TypingLogTests: XCTestCase {
         XCTAssertNil(TypingLogger.sharedIfEnabled(settings: TypingLogSettings(defaults: nil)), "no logger while the experiment is off")
     }
 
+    func testTypingLogsTurnOffOnceAndKeepWhatTheyRecorded() throws {
+        let name = "TypingLogMigration-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        let store = TypingLogStore(directory: directory)
+        let logger = TypingLogger(store: store)
+        logger.contextSource = { TypingLogContext(before: "", after: "", hasText: false) }
+        logger.beginSession(Self.info(TypingLogTraits()))
+        logger.endSession(reason: "disappear")
+        store.waitUntilWritten()
+        let recorded = TypingLogStore.days(in: directory).count
+        XCTAssertGreaterThan(recorded, 0)
+
+        let settings = TypingLogSettings(defaults: defaults)
+        settings.isEnabled = true
+        settings.turnOffOnce()
+        XCTAssertFalse(settings.isEnabled, "the migration turns it off")
+        XCTAssertEqual(TypingLogStore.days(in: directory).count, recorded, "the logs already recorded stay")
+        settings.isEnabled = true
+        settings.turnOffOnce()
+        XCTAssertTrue(settings.isEnabled, "turned back on after the migration, it stays on")
+
+        let neverOn = TypingLogSettings(defaults: nil)
+        neverOn.turnOffOnce()
+        XCTAssertFalse(neverOn.isEnabled)
+    }
+
     func testASkippedFieldWritesOneLineAndNothingElse() throws {
         let store = TypingLogStore(directory: directory)
         let logger = TypingLogger(store: store)
@@ -184,6 +211,40 @@ final class TypingLogTests: XCTestCase {
         XCTAssertEqual(parsed[0]["type"] as? String, "skipped")
         XCTAssertEqual(parsed[0]["reason"] as? String, "textContentType:password")
         XCTAssertFalse(try String(contentsOf: TypingLogStore.days(in: directory)[0].url, encoding: .utf8).contains("hunter"))
+    }
+
+    // MARK: - Which field
+
+    /// The keyboard's proxy names no document early on (nil, though UIKit declares it
+    /// non-optional): reading it gives nil instead of trapping, and a document reads as itself.
+    func testDocumentIdentifierReadsNilInsteadOfTrapping() {
+        let proxy = DocumentProxyStandIn()
+        XCTAssertNil(TypingLogTraits.documentIdentifier(of: proxy))
+        let id = UUID()
+        proxy.documentIdentifier = id as NSUUID
+        XCTAssertEqual(TypingLogTraits.documentIdentifier(of: proxy), id)
+        XCTAssertNil(TypingLogTraits.documentIdentifier(of: NSObject()), "an object without one")
+    }
+
+    /// A document that wasn't named yet is the field the session is in; another document, or
+    /// other traits, is another field.
+    func testAnUnnamedDocumentIsTheSameField() {
+        let unnamed = TypingLogTraits()
+        var named = TypingLogTraits()
+        named.document = "A"
+        var other = TypingLogTraits()
+        other.document = "B"
+        XCTAssertFalse(unnamed.isOtherField(than: named))
+        XCTAssertFalse(named.isOtherField(than: unnamed))
+        XCTAssertFalse(named.isOtherField(than: named))
+        XCTAssertTrue(named.isOtherField(than: other))
+        var email = named
+        email.keyboardType = "emailAddress"
+        XCTAssertTrue(unnamed.isOtherField(than: email))
+    }
+
+    private final class DocumentProxyStandIn: NSObject {
+        @objc var documentIdentifier: NSUUID?
     }
 
     // MARK: - The real keyboard

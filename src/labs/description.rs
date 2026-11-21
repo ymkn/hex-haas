@@ -26,18 +26,15 @@ impl Feature {
                 "On Wayland, show your words in the text box as you speak, then Hex types the text there"
             }
             Self::LiveChapters => "Split a meeting's text into chapters while it records",
-            Self::VocabularyBiasing => {
-                "Help Parakeet-based speech models hear your Vocabulary words; rewriting and search use them anyway"
-            }
             Self::ScreenVocabulary => {
                 "Names in the window you're dictating into help Hex spell them. Never saved. Parakeet needs Vocabulary help, and a dictation with terms runs after release instead of from the live stream."
+            }
+            Self::LearnFromCorrections => {
+                "When you fix a name in text Hex just pasted, add the corrected spelling to Vocabulary; Hex watches only that field, for up to 5 minutes, and sends nothing anywhere"
             }
             Self::TerminalPaste => "Paste with Ctrl+Shift+V, for apps that ignore Ctrl+V",
             Self::KeyboardModelSwitching => {
                 "Changing the keyboard language switches to the speech model you picked for it"
-            }
-            Self::AppModelSwitching => {
-                "Each dictation mode's speech model and language follow the app in front"
             }
             Self::MouseShortcuts => "Use a mouse button, such as a side button, as a shortcut",
             Self::PauseBrowser => "Also pause the browser while dictating, with Pause media",
@@ -116,7 +113,6 @@ impl Feature {
             Self::OutputFixes => {
                 "Offer Vocabulary and Fix this beside Output's Try result, to correct a wrong result"
             }
-            Self::PickerActiveFirst => "The speech model list shows the model you're using first",
             Self::ModelInPlace => {
                 "Add a speech model file and use it where it is, without copying it, so several accounts can share one file"
             }
@@ -136,9 +132,6 @@ impl Feature {
                 "Keep the audio of your dictations in History, so you can turn them into text again with another speech model"
             }
             Self::Appearance => "Use light or dark for the main window instead of the system's",
-            Self::ReleaseNotesLink => {
-                "Show a link to what changed in this version at the bottom of the sidebar"
-            }
             Self::HideMenuBarIcon => {
                 "Hide Hex's menu bar icon; shortcuts keep working, and opening Hex again shows Settings"
             }
@@ -172,9 +165,6 @@ impl Feature {
             Self::MeetingImport => {
                 "Add an audio file to Meetings and turn it into text on this Mac"
             }
-            Self::QuitClosesWindow => {
-                "⌘Q closes the Settings window instead of quitting Hex; dictation keeps running, and the menu bar icon still quits"
-            }
             Self::CapsLockDictation => {
                 "Press Caps Lock to start and stop dictation; its light shows when Hex records and writes the text"
             }
@@ -193,9 +183,6 @@ impl Feature {
             Self::ApiTimestamps => {
                 "Let apps using Hex's local API ask when each word or phrase starts and ends, as the speech model heard them"
             }
-            Self::ApiBrowserAccess => {
-                "Let web pages from the addresses you list call Hex's local API from the browser; every request still needs the API token"
-            }
             Self::SpeakersOnly => {
                 "Apply \"While dictating\" only when sound plays through speakers; headphones are left alone"
             }
@@ -208,17 +195,11 @@ impl Feature {
             Self::CalendarSelectAll => {
                 "Add a Select all or Deselect all button beside the Calendars row in Meetings settings, so every calendar is included or left out at once (macOS)"
             }
-            Self::PrintStart => {
-                "Let hex dictation start --print hand the transcript to the command that started it, however the recording ends"
-            }
             Self::VoicePrompt => {
                 "Say \"rewrite this\" and then what you want; Hex redoes the text with the mode's AI model"
             }
             Self::CursorContext => {
                 "The mode's OpenCode rewrite uses the text around the cursor to spell names and terms right and fit where it pastes. That text goes to the mode's model, which may be a cloud provider; password fields are never read"
-            }
-            Self::ShellCompletions => {
-                "Print a script for bash, zsh, fish, elvish, or PowerShell that completes hex commands, with hex completions <shell>"
             }
             Self::YoloMode => {
                 "Press Return after a dictation is pasted, so the message sends itself"
@@ -240,6 +221,12 @@ impl Feature {
             }
             Self::VocabularyFiles => {
                 "Import terms from a CSV file into the vocabulary sheet, merging them into the list, and export the list as a CSV file"
+            }
+            Self::AnnotateAgentTools => {
+                "Adds hex annotate zoom, inspect, frames, and skill so coding agents can read a capture closely"
+            }
+            Self::AnnotateAgentInstall => {
+                "Adds an Agents section to the Annotate pane: one checked row per coding agent writes the hex-annotate skill into its own skills folder, a row copies the npx skills add command, and on macOS the Command-line tool row links hex onto PATH (/opt/homebrew/bin, /usr/local/bin, else ~/.local/bin) without replacing a hex another program owns"
             }
         }
     }

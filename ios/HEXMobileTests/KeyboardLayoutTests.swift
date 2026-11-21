@@ -24,22 +24,39 @@ final class KeyboardLayoutTests: XCTestCase {
                 }
                 layouts.append(KeyboardLayout(width: width, field: .email, language: language))
             }
+            // Every other arrangement a language offers (Settings › Keyboard › Languages › Layout).
+            for language in KeyboardLanguage.allCases {
+                for letters in language.letterLayouts.dropFirst() {
+                    for globe in [false, true] {
+                        layouts.append(KeyboardLayout(width: width, showsGlobe: globe, language: language, letters: letters))
+                    }
+                }
+            }
         }
         return layouts
     }
 
-    func testPortraitIs253PointsAndLandscapeIs187Points() {
+    func testPortraitHeightFollowsApplesKeyPlaneAndLandscapeIs204Points() {
         for width in portraitWidths {
-            XCTAssertEqual(KeyboardLayout(width: width).totalHeight, 253, "width \(width)")
+            XCTAssertEqual(KeyboardLayout(width: width).totalHeight, 247, "width \(width)")
         }
-        XCTAssertEqual(KeyboardLayout.height(for: .portrait), 253)
-        XCTAssertEqual(KeyboardLayout.height(for: .landscape), 187)
+        // 46 pt of strip, then 4 rows: 43 pt on a 54 pt pitch with row 4 4 pt short (17, 17 Pro),
+        // 42 pt on 54 pt and 4 pt under (SE), 45 pt on 56 pt and 7 pt under (Air, Pro Max).
+        XCTAssertEqual(KeyboardLayout.height(for: .portrait), 247)
+        XCTAssertEqual(KeyboardLayout.height(for: .portrait, phoneSize: .homeButton), 254)
+        XCTAssertEqual(KeyboardLayout.height(for: .portrait, phoneSize: .large), 266)
+        XCTAssertEqual(KeyboardLayout.height(for: .landscape), 204)
+        XCTAssertEqual(KeyboardPhoneSize.current(screenSize: CGSize(width: 375, height: 667)), .homeButton)
+        XCTAssertEqual(KeyboardPhoneSize.current(screenSize: CGSize(width: 402, height: 874)), .regular)
+        XCTAssertEqual(KeyboardPhoneSize.current(screenSize: CGSize(width: 390, height: 844)), .regular)
+        XCTAssertEqual(KeyboardPhoneSize.current(screenSize: CGSize(width: 420, height: 912)), .large)
+        XCTAssertEqual(KeyboardPhoneSize.current(screenSize: CGSize(width: 956, height: 440)), .large)
     }
 
-    /// The strip is the 27 pt of Apple's predictive bar below the band iOS draws over a
-    /// third-party keyboard on every iPhone; row 1 starts 35 pt down, where Apple's keycaps start
-    /// relative to this view (35-35.5 pt, iOS 27.2). Turned there is no band: 42 pt, row 1 at
-    /// 50 pt, as Apple's. On the Duo folded and
+    /// The strip is Apple's predictive bar from its suggestion pill's top down on every iPhone
+    /// held upright: 38 pt (Apple's 44 pt bar less the 6 pt above its pill), then Apple's 8 pt to
+    /// row 1, which starts 46 pt down. Its pills are 28 pt, on the words' line. Turned: 42 pt,
+    /// row 1 at 50 pt, as Apple's. On the Duo folded and
     /// upright it is 32 pt and the same gap (row 1 at 40 pt, as Apple's); elsewhere on the Duo,
     /// Apple's whole 44 pt bar right on the keys.
     func testStripIsPinnedInEveryOrientationAndPosture() {
@@ -49,7 +66,7 @@ final class KeyboardLayoutTests: XCTestCase {
                 let m = KeyboardMetrics.for(orientation, posture: posture)
                 XCTAssertEqual(m.stripTop, 0, "\(posture) \(orientation)")
                 let cover = posture == .cover && orientation == .portrait
-                let phone: (CGFloat, CGFloat, CGFloat) = orientation == .portrait ? (27, 35, 26) : (42, 50, 36)
+                let phone: (CGFloat, CGFloat, CGFloat) = orientation == .portrait ? (38, 46, 28) : (42, 50, 36)
                 let expected = posture == .phone ? phone : cover ? (32, 40, 31) : (44, 44, 36)
                 XCTAssertEqual(m.stripHeight, expected.0, "\(posture) \(orientation)")
                 XCTAssertEqual(m.stripArea, expected.1, "\(posture) \(orientation)")
@@ -58,9 +75,43 @@ final class KeyboardLayoutTests: XCTestCase {
         }
         for layout in everyPortraitLayout() + landscapeLayouts() + duoLayouts() {
             XCTAssertEqual(layout.stripFrame.height, layout.metrics.stripHeight, describe(layout))
-            XCTAssertTrue([27, 32, 42, 44].contains(layout.stripFrame.height), describe(layout))
+            XCTAssertTrue([38, 32, 42, 44].contains(layout.stripFrame.height), describe(layout))
             let rowOneTop = layout.keys.filter { $0.row == 0 }.map(\.frame.minY).min()
             XCTAssertEqual(rowOneTop ?? -1, layout.metrics.stripArea, accuracy: 0.001, describe(layout))
+        }
+    }
+
+    /// On an iPhone held upright nothing in the strip touches the keyboard's top edge, which is
+    /// the panel's edge whenever iOS draws nothing above the keyboard (an iPhone 17 Pro's Safari
+    /// form, iOS 27.2): the words are on Apple's line, 26 pt above row 1 and 20 pt down, the
+    /// small chip and the pills are even around that line, and the pills start 6 pt down, as
+    /// Apple's pill does below its panel's edge.
+    func testPhoneStripKeepsItsContentOffTheTopEdgeAndOnApplesLine() {
+        for size in [KeyboardPhoneSize.regular, .homeButton, .large] {
+            let m = KeyboardMetrics.phonePortrait(size)
+            XCTAssertEqual(m.stripHeight, KeyboardMetrics.stripBarHeight, "\(size)")
+            XCTAssertEqual(m.stripArea - m.stripTextCenter, 26, "\(size): the words' line above row 1")
+            XCTAssertEqual(m.stripTextCenter, 20, "\(size): the words' line below the top edge")
+            XCTAssertEqual(m.stripChipHeight, 18, "\(size)")
+            XCTAssertEqual(m.stripTextCenter - m.stripChipHeight / 2, 11, "\(size): above the chip")
+            XCTAssertEqual(m.stripInset, 6, "\(size): above a pill")
+            XCTAssertEqual(m.stripInset + m.stripPillHeight / 2, m.stripTextCenter, "\(size): pills on the line")
+            XCTAssertLessThanOrEqual(m.stripInset + m.stripPillHeight, m.stripHeight, "\(size): pills inside the strip")
+            let band = m.stripLineBand
+            XCTAssertEqual(band.top + band.height / 2, m.stripTextCenter, "\(size)")
+            XCTAssertGreaterThanOrEqual(band.top, 0, "\(size)")
+            XCTAssertLessThanOrEqual(band.top + band.height, m.stripHeight, "\(size)")
+        }
+        let layout = KeyboardLayout(width: 402)
+        let hex = layout.key(.hex)!
+        XCTAssertEqual(hex.frame.minY, 6, accuracy: 0.001)
+        XCTAssertEqual(hex.hitFrame.minY, 0, accuracy: 0.001, "the room above the mark still presses the key")
+        // Where the words centre in the strip, the band is the whole strip and nothing moved.
+        for m in [KeyboardMetrics.landscape, KeyboardMetrics.for(.portrait, posture: .cover), KeyboardMetrics.for(.portrait, posture: .unfoldedTall)] {
+            XCTAssertEqual(m.stripTextCenter, m.stripHeight / 2)
+            XCTAssertEqual(m.stripLineBand.top, 0)
+            XCTAssertEqual(m.stripLineBand.height, m.stripHeight)
+            XCTAssertEqual(m.stripInset, (m.stripHeight - m.stripPillHeight) / 2)
         }
     }
 
@@ -68,7 +119,8 @@ final class KeyboardLayoutTests: XCTestCase {
     /// as far in from the screen's side as Apple's, and keys filling the width.
     func testDuoKeysMatchApplesRowsAndEdges() {
         let cases: [(KeyboardLayout, windowInset: CGFloat, pitch: CGFloat, appleEdge: CGFloat)] = [
-            (KeyboardLayout(width: 452, posture: .cover, windowInset: 7), 7, 56, 8),
+            // Folded, Apple's keys start 6.67 pt in, just outside the view: Hex's start at its edge.
+            (KeyboardLayout(width: 452, posture: .cover, windowInset: 7), 7, 56, 6.67),
             (KeyboardLayout(width: 655, posture: .unfoldedTall, windowInset: 7), 7, 59.7, 19),
             (KeyboardLayout(width: 801, posture: .unfoldedWide, windowInset: 75), 75, 51.7, 86),
         ]
@@ -84,7 +136,7 @@ final class KeyboardLayoutTests: XCTestCase {
         // Folded in landscape the Duo keeps the iPhone's landscape keys.
         let land = KeyboardLayout(width: 528, orientation: .landscape, posture: .cover, windowInset: 75)
         XCTAssertEqual(land.metrics.keyHeight, KeyboardMetrics.landscape.keyHeight)
-        XCTAssertEqual(land.totalHeight, 181)
+        XCTAssertEqual(land.totalHeight, 198)
     }
 
     /// Apple's split keyboard on the Duo unfolded upright (iOS 27.2 simulator, keyboard at
@@ -193,15 +245,86 @@ final class KeyboardLayoutTests: XCTestCase {
         XCTAssertEqual(KeyboardPosture.current(screenSize: CGSize(width: 669, height: 951), isFoldable: true), .unfoldedTall)
     }
 
-    func testPortraitMetricsMatchAppleIOS26() {
-        let proMax = KeyboardLayout(width: 440)
+    /// Apple's keys beside Hex's in the same field (iOS 27.2 simulators), every edge within a
+    /// device pixel: the numbers below are Apple's, read off screenshots.
+    func testPortraitMetricsMatchApple() {
+        let proMax = KeyboardLayout(width: 440, phoneSize: .large)
         XCTAssertEqual(proMax.letterWidth, (440 - 13 - 54) / 10, accuracy: 0.001)
         let q = proMax.key(.character("q"))!
         XCTAssertEqual(q.frame.minX, 6.5, accuracy: 0.001)
-        XCTAssertEqual(q.frame.minY, 35, accuracy: 0.001)
+        XCTAssertEqual(q.frame.minY, 46, accuracy: 0.001)
         XCTAssertEqual(q.frame.height, 45)
-        let shift = proMax.key(.shift)!
-        XCTAssertEqual(shift.frame.width, proMax.letterWidth * 1.34, accuracy: 0.001)
+        XCTAssertEqual(proMax.key(.character("a"))!.frame.minY - q.frame.minY, 56, accuracy: 0.001)
+        XCTAssertEqual(proMax.totalHeight - proMax.key(.space)!.frame.maxY, 7, accuracy: 0.001)
+        // Shift 6.67 to 56.67 pt and delete 383.33 to 433.67 pt on Apple's Pro Max.
+        XCTAssertEqual(proMax.key(.shift)!.frame.maxX, 56.67, accuracy: 0.34)
+        XCTAssertEqual(proMax.key(.delete)!.frame.minX, 383.33, accuracy: 0.34)
+
+        // The 17 Pro: 43 pt keys on a 54 pt pitch, row 4 ending on the view's bottom edge, 4 pt
+        // short of Apple's (a third-party keyboard's view ends there); shift to 52, delete from 350.
+        let pro = KeyboardLayout(width: 402)
+        let proQ = pro.key(.character("q"))!
+        XCTAssertEqual(proQ.frame.height, 43)
+        XCTAssertEqual(pro.key(.character("a"))!.frame.minY - proQ.frame.minY, 54, accuracy: 0.001)
+        XCTAssertEqual(pro.key(.space)!.frame.minY - proQ.frame.minY, 3 * 54, accuracy: 0.001)
+        XCTAssertEqual(pro.key(.space)!.frame.height, 39)
+        XCTAssertEqual(pro.key(.space)!.frame.maxY, pro.totalHeight, accuracy: 0.001)
+        XCTAssertEqual(pro.key(.shift)!.frame.maxX, 52, accuracy: 0.34)
+        XCTAssertEqual(pro.key(.delete)!.frame.minX, 350, accuracy: 0.34)
+
+        // The SE: 6.5 pt in from each side, 42 pt keys on a 54 pt pitch, 4 pt under row 4.
+        let se = KeyboardLayout(width: 375, showsGlobe: true, phoneSize: .homeButton)
+        XCTAssertEqual(se.key(.character("q"))!.frame.minX, 6.5, accuracy: 0.001)
+        XCTAssertEqual(se.key(.character("p"))!.frame.maxX, 368.5, accuracy: 0.001)
+        XCTAssertEqual(se.key(.character("q"))!.frame.height, 42)
+        XCTAssertEqual(se.totalHeight - se.key(.space)!.frame.maxY, 4, accuracy: 0.001)
+        XCTAssertEqual(se.key(.shift)!.frame.maxX, 48.5, accuracy: 0.26)
+    }
+
+    /// Apple's emoji key (iPhone 17 Pro, mapped by tapping): its keycap runs 56 to 99.3 pt, but
+    /// only 62 to 94 pt types it, from 7.5 pt below its top; 54 to 62 and 94 to 102 type
+    /// nothing, so a tap meant for 123 or space that lands near it doesn't switch keyboards.
+    func testEmojiKeyTakesOnlyTheMiddleOfItsKeycapAsApplesDoes() {
+        let layout = KeyboardLayout(width: 402, showsEmoji: true)
+        let emoji = layout.key(.emoji)!
+        XCTAssertEqual(emoji.frame.minX, 56, accuracy: 0.34)
+        XCTAssertEqual(emoji.frame.maxX, 99.33, accuracy: 0.34)
+        XCTAssertEqual(emoji.hitFrame.minX, emoji.frame.minX + 6, accuracy: 0.001)
+        XCTAssertEqual(emoji.hitFrame.maxX, emoji.frame.maxX - 6, accuracy: 0.001)
+        XCTAssertEqual(emoji.hitFrame.minY, emoji.frame.minY + 7.5, accuracy: 0.001)
+        let y = emoji.frame.midY + 5
+        XCTAssertEqual(layout.hitTest(CGPoint(x: emoji.frame.midX, y: y))?.kind, .emoji)
+        XCTAssertNil(layout.hitTest(CGPoint(x: emoji.frame.minX + 3, y: y)), "the emoji key's left margin types nothing")
+        XCTAssertNil(layout.hitTest(CGPoint(x: emoji.frame.maxX - 3, y: y)), "nor its right margin")
+        XCTAssertNil(layout.hitTest(CGPoint(x: emoji.frame.midX, y: emoji.frame.minY + 3)), "nor its top")
+        XCTAssertEqual(layout.hitTest(CGPoint(x: emoji.frame.minX - 4, y: y))?.kind, .layerSwitch(.numbers))
+        XCTAssertEqual(layout.hitTest(CGPoint(x: emoji.frame.maxX + 4, y: y))?.kind, .space)
+    }
+
+    /// Apple's portrait bottom row stands on row 3's columns: 123 (and emoji or the globe) end
+    /// at z's right edge, space runs from x to n, return from m to the edge. Without an emoji key
+    /// Apple's 123 fills the first block, which is Hex's usual row.
+    func testBottomRowStandsOnRowThreesColumns() {
+        for width in portraitWidths {
+            for (globe, emoji) in [(false, false), (true, false), (false, true)] {
+                for layer in [KeyboardLayer.letters, .numbers, .symbols] {
+                    let layout = KeyboardLayout(width: width, layer: layer, showsGlobe: globe, showsEmoji: emoji)
+                    let letters = KeyboardLayout(width: width)
+                    let label = "\(width) globe \(globe) emoji \(emoji) \(layer)"
+                    let z = letters.key(.character("z"))!.frame, x = letters.key(.character("x"))!.frame
+                    let n = letters.key(.character("n"))!.frame, m = letters.key(.character("m"))!.frame
+                    let space = layout.key(.space)!.frame, ret = layout.key(.returnKey)!.frame
+                    XCTAssertEqual(space.minX, x.minX, accuracy: 0.001, label)
+                    XCTAssertEqual(space.maxX, n.maxX, accuracy: 0.001, label)
+                    XCTAssertEqual(ret.minX, m.minX, accuracy: 0.001, label)
+                    XCTAssertEqual(ret.maxX, width - layout.metrics.side, accuracy: 0.001, label)
+                    let page = layout.key(.layerSwitch(layer == .letters ? .numbers : .letters))!.frame
+                    XCTAssertEqual(page.minX, layout.metrics.side, accuracy: 0.001, label)
+                    let blockEnd = [KeyKind.globe, .emoji].compactMap { layout.key($0)?.frame.maxX }.max() ?? page.maxX
+                    XCTAssertEqual(blockEnd, z.maxX, accuracy: 0.001, label)
+                }
+            }
+        }
     }
 
     func testHitTargetsTileTheKeyAreaWithNoDeadZonesOrOverlaps() {
@@ -220,9 +343,26 @@ final class KeyboardLayoutTests: XCTestCase {
                 let justAbove = CGPoint(x: key.frame.midX, y: key.frame.minY - 2)
                 XCTAssertEqual(layout.hitTest(justAbove)?.kind, key.kind, "\(describe(layout)) \(key.label)")
             }
+            // Apple's emoji key on row 4 takes only the middle of its keycap; the rest of its
+            // slot types nothing (`testEmojiKeyTakesOnlyTheMiddleOfItsKeycapAsApplesDoes`).
+            let emoji = layout.key(.emoji).flatMap { $0.row == 3 && layout.metrics.keyHeight >= 40 ? $0 : nil }
+            var emojiSlot: CGRect?
             var rowTop = area.minY
             for row in 0..<4 {
-                let targets = layout.keys.filter { $0.row == row }.map(\.hitFrame).sorted { $0.minX < $1.minX }
+                var keys = layout.keys.filter { $0.row == row }.sorted { $0.hitFrame.minX < $1.hitFrame.minX }
+                if row == 3, let emoji, let i = keys.firstIndex(where: { $0.kind == .emoji }) {
+                    let slot = CGRect(x: keys[i - 1].hitFrame.maxX, y: rowTop, width: keys[i + 1].hitFrame.minX - keys[i - 1].hitFrame.maxX, height: area.maxY - rowTop)
+                    XCTAssertTrue(slot.contains(emoji.hitFrame), describe(layout))
+                    emojiSlot = slot
+                    keys.remove(at: i)
+                    var targets = keys.map(\.hitFrame)
+                    targets.insert(slot, at: i)
+                    for target in targets { XCTAssertEqual(target.minY, rowTop, accuracy: 0.0001, describe(layout)) }
+                    for (a, b) in zip(targets, targets.dropFirst()) { XCTAssertEqual(a.maxX, b.minX, accuracy: 0.0001, describe(layout)) }
+                    rowTop = targets[0].maxY
+                    continue
+                }
+                let targets = keys.map(\.hitFrame)
                 XCTAssertEqual(targets.first?.minX, 0, describe(layout))
                 XCTAssertEqual(targets.last?.maxX, layout.width, describe(layout))
                 for target in targets {
@@ -241,7 +381,8 @@ final class KeyboardLayoutTests: XCTestCase {
                     y: CGFloat.random(in: area.minY..<area.maxY, using: &generator)
                 )
                 let hits = layout.keys.filter { $0.hitFrame.contains(point) }
-                XCTAssertEqual(hits.count, 1, "\(describe(layout)) at \(point): \(hits.map(\.label))")
+                let inEmojiMargin = emojiSlot?.contains(point) == true && emoji?.hitFrame.contains(point) == false
+                XCTAssertEqual(hits.count, inEmojiMargin ? 0 : 1, "\(describe(layout)) at \(point): \(hits.map(\.label))")
             }
             XCTAssertNil(layout.hitTest(CGPoint(x: 20, y: layout.stripFrame.midY)), "strip is not a key")
         }
@@ -249,9 +390,9 @@ final class KeyboardLayoutTests: XCTestCase {
 
     func testKeycapsSitInsideTheirTargetsAndNeverOverlap() {
         for layout in everyPortraitLayout() + landscapeLayouts() + duoLayouts() {
-            let bounds = CGRect(x: 0, y: 0, width: layout.width, height: layout.totalHeight)
+            let bounds = CGRect(x: 0, y: 0, width: layout.width, height: layout.totalHeight).insetBy(dx: -0.001, dy: -0.001)
             for key in layout.keys {
-                XCTAssertTrue(key.hitFrame.contains(key.frame), "\(describe(layout)) \(key.label)")
+                XCTAssertTrue(key.hitFrame.insetBy(dx: -0.001, dy: -0.001).contains(key.frame), "\(describe(layout)) \(key.label)")
                 XCTAssertTrue(bounds.contains(key.frame), "\(describe(layout)) \(key.label)")
                 XCTAssertGreaterThan(key.frame.width, 20, "\(describe(layout)) \(key.label)")
             }
@@ -337,7 +478,7 @@ final class KeyboardLayoutTests: XCTestCase {
         let hex = layout.key(.hex)!
         XCTAssertEqual(hex.row, -1)
         XCTAssertEqual(hex.frame.maxX, 402 - layout.metrics.side, accuracy: 0.001)
-        XCTAssertEqual(hex.frame.midY, layout.metrics.stripHeight / 2, accuracy: 0.001)
+        XCTAssertEqual(hex.frame.midY, layout.metrics.stripTextCenter, accuracy: 0.001)
         XCTAssertLessThanOrEqual(layout.stripFrame.maxX, hex.frame.minX)
     }
 
@@ -418,9 +559,34 @@ final class KeyboardLayoutTests: XCTestCase {
 
     func testLandscapeKeepsInsetsAndHeight() {
         let layout = KeyboardLayout(width: 932, orientation: .landscape, horizontalInset: 60)
-        XCTAssertEqual(layout.totalHeight, 187)
+        XCTAssertEqual(layout.totalHeight, 204)
         XCTAssertEqual(layout.key(.character("q"))!.frame.minX, 64, accuracy: 0.001)
         XCTAssertEqual(layout.key(.character("q"))!.hitFrame.minX, 0)
+    }
+
+    /// Apple's keys turned (iPhone 17 Pro, 874 pt, keys from 79 to 795 pt; iOS 27.2): 32 pt on a
+    /// 40 pt pitch, 2 pt under row 4, and row 4 on row 1's columns: 123 on q, emoji on w, space
+    /// from e to i, return from o. On the SE they start 72 pt in, 47 pt wide.
+    func testLandscapeMatchesApplesKeys() {
+        let pro = KeyboardLayout(width: 874, orientation: .landscape, showsEmoji: true, horizontalInset: 75)
+        let col = { (c: String) in pro.key(.character(c))!.frame }
+        XCTAssertEqual(col("q").minX, 79, accuracy: 0.34)
+        XCTAssertEqual(col("p").maxX, 795, accuracy: 0.34)
+        XCTAssertEqual(col("q").height, 32)
+        XCTAssertEqual(col("a").minY - col("q").minY, 40, accuracy: 0.001)
+        XCTAssertEqual(pro.totalHeight - pro.key(.space)!.frame.maxY, 2, accuracy: 0.001)
+        XCTAssertEqual(pro.key(.layerSwitch(.numbers))!.frame.minX, col("q").minX, accuracy: 0.001)
+        XCTAssertEqual(pro.key(.layerSwitch(.numbers))!.frame.maxX, col("q").maxX, accuracy: 0.001)
+        XCTAssertEqual(pro.key(.emoji)!.frame.minX, col("w").minX, accuracy: 0.001)
+        XCTAssertEqual(pro.key(.space)!.frame.minX, col("e").minX, accuracy: 0.001)
+        XCTAssertEqual(pro.key(.space)!.frame.maxX, col("i").maxX, accuracy: 0.001)
+        XCTAssertEqual(pro.key(.returnKey)!.frame.minX, col("o").minX, accuracy: 0.001)
+        XCTAssertEqual(pro.key(.returnKey)!.frame.maxX, col("p").maxX, accuracy: 0.001)
+
+        let se = KeyboardLayout(width: 667, orientation: .landscape, phoneSize: .homeButton)
+        XCTAssertEqual(se.key(.character("q"))!.frame.minX, 72, accuracy: 0.5)
+        XCTAssertEqual(se.key(.character("p"))!.frame.maxX, 595, accuracy: 0.5)
+        XCTAssertEqual(se.key(.character("q"))!.frame.width, 47, accuracy: 0.2)
     }
 
     // MARK: - Languages
@@ -436,9 +602,13 @@ final class KeyboardLayoutTests: XCTestCase {
             .frenchCanadian: ["qwertyuiop", "asdfghjkl", "zxcvbnm"],
             .frenchSwiss: ["qwertzuiop", "asdfghjkl", "yxcvbnm"],
             .portuguese: ["qwertyuiop", "asdfghjkl", "zxcvbnm"],
+            .polish: ["qwertyuiop", "asdfghjkl", "zxcvbnm"],
+            .romanian: ["qwertyuiop", "asdfghjkl", "zxcvbnm"],
             .russian: ["йцукенгшщзх", "фывапролджэ", "ячсмитьбю"],
             .ukrainian: ["йцукенгшщзхї", "фівапролджєʼ", "ячсмитьбюґ"],
+            .greek: ["ερτυθιοπ´", "ασδφγηξκλ", "ζχψωβνμ"],
             .serbianLatin: ["qwertzuiop", "asdfghjkl", "yxcvbnm"],
+            .czech: ["qwertzuiop", "asdfghjkl´", "yxcvbnmˇ"],
         ]
         for (language, expected) in rows {
             let layout = KeyboardLayout(width: 402, language: language)
@@ -446,6 +616,172 @@ final class KeyboardLayoutTests: XCTestCase {
                 XCTAssertEqual(letters(layout, row: row).joined(), expected[row], "\(language) row \(row + 1)")
             }
         }
+    }
+
+    /// Settings › General › Keyboard › Keyboards › Add New Keyboard's Layout list for each
+    /// language (iOS 27.0 simulator, black box), Hex's own layout first: French's "– French"
+    /// variants differ only by the ´ key Hex leaves out, and Norwegian, Russian and Ukrainian
+    /// keep one layout here.
+    func testEachLanguageOffersApplesLayoutsWithItsOwnFirst() {
+        let offered: [KeyboardLanguage: [KeyboardLetterLayout]] = [
+            .english: [.qwerty, .azerty, .qwertz, .dvorak],
+            .german: [.own, .qwertz, .qwerty, .azerty],
+            .spanish: [.own, .qwerty, .azerty, .qwertz],
+            .french: [.azerty, .qwerty, .qwertz],
+            .frenchCanadian: [.qwerty, .azerty, .qwertz],
+            .frenchSwiss: [.qwertz, .azerty, .qwerty],
+            .italian: [.qwerty, .azerty, .qwertz],
+            .portuguese: [.qwerty, .azerty, .qwertz],
+            .polish: [.qwerty, .qwertz, .azerty],
+            .romanian: [.qwerty, .qwertz, .azerty],
+            .serbianLatin: [.qwertz, .qwerty, .azerty],
+            .norwegian: [.own],
+            .russian: [.own],
+            .ukrainian: [.own],
+            .greek: [.own],
+            .czech: [.own, .qwerty],
+        ]
+        for language in KeyboardLanguage.allCases {
+            XCTAssertEqual(language.letterLayouts, offered[language], "\(language)")
+            XCTAssertEqual(language.letterRows(language.defaultLetterLayout), language.letterRows, "\(language): today's keys by default")
+            XCTAssertEqual(KeyboardLayout(width: 402, language: language).letters, language.defaultLetterLayout)
+        }
+        XCTAssertEqual(KeyboardLayout(width: 402, language: .norwegian, letters: .qwertz).letters, .own, "not offered: its own")
+        XCTAssertEqual(KeyboardLanguage.german.layoutName(.own), "QWERTZ – Deutsch")
+        XCTAssertEqual(KeyboardLanguage.spanish.layoutName(.own), "QWERTY – Español")
+        XCTAssertEqual(KeyboardLanguage.english.layoutName(.dvorak), "Dvorak")
+        XCTAssertEqual(KeyboardLanguage.czech.layoutName(.own), "QWERTZ – Čeština")
+        XCTAssertEqual(KeyboardLanguage.czech.layoutName(.qwerty), "QWERTY – Čeština")
+        XCTAssertEqual(KeyboardLanguage.polish.layoutName(.qwerty), "QWERTY")
+    }
+
+    /// The plain layouts are the same 26 letters in every language (iOS 27.0 simulator: English,
+    /// German, French, Spanish, Italian, Portuguese, Polish, Serbian and Romanian alike), but
+    /// Czech, whose QWERTY is its own with Z and Y swapped (`testCzechsRowsAndPagesMatchApples`).
+    func testPlainLayoutsAreApplesInEveryLanguage() {
+        let plain: [KeyboardLetterLayout: [String]] = [
+            .qwerty: ["qwertyuiop", "asdfghjkl", "zxcvbnm"],
+            .qwertz: ["qwertzuiop", "asdfghjkl", "yxcvbnm"],
+            .azerty: ["azertyuiop", "qsdfghjklm", "wxcvbn"],
+        ]
+        for language in KeyboardLanguage.allCases where language != .czech {
+            for letters in language.letterLayouts where letters != .own && letters != .dvorak {
+                let layout = KeyboardLayout(width: 402, language: language, letters: letters)
+                for row in 0..<3 {
+                    XCTAssertEqual(self.letters(layout, row: row).joined(), plain[letters]?[row], "\(language) \(letters) row \(row + 1)")
+                }
+            }
+        }
+    }
+
+    /// The TestFlight request: English on QWERTZ. Y and Z swap places; nothing else moves, and
+    /// the keys keep English's holds (no ä ö ü keys; ü only on a held u, as on English QWERTY).
+    @MainActor
+    func testEnglishOnQWERTZSwapsYAndZAndKeepsEnglishsHolds() throws {
+        let qwerty = KeyboardLayout(width: 402, language: .english)
+        let qwertz = KeyboardLayout(width: 402, language: .english, letters: .qwertz)
+        let z = try XCTUnwrap(qwertz.key(.character("z")))
+        let y = try XCTUnwrap(qwertz.key(.character("y")))
+        XCTAssertEqual(z.frame, qwerty.key(.character("y"))?.frame)
+        XCTAssertEqual(y.frame, qwerty.key(.character("z"))?.frame)
+        XCTAssertEqual(z.row, 0)
+        XCTAssertEqual(y.row, 2)
+        for letter in "abcdefghijklmnopqrstuvwx" {
+            XCTAssertEqual(qwertz.key(.character(String(letter)))?.frame, qwerty.key(.character(String(letter)))?.frame, "\(letter)")
+        }
+        XCTAssertEqual(qwertz.keys.filter { $0.character == nil }.map(\.frame), qwerty.keys.filter { $0.character == nil }.map(\.frame))
+        for letter in "aeiouyzsnc" {
+            XCTAssertEqual(
+                AccentCatalog.options(for: String(letter), uppercase: false, language: .english, letters: .qwertz),
+                AccentCatalog.options(for: String(letter), uppercase: false, language: .english),
+                "\(letter)"
+            )
+        }
+        XCTAssertNil(qwertz.key(.character("ü")))
+        // Its neighbours price a slip: T and Z touch on QWERTZ, not on QWERTY.
+        XCTAssertTrue(AutocorrectEngine.areAdjacentKeys("t", "z", language: .english, letters: .qwertz))
+        XCTAssertFalse(AutocorrectEngine.areAdjacentKeys("t", "z", language: .english))
+        XCTAssertTrue(AutocorrectEngine.areAdjacentKeys("y", "x", language: .english, letters: .qwertz))
+        XCTAssertTrue(AutocorrectEngine.areAdjacentKeys("t", "y", language: .english))
+        XCTAssertFalse(AutocorrectEngine.areAdjacentKeys("t", "y", language: .english, letters: .qwertz))
+    }
+
+    /// A plain layout has no keys for German's ä ö ü or Spanish's ñ; Apple's keyboard then holds
+    /// each right after its base letter (iOS 27.0 simulator, German QWERTZ and QWERTY, Spanish
+    /// QWERTY), every other hold staying the language's.
+    func testPlainLayoutsHoldTheLanguagesOwnLetters() {
+        func held(_ letter: String, _ language: KeyboardLanguage, _ letters: KeyboardLetterLayout) -> [String]? {
+            AccentCatalog.options(for: letter, uppercase: false, language: language, letters: letters)
+        }
+        for letters in [KeyboardLetterLayout.qwertz, .qwerty, .azerty] {
+            XCTAssertEqual(held("a", .german, letters), ["a", "ä", "à", "á", "â", "æ", "ã", "å", "ā"], "\(letters)")
+            XCTAssertEqual(held("o", .german, letters), ["o", "ö", "ô", "ò", "ó", "õ", "œ", "ø", "ō"])
+            XCTAssertEqual(held("u", .german, letters), ["u", "ü", "û", "ù", "ú", "ū"])
+            XCTAssertEqual(held("s", .german, letters), ["s", "ß", "ś", "š"])
+            XCTAssertEqual(held("y", .german, letters), ["y", "ÿ"])
+            XCTAssertNil(KeyboardLayout(width: 402, language: .german, letters: letters).key(.character("ä")))
+        }
+        XCTAssertEqual(held("A", .german, .qwertz), ["a", "ä", "à", "á", "â", "æ", "ã", "å", "ā"])
+        XCTAssertEqual(AccentCatalog.options(for: "u", uppercase: true, language: .german, letters: .qwertz)?.prefix(2), ["U", "Ü"])
+        XCTAssertEqual(held("u", .german, .own), ["u", "û", "ù", "ú", "ū"], "its own layout has a ü key")
+        XCTAssertEqual(held("n", .spanish, .qwerty), ["n", "ñ", "ń"])
+        XCTAssertEqual(held("n", .spanish, .own), ["n", "ń"])
+        XCTAssertEqual(held("e", .french, .qwertz), held("e", .french, .azerty), "French's letters all have keys")
+    }
+
+    /// Apple's iPhone Dvorak (iOS 27.0 simulator, 402 pt): row 1 is seven letters and delete
+    /// (a pitch and a half wide) at the right, row 2 ten letters from the left edge, row 3 shift
+    /// and nine letters edge to edge, on a 38.3 pt pitch; the bottom row is unchanged.
+    func testDvorakMatchesApples() throws {
+        let layout = KeyboardLayout(width: 402, language: .english, letters: .dvorak)
+        let qwerty = KeyboardLayout(width: 402, language: .english)
+        XCTAssertEqual(letters(layout, row: 0).joined(), "pyfgcrl")
+        XCTAssertEqual(letters(layout, row: 1).joined(), "aoeuidhtns")
+        XCTAssertEqual(letters(layout, row: 2).joined(), "qjkxbmwvz")
+        let delete = try XCTUnwrap(layout.key(.delete))
+        let shift = try XCTUnwrap(layout.key(.shift))
+        XCTAssertEqual(delete.row, 0)
+        XCTAssertEqual(shift.row, 2)
+        let m = layout.metrics
+        let a = try XCTUnwrap(layout.key(.character("a"))).frame
+        let o = try XCTUnwrap(layout.key(.character("o"))).frame
+        let p = try XCTUnwrap(layout.key(.character("p"))).frame
+        let l = try XCTUnwrap(layout.key(.character("l"))).frame
+        let q = try XCTUnwrap(layout.key(.character("q"))).frame
+        let z = try XCTUnwrap(layout.key(.character("z"))).frame
+        let pitch = o.minX - a.minX
+        XCTAssertEqual(pitch, 38.3, accuracy: 0.3)
+        XCTAssertEqual(a.minX, m.side, accuracy: 0.01)
+        XCTAssertEqual(z.maxX, 402 - m.side, accuracy: 0.01)
+        XCTAssertEqual(delete.frame.maxX, 402 - m.side, accuracy: 0.01)
+        XCTAssertEqual(delete.frame.minX - l.maxX, m.gap, accuracy: 0.01)
+        XCTAssertEqual(delete.frame.width, 1.5 * pitch - m.gap, accuracy: 0.01)
+        XCTAssertEqual(p.minX, 77, accuracy: 2, "P where Apple's starts")
+        XCTAssertEqual(q.minX, shift.frame.maxX + m.gap, accuracy: 0.01)
+        XCTAssertEqual(layout.characterWidth, a.width, accuracy: 0.01)
+        XCTAssertEqual(layout.keys.filter { $0.row == 3 }.map(\.frame), qwerty.keys.filter { $0.row == 3 }.map(\.frame))
+        XCTAssertEqual(layout.hitTest(CGPoint(x: 10, y: p.midY))?.kind, .character("p"), "the space left of P is P's")
+    }
+
+    /// Settings › Keyboard › Languages › Layout is kept per language in the App Group; a language
+    /// never set, or set to one it doesn't offer, types on its own, as without the App Group.
+    func testTheLayoutIsKeptPerLanguageWithItsOwnAsTheFallback() {
+        let suite = "KeyboardLayoutTests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = LanguageSettings(defaults: defaults)
+        XCTAssertEqual(settings.letterLayout(for: .english), .qwerty)
+        XCTAssertEqual(settings.letterLayout(for: .german), .own)
+        settings.setLetterLayout(.qwertz, for: .english)
+        settings.setLetterLayout(.qwertz, for: .german)
+        XCTAssertEqual(settings.letterLayout(for: .english), .qwertz)
+        XCTAssertEqual(settings.letterLayout(for: .german), .qwertz)
+        XCTAssertEqual(settings.letterLayout(for: .french), .azerty, "each language its own")
+        settings.setLetterLayout(.dvorak, for: .german)
+        XCTAssertEqual(settings.letterLayout(for: .german), .own, "not offered: its own")
+        defaults.set(["en": "colemak"], forKey: "settings.keyboardLanguages.layouts")
+        XCTAssertEqual(settings.letterLayout(for: .english), .qwerty, "unknown: its own")
+        XCTAssertEqual(LanguageSettings(defaults: nil).letterLayout(for: .english), .qwerty, "no App Group")
     }
 
     func testElevenKeyRowsFitEveryIPhoneWidthAndLandscape() {
@@ -569,6 +905,83 @@ final class KeyboardLayoutTests: XCTestCase {
         }
     }
 
+    /// The standard Greek layout in the rows the system Greek keyboard shows on an iPhone 17
+    /// Pro (iOS 27.2 simulator, 402 pt, read through accessibility): rows 1 and 2 are nine
+    /// letter-wide keys at the same places (ε over α where English has A, the tonos key ´ over λ),
+    /// row 3 starts under σ, and the bottom row is English's. Its 123 page has the ano teleia ·
+    /// where English has ;, and ; (the Greek question mark) where English has ?; its #+= page
+    /// has ? where English has |.
+    func testGreeksRowsAndPagesMatchApples() throws {
+        for width in portraitWidths {
+            let layout = KeyboardLayout(width: width, language: .greek)
+            let english = KeyboardLayout(width: width)
+            XCTAssertEqual(layout.characterWidth, english.characterWidth, accuracy: 0.001)
+            let row1 = layout.keys.filter { $0.row == 0 }.map(\.frame)
+            let row2 = layout.keys.filter { $0.row == 1 }.map(\.frame)
+            XCTAssertEqual(row1.map(\.minX), row2.map(\.minX), "\(width): row 1 over row 2")
+            XCTAssertEqual(layout.key(.character("ζ"))!.frame.minX, layout.key(.character("σ"))!.frame.minX, accuracy: 0.001)
+            XCTAssertEqual(layout.key(.shift)!.frame, english.key(.shift)!.frame)
+            XCTAssertEqual(layout.keys.filter { $0.row == 3 }.map(\.frame), english.keys.filter { $0.row == 3 }.map(\.frame))
+        }
+        let pro = KeyboardLayout(width: 402, language: .greek)
+        let qwerty = KeyboardLayout(width: 402)
+        XCTAssertEqual(try XCTUnwrap(pro.key(.character("ε"))).frame.minX, try XCTUnwrap(qwerty.key(.character("a"))).frame.minX, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(pro.key(.character("´"))).frame.minX, try XCTUnwrap(qwerty.key(.character("l"))).frame.minX, accuracy: 0.001)
+        XCTAssertEqual(Array("´".unicodeScalars).map(\.value), [0x00B4])
+        XCTAssertNil(pro.key(.character("ς")), "ς is held on σ")
+        XCTAssertNil(pro.key(.character(";")))
+        let numbers = KeyboardLayout.characterRows(for: .numbers, language: .greek)
+        XCTAssertEqual(numbers[1], ["-", "/", ":", "·", "(", ")", "$", "&", "@", "\""])
+        XCTAssertEqual(numbers[2], [".", ",", ";", "!", "'"])
+        let symbols = KeyboardLayout.characterRows(for: .symbols, language: .greek)
+        XCTAssertEqual(symbols[1], ["_", "\\", "?", "~", "<", ">", "€", "£", "¥", "•"])
+        XCTAssertEqual(symbols[2], [".", ",", ";", "!", "'"])
+        for layer in [KeyboardLayer.numbers, .symbols] {
+            XCTAssertEqual(
+                KeyboardLayout(width: 402, layer: layer, language: .greek).keys.map(\.frame),
+                KeyboardLayout(width: 402, layer: layer).keys.map(\.frame),
+                "the same keys, a few characters changed"
+            )
+            XCTAssertEqual(KeyboardLayout(width: 402, layer: layer, language: .ukrainian).keys, KeyboardLayout(width: 402, layer: layer).keys)
+        }
+    }
+
+    /// The standard Czech layout in the rows the system Czech keyboard ("QWERTZ – Czech/Slovak")
+    /// shows on an iPhone 17 Pro (iOS 27.2 simulator, 402 pt, read through accessibility): rows
+    /// 1 and 2 are ten letter-wide keys edge to edge, the ´ key ending row 2 under P; row 3 is
+    /// shift, Y to M and the ˇ key, and delete, each a letter wide, Y under S. Its 123 and #+=
+    /// pages are English's. "QWERTY – Czech/Slovak" is the same with Z and Y swapped.
+    @MainActor
+    func testCzechsRowsAndPagesMatchApples() throws {
+        for width in portraitWidths {
+            let layout = KeyboardLayout(width: width, language: .czech)
+            let english = KeyboardLayout(width: width)
+            XCTAssertEqual(layout.characterWidth, english.characterWidth, accuracy: 0.001)
+            for row in 0..<2 {
+                let keys = layout.keys.filter { $0.row == row }.sorted { $0.frame.minX < $1.frame.minX }
+                XCTAssertEqual(keys.count, 10, "\(width)")
+                XCTAssertEqual(keys.first!.frame.minX, layout.metrics.side, accuracy: 0.001)
+                XCTAssertEqual(keys.last!.frame.maxX, width - layout.metrics.side, accuracy: 0.001)
+            }
+            XCTAssertEqual(layout.key(.character("´"))!.frame.minX, layout.key(.character("p"))!.frame.minX, accuracy: 0.001)
+            XCTAssertEqual(layout.key(.character("y"))!.frame.minX, layout.key(.character("s"))!.frame.minX, accuracy: 0.001)
+            XCTAssertEqual(layout.key(.character("ˇ"))!.frame.minX, layout.key(.character("o"))!.frame.minX, accuracy: 0.001)
+            XCTAssertEqual(layout.key(.shift)!.frame.width, layout.characterWidth, accuracy: 0.001)
+            XCTAssertEqual(layout.key(.delete)!.frame.maxX, width - layout.metrics.side, accuracy: 0.001)
+            XCTAssertEqual(layout.keys.filter { $0.row == 3 }.map(\.frame), english.keys.filter { $0.row == 3 }.map(\.frame))
+        }
+        XCTAssertEqual(Array("´ˇ˚".unicodeScalars).map(\.value), [0x00B4, 0x02C7, 0x02DA])
+        let qwerty = KeyboardLayout(width: 402, language: .czech, letters: .qwerty)
+        XCTAssertEqual((0..<3).map { letters(qwerty, row: $0).joined() }, ["qwertyuiop", "asdfghjkl´", "zxcvbnmˇ"])
+        XCTAssertTrue(AutocorrectEngine.areAdjacentKeys("z", "t", language: .czech))
+        XCTAssertTrue(AutocorrectEngine.areAdjacentKeys("y", "s", language: .czech))
+        XCTAssertFalse(AutocorrectEngine.areAdjacentKeys("y", "t", language: .czech))
+        XCTAssertTrue(AutocorrectEngine.areAdjacentKeys("y", "t", language: .czech, letters: .qwerty))
+        for layer in [KeyboardLayer.numbers, .symbols] {
+            XCTAssertEqual(KeyboardLayout(width: 402, layer: layer, language: .czech).keys, KeyboardLayout(width: 402, layer: layer).keys)
+        }
+    }
+
     /// Apple's AZERTY on the tester's iPhone 17 Pro (402 pt; their French and English
     /// keyboard): rows 1 and 2 run edge to edge, W to N sit under E to I, and shift and
     /// delete keep their English size with a gap beside them. A tap in that gap goes to the
@@ -630,6 +1043,17 @@ final class KeyboardLayoutTests: XCTestCase {
         }
     }
 
+    /// A held key's callout as Hex shows it, left to right, without the base.
+    private func shownHolds(_ character: String, _ language: KeyboardLanguage, width: CGFloat = 402) -> [String] {
+        let layout = KeyboardLayout(width: width, language: language)
+        guard let key = layout.key(.character(character)),
+              let options = AccentCatalog.options(for: character, uppercase: false, language: language) else { return [] }
+        return AccentMenu.build(for: key.frame, rawOptions: options, in: layout.width).options.filter { $0 != character }
+    }
+
+    /// Each language's held keys match the system keyboard's long-press options as observed
+    /// (iOS 27.2 simulator): a key it holds nothing on holds nothing, and Hex's callout shows
+    /// the others in the system's left-to-right order, the base under the thumb.
     func testAccentsMatchEachLanguage() {
         XCTAssertEqual(AccentCatalog.options(for: "ø", uppercase: false, language: .norwegian), ["ø", "ö"])
         XCTAssertEqual(AccentCatalog.options(for: "æ", uppercase: true, language: .norwegian), ["Æ", "Ä"])
@@ -638,28 +1062,30 @@ final class KeyboardLayoutTests: XCTestCase {
         XCTAssertFalse(norwegianA.contains("å") || norwegianA.contains("æ"), "they have their own keys")
         XCTAssertTrue(AccentCatalog.options(for: "s", uppercase: false, language: .german)!.contains("ß"))
         XCTAssertFalse(AccentCatalog.options(for: "u", uppercase: false, language: .german)!.contains("ü"))
+        XCTAssertNil(AccentCatalog.options(for: "ü", uppercase: false, language: .german))
+        XCTAssertNil(AccentCatalog.options(for: "z", uppercase: false, language: .german))
         XCTAssertEqual(AccentCatalog.options(for: "e", uppercase: false, language: .spanish)?.dropFirst().first, "é")
-        XCTAssertEqual(AccentCatalog.options(for: "n", uppercase: true, language: .spanish), ["N", "Ñ", "Ń"])
-        XCTAssertEqual(
-            AccentCatalog.options(for: "a", uppercase: false),
-            AccentCatalog.options(for: "a", uppercase: false, language: .english),
-            "English is unchanged"
-        )
-        // Italian's accents come first on each vowel: à è ì ò ù, and é right after è.
-        let italian = ["a", "e", "i", "o", "u"].map {
-            AccentCatalog.options(for: $0, uppercase: false, language: .italian)!.dropFirst().first
-        }
-        XCTAssertEqual(italian, ["à", "è", "ì", "ò", "ù"])
-        XCTAssertEqual(AccentCatalog.options(for: "e", uppercase: false, language: .italian)?.dropFirst(2).first, "é")
-        XCTAssertEqual(AccentCatalog.options(for: "o", uppercase: true, language: .italian)?.prefix(2), ["O", "Ò"])
+        XCTAssertEqual(AccentCatalog.options(for: "n", uppercase: true, language: .spanish), ["N", "Ń"], "ñ has its own key")
+        XCTAssertNil(AccentCatalog.options(for: "ñ", uppercase: false, language: .spanish))
+        XCTAssertEqual(AccentCatalog.options(for: "l", uppercase: false, language: .spanish), ["l", "l·l"])
+        XCTAssertNil(AccentCatalog.options(for: "z", uppercase: false, language: .spanish))
+        XCTAssertEqual(AccentCatalog.options(for: "z", uppercase: false), ["z", "ź", "ž", "ż"])
+        XCTAssertNil(AccentCatalog.options(for: "q", uppercase: false))
+        // English's held I offers the dotless ı, İ in capitals; never a second I.
+        let capitalI = AccentCatalog.options(for: "i", uppercase: true)!
+        XCTAssertTrue(capitalI.contains("İ"))
+        XCTAssertEqual(capitalI.filter { $0 == "I" }.count, 1)
+        XCTAssertEqual(shownHolds("u", .english), ["ų", "ů", "ű", "ũ", "ü", "ú", "ù", "û", "ǔ", "ū"])
+        XCTAssertEqual(shownHolds("a", .english), ["à", "á", "â", "ä", "ǎ", "æ", "ã", "å", "ā", "ă", "ą"])
+        XCTAssertEqual(AccentCatalog.options(for: "e", uppercase: false, language: .italian)?.prefix(3), ["e", "é", "è"])
+        XCTAssertEqual(AccentCatalog.options(for: "a", uppercase: false, language: .italian)?.dropFirst().first, "à")
+        XCTAssertTrue(AccentCatalog.options(for: "o", uppercase: false, language: .italian)!.contains("ò"))
         XCTAssertEqual(AccentCatalog.options(for: "e", uppercase: false, language: .french)?.dropFirst().first, "é")
         XCTAssertEqual(AccentCatalog.options(for: "c", uppercase: false, language: .french)?.dropFirst().first, "ç")
-        // Apple's French order (TextInput_fr): û before ù, and ª and º after the French accents.
         XCTAssertEqual(AccentCatalog.options(for: "u", uppercase: false, language: .french)?.prefix(3), ["u", "û", "ù"])
-        XCTAssertEqual(AccentCatalog.options(for: "a", uppercase: true, language: .french)?.prefix(4), ["A", "À", "Â", "ª"])
-        XCTAssertEqual(AccentCatalog.options(for: "o", uppercase: false, language: .french)?.prefix(4), ["o", "ô", "œ", "º"])
+        XCTAssertEqual(AccentCatalog.options(for: "a", uppercase: true, language: .french)?.prefix(4), ["A", "À", "Â", "Æ"])
         for language in [KeyboardLanguage.frenchCanadian, .frenchSwiss] {
-            for letter in ["a", "e", "i", "o", "u", "c"] {
+            for letter in ["a", "e", "i", "o", "u", "c", "y", "n"] {
                 XCTAssertEqual(
                     AccentCatalog.options(for: letter, uppercase: false, language: language),
                     AccentCatalog.options(for: letter, uppercase: false, language: .french),
@@ -668,28 +1094,126 @@ final class KeyboardLayoutTests: XCTestCase {
             }
         }
         XCTAssertEqual(AccentCatalog.options(for: "a", uppercase: false, language: .portuguese)?.prefix(3), ["a", "á", "ã"])
-        // Russian: ё on е and ъ on ь, as on Apple's; Serbian (Latin): č ć on c, đ on d, š on s, ž on z.
+        // Russian: ё on е and ъ on ь, with the letters of other Cyrillic languages.
         XCTAssertEqual(AccentCatalog.options(for: "е", uppercase: false, language: .russian)?.prefix(2), ["е", "ё"])
         XCTAssertEqual(AccentCatalog.options(for: "Е", uppercase: true, language: .russian)?.prefix(2), ["Е", "Ё"])
         XCTAssertEqual(AccentCatalog.options(for: "ь", uppercase: false, language: .russian)?.prefix(2), ["ь", "ъ"])
         XCTAssertEqual(AccentCatalog.options(for: "ь", uppercase: true, language: .russian)?.prefix(2), ["Ь", "Ъ"])
         XCTAssertNil(AccentCatalog.options(for: "б", uppercase: false, language: .russian))
-        // Ukrainian, as the system keyboard's long-press options were observed: only ʼ offers
-        // anything (the other apostrophes); ₴ on $; no ё, and no other Cyrillic language's
-        // letters.
+        XCTAssertEqual(shownHolds("ж", .russian), ["ѥ", "ӂ", "ӝ", "җ"])
+        // Ukrainian: only ʼ offers anything among the letters (the other apostrophes); ₴ on $.
         XCTAssertEqual(AccentCatalog.options(for: "ʼ", uppercase: false, language: .ukrainian), ["ʼ", "'", "’", "‘", "`"])
         for letter in KeyboardLanguage.ukrainian.letterRows.joined() where letter != "ʼ" {
             XCTAssertNil(AccentCatalog.options(for: letter, uppercase: false, language: .ukrainian), letter)
         }
-        XCTAssertEqual(AccentCatalog.options(for: "$", uppercase: false, language: .ukrainian)?.prefix(2), ["$", "₴"])
+        XCTAssertEqual(AccentCatalog.options(for: "$", uppercase: false, language: .ukrainian)?.last, "₴")
         XCTAssertFalse(AccentCatalog.options(for: "$", uppercase: false)?.contains("₴") ?? true, "the hryvnia is Ukrainian's")
-        XCTAssertNil(AccentCatalog.options(for: "е", uppercase: false, language: .ukrainian))
-        XCTAssertNil(AccentCatalog.options(for: "и", uppercase: false, language: .ukrainian))
         XCTAssertFalse(KeyboardLanguage.ukrainian.letterRows.joined().contains { ["ы", "э", "ъ", "ё"].contains($0) })
+        // Serbian (Latin): č ć on c, đ on d, š on s, ž on z, and nothing else.
         XCTAssertEqual(AccentCatalog.options(for: "c", uppercase: false, language: .serbianLatin)?.prefix(3), ["c", "č", "ć"])
         XCTAssertEqual(AccentCatalog.options(for: "d", uppercase: true, language: .serbianLatin), ["D", "Đ"])
         XCTAssertEqual(AccentCatalog.options(for: "s", uppercase: false, language: .serbianLatin)?.prefix(2), ["s", "š"])
-        XCTAssertEqual(AccentCatalog.options(for: "z", uppercase: false, language: .serbianLatin)?.prefix(2), ["z", "ž"])
+        XCTAssertEqual(shownHolds("z", .serbianLatin), ["ž", "ź", "ż"])
+        XCTAssertNil(AccentCatalog.options(for: "e", uppercase: false, language: .serbianLatin))
+        // The 123 and #+= pages: English's, with each language's own where its keyboard differs.
+        XCTAssertEqual(AccentCatalog.options(for: "&", uppercase: false), ["&", "§"])
+        XCTAssertNil(AccentCatalog.options(for: "#", uppercase: false))
+        XCTAssertEqual(AccentCatalog.options(for: "#", uppercase: false, language: .russian), ["#", "№"])
+        XCTAssertEqual(AccentCatalog.options(for: "1", uppercase: false, language: .spanish), ["1", "1º", "1ª"])
+        XCTAssertNil(AccentCatalog.options(for: "1", uppercase: false))
+        XCTAssertEqual(AccentCatalog.options(for: "\"", uppercase: false, language: .german)?.dropFirst().first, "„")
+        XCTAssertEqual(AccentCatalog.options(for: ".", uppercase: false, language: .french), [".", "…", "·"])
+        // Polish: its own letter right after the base, nothing on U, I or Y; its currency key
+        // is € (no zł), held on Hex's #+= €, while Hex's 123 page keeps English's $.
+        let polish = ["a": "ą", "c": "ć", "e": "ę", "l": "ł", "n": "ń", "o": "ó", "s": "ś", "z": "ż"]
+        for (letter, own) in polish {
+            XCTAssertEqual(AccentCatalog.options(for: letter, uppercase: false, language: .polish)?.prefix(2), [letter, own][...], letter)
+        }
+        XCTAssertEqual(AccentCatalog.options(for: "z", uppercase: true, language: .polish), ["Z", "Ż", "Ź", "Ž"])
+        XCTAssertEqual(AccentCatalog.options(for: "l", uppercase: true, language: .polish), ["L", "Ł"])
+        XCTAssertEqual(shownHolds("o", .polish), ["ō", "ø", "œ", "õ", "ò", "ö", "ô", "ó"])
+        for letter in KeyboardLanguage.polish.letterRows.joined() where polish[letter] == nil {
+            XCTAssertNil(AccentCatalog.options(for: letter, uppercase: false, language: .polish), letter)
+        }
+        XCTAssertEqual(AccentCatalog.options(for: "€", uppercase: false, language: .polish), ["€", "$", "£", "¥", "₩", "₽"])
+        XCTAssertEqual(AccentCatalog.options(for: "$", uppercase: false, language: .polish), AccentCatalog.options(for: "$", uppercase: false))
+        XCTAssertEqual(AccentCatalog.options(for: "\"", uppercase: false, language: .polish), AccentCatalog.options(for: "\"", uppercase: false))
+        // Romanian: ă and â on A, î on I, ș on S and ț on T right after the base, ș and ț the
+        // comma-below letters (U+0219, U+021B), never the cedilla ş ţ; every other letter holds
+        // nothing. Its currency key is € and its held " is Romanian's own order.
+        XCTAssertEqual(
+            AccentCatalog.options(for: "a", uppercase: false, language: .romanian),
+            ["a", "ă", "â", "à", "á", "ä", "æ", "ã", "å", "ā"]
+        )
+        XCTAssertEqual(AccentCatalog.options(for: "i", uppercase: false, language: .romanian), ["i", "î", "ï", "ì", "í", "į", "ī"])
+        XCTAssertEqual(AccentCatalog.options(for: "s", uppercase: false, language: .romanian), ["s", "ș", "ß", "ś", "š"])
+        XCTAssertEqual(AccentCatalog.options(for: "t", uppercase: false, language: .romanian), ["t", "ț"])
+        XCTAssertEqual(AccentCatalog.options(for: "t", uppercase: true, language: .romanian), ["T", "Ț"])
+        XCTAssertEqual(Array("șț".unicodeScalars).map(\.value), [0x0219, 0x021B], "comma-below, never the cedilla")
+        XCTAssertEqual(Array("ȘȚ".unicodeScalars).map(\.value), [0x0218, 0x021A])
+        let romanian: Set<String> = ["a", "i", "s", "t"]
+        for letter in KeyboardLanguage.romanian.letterRows.joined() where !romanian.contains(letter) {
+            XCTAssertNil(AccentCatalog.options(for: letter, uppercase: false, language: .romanian), letter)
+        }
+        XCTAssertEqual(AccentCatalog.options(for: "€", uppercase: false, language: .romanian), ["€", "$", "£", "¥", "₩", "₽"])
+        // Greek: each vowel's tonos form, ι and υ also with diaeresis and both, ς on σ and ϗ
+        // on κ; in capitals Σ holds nothing and Ι, Υ only Ί Ϊ, Ύ Ϋ, as on the system keyboard.
+        // The tonos key holds nothing; a held " is French's order.
+        XCTAssertEqual(AccentCatalog.options(for: "α", uppercase: false, language: .greek), ["α", "ά"])
+        XCTAssertEqual(AccentCatalog.options(for: "σ", uppercase: false, language: .greek), ["σ", "ς"])
+        XCTAssertNil(AccentCatalog.options(for: "σ", uppercase: true, language: .greek))
+        XCTAssertEqual(AccentCatalog.options(for: "υ", uppercase: false, language: .greek), ["υ", "ύ", "ϋ", "ΰ"])
+        XCTAssertEqual(AccentCatalog.options(for: "υ", uppercase: true, language: .greek), ["Υ", "Ύ", "Ϋ"])
+        XCTAssertEqual(shownHolds("ι", .greek), ["ί", "ϊ", "ΐ"])
+        XCTAssertEqual(AccentCatalog.options(for: "ι", uppercase: true, language: .greek), ["Ι", "Ϊ", "Ί"])
+        XCTAssertEqual(AccentCatalog.options(for: "κ", uppercase: true, language: .greek), ["Κ", "Ϗ"])
+        XCTAssertEqual(AccentCatalog.options(for: "ω", uppercase: true, language: .greek), ["Ω", "Ώ"])
+        let greek: Set<String> = ["ε", "υ", "ι", "ο", "α", "σ", "η", "κ", "ω"]
+        for letter in KeyboardLanguage.greek.letterRows.joined() where !greek.contains(letter) {
+            XCTAssertNil(AccentCatalog.options(for: letter, uppercase: false, language: .greek), letter)
+        }
+        XCTAssertEqual(AccentCatalog.options(for: "\"", uppercase: false, language: .greek), ["\"", "»", "«", "”", "“", "„"])
+        XCTAssertEqual(AccentCatalog.options(for: "$", uppercase: false, language: .greek), AccentCatalog.options(for: "$", uppercase: false))
+        XCTAssertEqual(AccentCatalog.options(for: "?", uppercase: false, language: .greek), ["?", "¿"])
+        // Laid out as the system Greek keyboard's callouts: the key's own on the left, capitals
+        // without the forms that have none, and its own order for ".
+        XCTAssertEqual(AccentCatalog.arrangement(for: "ι", uppercase: false, language: .greek), AccentArrangement(rows: [["ι", "ί", "ϊ", "ΐ"]], baseRow: 0, baseColumn: 0))
+        XCTAssertEqual(AccentCatalog.arrangement(for: "ι", uppercase: true, language: .greek), AccentArrangement(rows: [["Ι", "Ί", "Ϊ"]], baseRow: 0, baseColumn: 0))
+        XCTAssertEqual(AccentCatalog.arrangement(for: "κ", uppercase: false, language: .greek)?.rows, [["κ", "ϗ"]])
+        XCTAssertNil(AccentCatalog.arrangement(for: "σ", uppercase: true, language: .greek))
+        XCTAssertEqual(AccentCatalog.arrangement(for: "\"", uppercase: false, language: .greek)?.rows, [["„", "“", "”", "«", "»", "\""]])
+        XCTAssertEqual(
+            AccentCatalog.arrangement(for: "$", uppercase: false, language: .greek),
+            AccentCatalog.arrangement(for: "$", uppercase: false)
+        )
+        XCTAssertEqual(
+            AccentCatalog.options(for: "\"", uppercase: false, language: .romanian),
+            ["\"", "„", "”", "»", "«", "“"]
+        )
+        XCTAssertEqual(AccentCatalog.options(for: "$", uppercase: false, language: .romanian), AccentCatalog.options(for: "$", uppercase: false))
+        // Czech: every Czech letter held on its base (á č ď é ě í ň ó ř š ť ú ů ý ž), the ring ˚
+        // on the ˇ key, nothing on the ´ key or the letters not listed; callouts laid out as
+        // the system's, and every symbol's hold English's.
+        XCTAssertEqual(AccentCatalog.options(for: "e", uppercase: false, language: .czech), ["e", "ě", "é", "ê", "è", "ę", "ë", "ē", "ė"])
+        XCTAssertEqual(AccentCatalog.options(for: "u", uppercase: true, language: .czech), ["U", "Ú", "Ů", "Û", "Ü", "Ù", "Ū"])
+        XCTAssertEqual(AccentCatalog.options(for: "ˇ", uppercase: false, language: .czech), ["ˇ", "˚"])
+        XCTAssertNil(AccentCatalog.options(for: "´", uppercase: false, language: .czech))
+        let czech: Set<String> = ["e", "r", "t", "z", "u", "i", "o", "a", "s", "d", "l", "y", "c", "n", "ˇ"]
+        for letter in KeyboardLanguage.czech.letterRows.joined() where !czech.contains(letter) {
+            XCTAssertNil(AccentCatalog.options(for: letter, uppercase: false, language: .czech), letter)
+        }
+        for word in ["á", "č", "ď", "é", "ě", "í", "ň", "ó", "ř", "š", "ť", "ú", "ů", "ý", "ž"] {
+            let base = String(word.decomposedStringWithCanonicalMapping.unicodeScalars.prefix(1).map(Character.init))
+            XCTAssertTrue(AccentCatalog.options(for: base, uppercase: false, language: .czech)?.contains(word) == true, word)
+        }
+        XCTAssertEqual(AccentCatalog.arrangement(for: "e", uppercase: false, language: .czech), AccentArrangement(rows: [["ě", "e", "é", "ê", "è", "ę", "ë", "ē", "ė"]], baseRow: 0, baseColumn: 1))
+        XCTAssertEqual(AccentCatalog.arrangement(for: "z", uppercase: false, language: .czech)?.rows, [["z", "ž", "ź", "ż"]])
+        XCTAssertEqual(AccentCatalog.arrangement(for: "n", uppercase: true, language: .czech), AccentArrangement(rows: [["Ń", "Ñ", "Ň", "N"]], baseRow: 0, baseColumn: 3))
+        XCTAssertEqual(AccentCatalog.arrangement(for: "ˇ", uppercase: false, language: .czech)?.rows, [["ˇ", "˚"]])
+        for symbol in ["$", "\"", "'", "0", "&", "-", "?"] {
+            XCTAssertEqual(AccentCatalog.options(for: symbol, uppercase: false, language: .czech), AccentCatalog.options(for: symbol, uppercase: false), symbol)
+            XCTAssertEqual(AccentCatalog.arrangement(for: symbol, uppercase: false, language: .czech), AccentCatalog.arrangement(for: symbol, uppercase: false), symbol)
+        }
     }
 
     func testAccentMenusOnTheNewKeysStayInside() {
@@ -700,6 +1224,10 @@ final class KeyboardLayoutTests: XCTestCase {
             .russian: ["й", "е", "х", "ж", "э", "ь", "ю", "я"],
             .ukrainian: ["й", "ї", "є", "ʼ", "ґ"],
             .serbianLatin: ["c", "d", "s", "z"],
+            .polish: ["a", "c", "e", "l", "n", "o", "s", "z"],
+            .romanian: ["a", "i", "s", "t"],
+            .greek: ["ε", "υ", "ι", "ο", "α", "σ", "η", "κ", "ω"],
+            .czech: ["e", "r", "t", "z", "u", "i", "o", "a", "s", "d", "l", "y", "c", "n", "ˇ"],
         ]
         for width in portraitWidths {
             for (language, characters) in keys {
@@ -751,6 +1279,23 @@ final class KeyboardLayoutTests: XCTestCase {
         XCTAssertEqual(automatic("uk_UA"), .ukrainian)
         XCTAssertEqual(automatic(nil, modes: ["emoji", "uk-UA", "en-US"], preferred: ["ru-RU"]), .ukrainian)
         XCTAssertEqual(automatic(nil, preferred: ["uk-UA", "en-US"]), .ukrainian)
+        XCTAssertEqual(automatic("pl-PL", modes: ["en-US"]), .polish)
+        XCTAssertEqual(automatic("pl_PL"), .polish)
+        XCTAssertEqual(automatic(nil, modes: ["emoji", "pl_PL", "en-US"]), .polish)
+        XCTAssertEqual(automatic(nil, preferred: ["pl-PL", "en-US"]), .polish)
+        XCTAssertEqual(automatic("ro-RO", modes: ["en-US"]), .romanian)
+        XCTAssertEqual(automatic("ro_RO"), .romanian)
+        XCTAssertEqual(automatic("el-GR", modes: ["en-US"]), .greek)
+        XCTAssertEqual(automatic("el_GR"), .greek)
+        XCTAssertEqual(automatic(nil, modes: ["emoji", "el_GR", "en-US"]), .greek)
+        XCTAssertEqual(automatic("en-US", modes: ["el-GR"]), .english, "the dictation language still wins")
+        XCTAssertEqual(automatic("cs-CZ", modes: ["en-US"]), .czech)
+        XCTAssertEqual(automatic("cs_CZ"), .czech)
+        XCTAssertEqual(automatic(nil, modes: ["emoji", "cs_CZ", "en-US"]), .czech)
+        XCTAssertEqual(automatic(nil, preferred: ["cs-CZ", "en-US"]), .czech)
+        XCTAssertEqual(automatic("sk-SK"), .english, "Slovak has no layout of its own here")
+        XCTAssertEqual(KeyboardLanguage.czech.dictationLanguage(supported: ["en-US", "cs-CZ"], preferred: ["cs-CZ"]), "cs-CZ")
+        XCTAssertEqual(KeyboardLanguage.czech.dictationLanguage(supported: [], preferred: []), "cs-CZ")
         // Before Hex knows the dictation language: the first keyboard, then language, with a layout.
         XCTAssertEqual(automatic(nil, modes: ["emoji", "nb-NO", "en-US"]), .norwegian)
         XCTAssertEqual(automatic(nil, preferred: ["nn-NO"]), .norwegian)
@@ -762,7 +1307,8 @@ final class KeyboardLayoutTests: XCTestCase {
         XCTAssertEqual(automatic(nil, preferred: ["ru-RU"]), .russian)
         XCTAssertEqual(automatic(nil, modes: ["emoji", "sr-Latn"], preferred: ["en-US"]), .serbianLatin)
         XCTAssertEqual(automatic(nil, modes: ["sr"], preferred: ["en-US"]), .english, "Apple's Cyrillic Serbian keyboard")
-        XCTAssertEqual(automatic(nil, preferred: ["el-GR"]), .english)
+        XCTAssertEqual(automatic(nil, preferred: ["el-GR"]), .greek)
+        XCTAssertEqual(automatic(nil, preferred: ["he-IL"]), .english, "Hebrew has no layout yet")
     }
 
     /// Settings › Keyboard › Languages: empty is Automatic (one language, as before); the
@@ -794,8 +1340,8 @@ final class KeyboardLayoutTests: XCTestCase {
     /// between two French layouts (one dictionary).
     func testBilingualAutocorrectPairsTwoLatinLanguagesWithDictionaries() {
         let available = ["en_US", "fr_FR", "fr_CA", "ru_RU", "de_DE"]
-        func partner(_ chosen: [KeyboardLanguage], _ current: KeyboardLanguage) -> KeyboardLanguage? {
-            KeyboardLanguageList.resolve(chosen: chosen, stored: current, automatic: .english).partner(available: available)
+        func partner(_ chosen: [KeyboardLanguage], _ current: KeyboardLanguage, _ dictionaries: [String]? = nil) -> KeyboardLanguage? {
+            KeyboardLanguageList.resolve(chosen: chosen, stored: current, automatic: .english).partner(available: dictionaries ?? available)
         }
         XCTAssertEqual(partner([.english, .french, .russian], .french), .english)
         XCTAssertEqual(partner([.english, .french, .russian], .english), .french)
@@ -806,7 +1352,93 @@ final class KeyboardLayoutTests: XCTestCase {
         XCTAssertNil(partner([.english, .serbianLatin], .english))
         XCTAssertNil(partner([.ukrainian, .english], .ukrainian), "Cyrillic has no bilingual partner")
         XCTAssertNil(partner([.english, .ukrainian], .english))
+        XCTAssertNil(partner([.greek, .english], .greek, ["en_US", "el"]), "Greek letters have no bilingual partner")
+        XCTAssertNil(partner([.english, .greek], .english, ["en_US", "el"]))
+        XCTAssertEqual(partner([.polish, .english], .polish, ["en_US", "pl"]), .english, "Polish has Latin letters")
+        XCTAssertEqual(partner([.english, .polish], .english, ["en_US", "pl"]), .polish)
+        XCTAssertNil(partner([.polish, .english], .polish), "no Polish dictionary on this iPhone")
+        XCTAssertEqual(partner([.czech, .english], .czech, ["en_US", "cs"]), .english, "Czech has Latin letters")
+        XCTAssertEqual(partner([.english, .czech], .english, ["en_US", "cs"]), .czech)
+        XCTAssertEqual(KeyboardLanguageList.resolve(chosen: [.english, .czech], stored: .czech, automatic: .english).layout, .czech, "Czech types on its own keys")
         XCTAssertNil(partner([.english], .english))
+    }
+
+    /// English and Spanish chosen together are Apple's bilingual English & Spanish keyboard:
+    /// both type on the first one's keys (QWERTY with ñ on a held n when English leads, the ñ
+    /// key when Spanish does), whichever the space bar switched to; Spanish alone keeps its
+    /// ñ key, and a third language its own letters (TestFlight build 56: English and Spanish
+    /// showed the ñ key "stuck" right of L).
+    func testEnglishAndSpanishTypeOnTheFirstOnesKeys() {
+        func layout(_ chosen: [KeyboardLanguage], _ current: KeyboardLanguage) -> KeyboardLanguage {
+            KeyboardLanguageList.resolve(chosen: chosen, stored: current, automatic: .english).layout
+        }
+        XCTAssertEqual(layout([.english, .spanish], .english), .english)
+        XCTAssertEqual(layout([.english, .spanish], .spanish), .english, "Español on English's keys")
+        XCTAssertEqual(layout([.spanish, .english], .english), .spanish, "English on Spanish's keys")
+        XCTAssertEqual(layout([.spanish, .english], .spanish), .spanish)
+        XCTAssertEqual(layout([.spanish], .spanish), .spanish)
+        XCTAssertEqual(layout([.english, .spanish, .french], .french), .french)
+        XCTAssertEqual(layout([.french, .spanish, .english], .english), .spanish, "the first of the two")
+        XCTAssertEqual(layout([.french, .spanish], .spanish), .spanish, "no English beside it")
+        XCTAssertEqual(layout([.english, .french], .french), .french)
+        XCTAssertFalse(KeyboardLanguage.english.letterRows[1].contains("ñ"))
+        XCTAssertEqual(AccentCatalog.options(for: "n", uppercase: false, language: .english), ["n", "ñ", "ń", "ņ", "ň"])
+        XCTAssertEqual(AccentCatalog.options(for: "n", uppercase: false, language: .spanish), ["n", "ń"])
+    }
+
+    /// While the keyboard switches between two or more languages, Automatic dictates in the
+    /// one it shows (TestFlight build 56: Spanish dictation came out "incomprehensible"),
+    /// in the iPhone's region; a language picked by hand, one keyboard language, or an iPhone
+    /// language without a layout (Hebrew) keeps dictation where it was, unless Switch dictation
+    /// too asks to follow.
+    func testAutomaticDictationFollowsTheKeyboardsLanguage() {
+        let suite = "KeyboardLayoutTests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = LanguageSettings(defaults: defaults)
+        settings.supportedDictationLanguages = ["en-US", "en-GB", "es-ES", "es-MX", "es-US", "fr-FR"]
+        settings.automaticDictationLanguage = "en-US"
+        XCTAssertNil(settings.keyboardDictationLanguage(preferred: ["en-US"]), "Automatic keyboard")
+        XCTAssertEqual(settings.effectiveDictationLanguage, "en-US")
+
+        settings.keyboardLanguages = [.english, .spanish]
+        XCTAssertEqual(settings.keyboardDictationLanguage(preferred: ["en-US"]), "en-US", "the first until switched")
+        settings.currentKeyboardLanguage = .spanish
+        XCTAssertEqual(settings.keyboardDictationLanguage(preferred: ["en-US"], region: "ES"), "es-ES")
+        XCTAssertEqual(settings.keyboardDictationLanguage(preferred: ["en-US"], region: "MX"), "es-MX", "the iPhone's Region")
+        XCTAssertEqual(settings.keyboardDictationLanguage(preferred: ["en-US"], region: "US"), "es-US")
+        XCTAssertEqual(settings.keyboardDictationLanguage(preferred: ["en-US"], region: "CO"), "es-US", "Latin America")
+        XCTAssertEqual(settings.keyboardDictationLanguage(preferred: ["en-US", "es-MX"], region: "ES"), "es-MX", "the iPhone's Spanish")
+        XCTAssertEqual(settings.keyboardDictationLanguage(preferred: ["es-419"], region: "ES"), "es-US", "Latin American Spanish")
+        XCTAssertEqual(settings.keyboardDictationLanguage(preferred: ["es"], region: "MX"), "es-MX", "no Spanish region")
+        XCTAssertEqual(settings.keyboardDictationLanguage(preferred: ["es"], region: "FR"), "es-ES")
+        settings.chooseDictationLanguage("es-MX")
+        settings.dictationFollowsKeyboard = true
+        settings.chooseDictationLanguage(nil)
+        XCTAssertEqual(
+            settings.keyboardDictationLanguage(preferred: ["en-US"], region: "ES"),
+            "es-MX",
+            "the variant picked by hand survives a swipe away and back"
+        )
+        settings.dictationFollowsKeyboard = false
+        settings.currentKeyboardLanguage = .english
+        XCTAssertEqual(settings.keyboardDictationLanguage(preferred: ["en-GB"]), "en-GB")
+        settings.currentKeyboardLanguage = .french
+        XCTAssertEqual(settings.keyboardDictationLanguage(preferred: ["en-US"]), "en-US", "not chosen: the first")
+
+        settings.dictationLanguage = "es-MX"
+        XCTAssertNil(settings.keyboardDictationLanguage(preferred: ["en-US"]), "picked by hand")
+        XCTAssertEqual(settings.effectiveDictationLanguage, "es-MX")
+        settings.dictationLanguage = nil
+
+        settings.keyboardLanguages = [.spanish]
+        XCTAssertNil(settings.keyboardDictationLanguage(preferred: ["en-US"]), "one language: nothing to follow")
+
+        settings.keyboardLanguages = [.english, .spanish]
+        settings.automaticDictationLanguage = "he-IL"
+        XCTAssertNil(settings.keyboardDictationLanguage(preferred: ["he-IL"]), "Hebrew is dictated, never typed")
+        settings.dictationFollowsKeyboard = true
+        XCTAssertEqual(settings.keyboardDictationLanguage(preferred: ["he-IL"]), "en-US", "Switch dictation too")
     }
 
     /// Settings › Keyboard › Languages offers the iPhone's own keyboards first, then its
@@ -833,6 +1465,48 @@ final class KeyboardLayoutTests: XCTestCase {
         XCTAssertEqual(KeyboardLanguage.ukrainian.dictationLanguage(supported: supported + ["uk-UA"], preferred: ["uk-UA"]), "uk-UA")
         XCTAssertNil(KeyboardLanguage.ukrainian.dictationLanguage(supported: supported, preferred: []), "not Russian instead")
         XCTAssertEqual(KeyboardLanguage.ukrainian.dictationLanguage(supported: [], preferred: []), "uk-UA", "not listed yet")
+        XCTAssertEqual(
+            KeyboardLanguage.suggested(inputModes: ["pl_PL", "emoji"], preferred: ["pl-PL", "en-US"]),
+            [.polish, .english]
+        )
+        XCTAssertEqual(KeyboardLanguage.polish.dictationLanguage(supported: supported + ["pl-PL"], preferred: ["pl-PL"]), "pl-PL")
+        XCTAssertEqual(KeyboardLanguage.polish.dictationLanguage(supported: [], preferred: []), "pl-PL", "not listed yet")
+        XCTAssertEqual(KeyboardLanguage.polish.displayName, "Polski")
+        XCTAssertEqual(
+            KeyboardLanguage.suggested(inputModes: ["el_GR", "emoji"], preferred: ["el-GR", "en-US"]),
+            [.greek, .english]
+        )
+        XCTAssertEqual(KeyboardLanguage.greek.dictationLanguage(supported: supported + ["el-GR"], preferred: ["el-GR"]), "el-GR")
+        XCTAssertEqual(KeyboardLanguage.greek.dictationLanguage(supported: [], preferred: []), "el-GR", "not listed yet")
+        XCTAssertEqual(KeyboardLanguage.greek.displayName, "Ελληνικά")
+    }
+
+    /// Apple Speech's three Spanish variants: a Latin American, United States or plain
+    /// Spanish iPhone dictates the Americas' Spanish (es-US, then es-MX), never Spain's, and a
+    /// Spanish layout with no Spanish preferred language follows the iPhone's Region.
+    func testSpanishKeyboardsDictateTheAmericasSpanish() {
+        let supported = ["en-US", "es-ES", "es-MX", "es-US"]
+        XCTAssertEqual(KeyboardLanguage.spanish.dictationLanguage(supported: supported, preferred: ["es-419"], region: "ES"), "es-US")
+        XCTAssertEqual(KeyboardLanguage.spanish.dictationLanguage(supported: supported, preferred: ["es-CO"], region: "ES"), "es-US")
+        XCTAssertEqual(KeyboardLanguage.spanish.dictationLanguage(supported: supported, preferred: ["es-US"], region: "ES"), "es-US", "exact")
+        XCTAssertEqual(KeyboardLanguage.spanish.dictationLanguage(supported: supported, preferred: ["es-ES"], region: "MX"), "es-ES", "Spain's, named")
+        XCTAssertEqual(KeyboardLanguage.spanish.dictationLanguage(supported: supported, preferred: ["es-MX"], region: "ES"), "es-MX", "Mexico's, named")
+        XCTAssertEqual(KeyboardLanguage.spanish.dictationLanguage(supported: supported, preferred: [], region: "US"), "es-US")
+        XCTAssertEqual(KeyboardLanguage.spanish.dictationLanguage(supported: supported, preferred: [], region: "MX"), "es-MX")
+        XCTAssertEqual(KeyboardLanguage.spanish.dictationLanguage(supported: supported, preferred: [], region: "ES"), "es-ES")
+        XCTAssertEqual(KeyboardLanguage.spanish.dictationLanguage(supported: supported, preferred: [], region: "FR"), "es-ES")
+        XCTAssertEqual(KeyboardLanguage.spanish.dictationLanguage(supported: supported, preferred: ["es"], region: "MX"), "es-MX")
+        XCTAssertEqual(KeyboardLanguage.spanish.dictationLanguage(supported: supported, preferred: ["es"], region: "FR"), "es-ES")
+        XCTAssertEqual(
+            KeyboardLanguage.spanish.dictationLanguage(supported: ["en-US", "es-ES", "es-MX"], preferred: ["es-419"], region: "US"),
+            "es-MX",
+            "es-US missing"
+        )
+        XCTAssertEqual(
+            KeyboardLanguage.spanish.dictationLanguage(supported: [], preferred: ["es-419"], region: "US"),
+            "es-419",
+            "not listed yet"
+        )
     }
 
     /// The languages read the one layout chosen before them, and write their first for an
@@ -868,10 +1542,32 @@ final class KeyboardLayoutTests: XCTestCase {
         XCTAssertEqual(KeyboardLanguage.russian.spellCheckLanguage(available: ["en_US", "ru_RU"]), "ru_RU")
         XCTAssertNil(KeyboardLanguage.russian.spellCheckLanguage(available: ["en_US", "uk_UA"]), "never English")
         XCTAssertEqual(KeyboardLanguage.ukrainian.spellCheckLanguage(available: ["en_US", "ru_RU", "uk_UA"]), "uk_UA")
+        XCTAssertEqual(KeyboardLanguage.polish.spellCheckLanguage(available: ["en_US", "pl"]), "pl")
+        XCTAssertNil(KeyboardLanguage.polish.spellCheckLanguage(available: ["en_US", "cs"]), "never English or Czech")
+        XCTAssertEqual(KeyboardLanguage.spellCheckLanguage(forDictation: "pl-PL", available: ["en_US", "pl"]), "pl")
         XCTAssertNil(KeyboardLanguage.ukrainian.spellCheckLanguage(available: ["en_US", "ru_RU"]), "never Russian or English")
         XCTAssertEqual(KeyboardLanguage.spellCheckLanguage(forDictation: "uk-UA", available: ["en_US", "uk_UA"]), "uk_UA")
+        XCTAssertEqual(KeyboardLanguage.greek.spellCheckLanguage(available: ["en_US", "el"]), "el")
+        XCTAssertNil(KeyboardLanguage.greek.spellCheckLanguage(available: ["en_US"]), "never English")
+        XCTAssertEqual(KeyboardLanguage.spellCheckLanguage(forDictation: "el-GR", available: ["en_US", "el"]), "el")
         XCTAssertEqual(KeyboardLanguage.serbianLatin.spellCheckLanguage(available: ["en_US", "sr_Latn"]), "sr_Latn")
         XCTAssertNil(KeyboardLanguage.serbianLatin.spellCheckLanguage(available: ["en_US", "sr", "hr_HR"]), "no Cyrillic or Croatian")
+    }
+
+    /// The input mode's language (`UIInputViewController.primaryLanguage`) is BCP 47 and
+    /// supersedes the Info.plist's en-US, so each layout names the language the host's
+    /// spelling and autocorrection follow.
+    func testEachLanguageNamesItsInputMode() {
+        XCTAssertEqual(KeyboardLanguage.english.inputModeLanguage, "en-US")
+        XCTAssertEqual(KeyboardLanguage.italian.inputModeLanguage, "it-IT")
+        XCTAssertEqual(KeyboardLanguage.spanish.inputModeLanguage, "es-ES")
+        XCTAssertEqual(KeyboardLanguage.frenchCanadian.inputModeLanguage, "fr-CA")
+        XCTAssertEqual(KeyboardLanguage.serbianLatin.inputModeLanguage, "sr-Latn-RS")
+        XCTAssertEqual(
+            Set(KeyboardLanguage.allCases.map(\.inputModeLanguage)).count,
+            KeyboardLanguage.allCases.count,
+            "one identifier each"
+        )
     }
 
     // MARK: - Helpers
@@ -917,6 +1613,79 @@ final class KeyboardLayoutTests: XCTestCase {
 
     private func bottomRow(_ layout: KeyboardLayout) -> [KeyKind] {
         layout.keys.filter { $0.row == 3 }.sorted { $0.frame.minX < $1.frame.minX }.map(\.kind)
+    }
+
+    // MARK: - Backdrop
+
+    /// The backdrop is a blurred material in the keyboard's own appearance, not a fixed colour:
+    /// it follows iOS's glass panel, and a layout iOS leaves behind the keyboard has no shapes
+    /// through it (TestFlight build 56, iOS 27.0.1; iOS 27.0 and 27.2 simulators). Only the dark
+    /// one is shaded, and never opaque.
+    func testBackdropIsAThinMaterialInLightAndDark() {
+        XCTAssertEqual(KeyboardBackdropView.blurStyle(isDark: false), .systemUltraThinMaterialLight)
+        XCTAssertEqual(KeyboardBackdropView.blurStyle(isDark: true), .systemUltraThinMaterialDark)
+        XCTAssertEqual(KeyboardBackdropView.shadeAlpha(isDark: false), 0)
+        XCTAssertGreaterThan(KeyboardBackdropView.shadeAlpha(isDark: true), 0)
+        XCTAssertLessThan(KeyboardBackdropView.shadeAlpha(isDark: true), 0.5)
+    }
+
+    /// Every keycap sits on the backdrop on every iPhone width, and so do the strip's Hex mark
+    /// and the middle of each suggestion slot on the words' line, so nothing behind the
+    /// keyboard shows through a key or a word.
+    func testBackdropCoversEveryKeycapAndTheStripsLine() {
+        for width in portraitWidths {
+            let layout = KeyboardLayout(width: width)
+            let outline = KeyboardBackdropView.outline(in: CGRect(x: 0, y: 0, width: width, height: layout.totalHeight))
+            for key in layout.keys where key.row >= 0 {
+                let frame = key.frame.insetBy(dx: 0.01, dy: 0.01)
+                for corner in [CGPoint(x: frame.minX, y: frame.minY), CGPoint(x: frame.maxX, y: frame.minY),
+                               CGPoint(x: frame.minX, y: frame.maxY), CGPoint(x: frame.maxX, y: frame.maxY)] {
+                    XCTAssertTrue(outline.contains(corner), "width \(width) key \(key.kind) corner \(corner)")
+                }
+            }
+            let line = layout.metrics.stripTop + layout.metrics.stripTextCenter
+            let hex = layout.key(.hex)!
+            XCTAssertTrue(outline.contains(CGPoint(x: hex.frame.midX - 12, y: line - 12)), "width \(width): the Hex mark")
+            XCTAssertTrue(outline.contains(CGPoint(x: hex.frame.midX + 12, y: line - 12)), "width \(width): the Hex mark")
+            for slot in layout.stripSlotFrames {
+                XCTAssertTrue(outline.contains(CGPoint(x: slot.midX, y: line - 9)), "width \(width): a chip's top")
+            }
+        }
+    }
+
+    /// The backdrop stays inside Apple's panel and its 1 pt rim: its corners are the panel's
+    /// 26 pt corners, 1 pt in, at the keyboard's own top edge, where the panel's edge is when
+    /// iOS draws nothing above the keyboard. With iOS's 17.5 pt above, the panel is wider still
+    /// at every height. It never draws over the app beside the panel's rounded corners.
+    func testBackdropStaysInsideThePanelsCornersAndRim() {
+        let width: CGFloat = 402
+        let outline = KeyboardBackdropView.outline(in: CGRect(x: 0, y: 0, width: width, height: 247))
+        let radius: CGFloat = 26
+        // Around each corner's centre: inside at 24.9 pt, outside at 25.1 pt (the rim's inner edge).
+        for step in 0 ... 90 {
+            let angle = CGFloat(step) * .pi / 180
+            for (center, sign) in [(CGPoint(x: radius, y: radius), CGFloat(-1)), (CGPoint(x: width - radius, y: radius), CGFloat(1))] {
+                func point(_ r: CGFloat) -> CGPoint { CGPoint(x: center.x + sign * r * cos(angle), y: center.y - r * sin(angle)) }
+                XCTAssertTrue(outline.contains(point(radius - 1.1)), "covers, \(step)° \(sign)")
+                XCTAssertFalse(outline.contains(point(radius - 0.9)), "inside the rim, \(step)° \(sign)")
+            }
+        }
+        // The panel's edge at each height, with and without iOS's own 17.5 pt above the keyboard.
+        for panelTop in [CGFloat(0), -17.5] {
+            func panelInset(atY y: CGFloat) -> CGFloat {
+                let rise = radius + panelTop - y
+                return rise > 0 ? radius - sqrt(radius * radius - rise * rise) : 0
+            }
+            for step in 0 ..< 120 {
+                let y = CGFloat(step) * 0.25 + 0.01
+                let edge = panelInset(atY: y)
+                XCTAssertFalse(outline.contains(CGPoint(x: edge + 0.9, y: y)), "left, y \(y), panel top \(panelTop)")
+                XCTAssertFalse(outline.contains(CGPoint(x: width - edge - 0.9, y: y)), "right, y \(y), panel top \(panelTop)")
+            }
+        }
+        XCTAssertTrue(outline.contains(CGPoint(x: 1.05, y: 246.9)), "down to the bottom")
+        XCTAssertTrue(outline.contains(CGPoint(x: width / 2, y: 1.05)), "up to the rim at the top")
+        XCTAssertFalse(outline.contains(CGPoint(x: width / 2, y: 0.9)), "not over the top rim")
     }
 
     private func describe(_ layout: KeyboardLayout) -> String {

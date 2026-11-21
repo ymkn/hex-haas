@@ -76,9 +76,16 @@ CSV file into the Vocabulary sheet and exports the list as one.
 models another app already downloaded; its Labs › Smaller model files toggle
 (off by default, macOS) also accepts imports quantized to Q6_K, Q5_K, or Q4_K.
 [Annotate](capture.md) (macOS, Linux,
-and Windows) records the screen while you draw and talk and sends it to an agent.
+and Windows) records the screen while you draw and talk and sends it to an agent;
+its Labs › Agent tools for captures toggle (off by default, every OS) adds
+`hex annotate inspect`, `zoom`, `frames`, and `skill`, which read a bundle in
+the CLI process so a coding agent can see its summary, marks, a dense frame
+sheet, or a range of frames itself. Its Labs › Install agent skill from
+Annotate toggle (off by default, every OS) adds an Agents section that writes
+the `hex-annotate` skill into Claude Code, Codex, OpenCode, or Pi, and on macOS
+links `hex` onto PATH.
 [Screenshots](labs.md) (Labs, macOS) takes CleanShot-style ⌘⇧4 area and
-window screenshots.
+window screenshots, and with Annotate on records from a ⌘⇧5 toolbar.
 The other capabilities stay here until they need their own verification recipe.
 
 ## Get Ready
@@ -766,83 +773,6 @@ reported `us`, then `ru` after an XKB group lock. The Windows observer and both
 new runtime paths compile (x64 clippy) but were not run on Windows or a live X11
 desktop.
 
-### Switch models with the app in front
-
-```ts
-Labs > Switch model with app                      // labs.app_model_switching; macOS, Windows; off by default; Modes shows each mode's choice while on
-├── Each mode, Global included -> Don't switch, or an installed model and a language
-│   (alphabetical by name, Auto first)
-│   ├── Open the language menu -> It scrolls to the chosen language so its
-│   │   check is in view (`a_modes_language_menu_opens_on_its_chosen_language`)
-│   ├── New choice -> The model's last-used language, else the saved language it supports
-│   ├── One-language model -> Its language shown fixed
-│   └── No choice -> Leave the selected model alone
-├── Matching -> By application on macOS and Windows alike; a mode's website rules are ignored
-├── Frontmost app changes -> The matching mode's speech choice
-│   ├── 300 ms after the last change -> Existing installed-only picker preparation
-│   ├── Same model and language already selected -> Nothing loads
-│   └── A model no longer downloaded -> Not installed; the preparation refuses it
-├── Hex's own window, or no app in front -> Ignored; keep the last mode and its pending switch
-├── Enable -> Wait for the next app other than Hex; launch records the app in front without switching
-├── Editing a mode's choice -> Applies when you next focus an app whose mode carries it, never while Hex is in front
-├── Manual model choice -> Supersede pending automatic work; do not reapply at recording start
-├── A dictation records or transcribes -> Hold a due switch until idle   // macOS from its press; Windows engine streams and finishes
-├── Both keyboard and app switching on -> Whichever switch is due later wins; the app wins a tie
-├── Disable -> Cancel automatic work; stop observing; leave the selected model alone
-└── Linux -> Not listed; no runtime follows the frontmost app for models
-```
-
-Each mode's choice persists as `speech` in `dictation_processing.modes[]`,
-and Global's in `dictation_processing.default_mode.speech`, storing a model
-with a language it supports. Only downloaded GGUF models from the picker are
-offered (Apple Speech never); downloads stay in the picker, and a switch never
-downloads. A choice whose model is no longer downloaded reads Not installed
-and is refused by preparation, which leaves the selected model alone.
-Editing a mode's choice, Global's included, applies when you next focus an
-app whose mode carries it; it never applies while Hex's own window is in
-front. Enabling the lab switches nothing by itself: the choice applies when
-you next focus an app other than Hex, after the same 300 ms debounce.
-
-The switch follows the same policy as keyboard-language switching
-([app_model_switching.rs](../../src/transcription/app_model_switching.rs)):
-a manual choice cancels a pending automatic switch, launching records the mode
-in front without applying it, and a due switch waits while a dictation
-records or transcribes (macOS knows a capture from its press; Windows sees the
-engine's streams and finishes). A mode without a choice switches nothing, and
-turning the lab off stops observing the frontmost app. Both hosts match by
-application only: macOS matches the foreground application through the same
-dictation profile selectors as mode processing, and Windows matches the
-foreground executable stem through `dictation::modes`; neither reads a
-browser page, so a mode's website rules are ignored and a mode chosen only by
-website never matches. Hex's own window, and a moment with no application in
-front, are ignored entirely: they neither schedule nor cancel a switch.
-Linux has no runtime for it, so the lab is not listed there.
-
-The switch is debounced for 300 ms after the app changes. With keyboard
-switching also on, both sources follow the same picker preparation: the one
-that becomes due later wins, and if both are due in the same tick the app
-switch wins.
-
-Sources: [switch policy](../../src/transcription/app_model_switching.rs),
-[macOS runtime](../../src/macos_rune/runtime.rs),
-[Windows host](../../src/windows/app.rs),
-[Modes pane](../../src/rune_ui/modes.rs), and the shared
-[row](../../src/rune_ui/speech_model.rs) it uses with General's input-source
-mappings. Checks:
-`app_model_switching_is_a_labs_toggle_on_macos_and_windows`,
-`a_mode_picks_an_installed_speech_model_and_language`, and
-`the_speech_row_needs_the_lab_and_a_capable_os` in
-[speech_model_tests.rs](../../src/rune_ui/speech_model_tests.rs); the policy
-tests in [app_model_switching.rs](../../src/transcription/app_model_switching.rs);
-the settings round-trip and validation tests in
-[app_settings.rs](../../src/app_settings.rs); and the selector tests in
-[dictation/config.rs](../../src/dictation/config.rs) and
-[dictation/modes.rs](../../src/dictation/modes.rs). No check delivers a
-foreground app change on a live Mac or Windows PC, and the runtime scheduling
-compiles there only; the `mac-labs` and `windows-labs` goldens were regenerated
-for the new card, the Modes goldens are unchanged with the lab off, and the new
-`modes-speech` golden shows the on state.
-
 ### Delete downloaded models
 
 ```ts
@@ -943,7 +873,8 @@ Do not start it beside an existing listener.
 Completed output                         // output
 ├── Paste -> Current focus, in submission order
 │   ├── Back-to-back dictations with no key, click, or window change between
-│   │   -> joined with a space and sentence-aware capitalization (macOS, Windows)
+│   │   -> joined with a space and sentence-aware capitalization (macOS, Windows;
+│   │      Linux on Wayland where the compositor reports input, dictation.md)
 │   ├── Previous clipboard restored 500 ms later, unless something newer replaced it
 │   ├── Windows -> the transcript is marked out of clipboard history (Win+V) and cloud sync (#851)
 │   ├── Windows -> a paste only goes to a window that can take it: the desktop
@@ -1464,10 +1395,10 @@ Selected mode                            // replaces Global's rewrite and transf
 Stage fails -> Preserve its input        // failed chain discards partial results
 ```
 
-With Labs › Switch model with app on, each mode also carries a speech model
-and language (`speech`) and the frontmost app's mode switches the
-transcription model before the next dictation; see
-[Switch models with the app in front](#switch-models-with-the-app-in-front).
+Each mode may also carry a speech model and language (`speech`) from the saved
+per-app model opt-in, which has no Settings editor; when it is on (macOS and
+Windows), the frontmost app's mode switches the transcription model before the
+next dictation ([`transcription/app_model_switching`](../../src/transcription/app_model_switching.rs)).
 
 **Fixed November 1, 2026 (issue 949):** every OpenCode rewrite's fixed
 instructions (`PROTOCOL_PROMPT`) now say to keep every number as said (no
@@ -1654,14 +1585,14 @@ from the name the running app reports (`Rex Beta.app` runs as `Rex`,
 `Visual Studio Code.app` as `Code`). The macOS frontmost read also keeps
 Finder's name for the frontmost bundle (`ContextSnapshot::bundle_name`, set
 only when it differs), and `application_is` accepts either, so Modes,
-Labs › YOLO mode, and Labs › Switch model with app match an app under both
+Labs › YOLO mode, and the per-app model opt-in match an app under both
 names. Checked by
 `an_application_selector_matches_the_bundles_finder_name_too` (context.rs),
 `a_picked_app_sends_under_its_finder_name_or_its_own` (yolo_mode.rs), and
 `a_mode_picked_under_its_finder_name_switches` (app_model_switching.rs).
 **Fixed on dev, Nov 19 2026:** before, a picked app whose file name differs
 from its own name never activated its Mode, YOLO mode never sent in it, and
-Switch model with app never switched to its mode's model.
+the per-app model opt-in never switched to its mode's model.
 
 **Fixed in 2.1.14:** through 2.1.13, a mode saved with that Finder
 preference enabled never activates and every dictation falls back to Global.
@@ -2330,7 +2261,9 @@ Linux beta                               // not macOS feature parity
 │       │   (restore token, persist_mode 2) -> keymap-resolved evdev keycodes
 │       │   // wl_seat keymap: a letter needs one code across every group that
 │       │   // has it (Dvorak v = KEY_DOT, AZERTY a = KEY_Q), while
-│       │   // Ctrl/Shift/Enter must be on 29/42/28 in every group; else the
+│       │   // Ctrl/Shift/Enter must be on 29/42/28 in every group; a letter
+│       │   // no group has still goes out on its pc105 key (a lone ru: KEY_V),
+│       │   // since the keysym path searches only the active group; else the
 │       │   // whole chord as keysyms; KWin 6.8's fake input and Mutter lose a
 │       │   // keysym outside the active group
 │       │   ├── 15 s after the last paste -> session closes when its grant restores, so
@@ -2400,12 +2333,13 @@ virtual-keyboard probe on niri (apollo). niri's portal frontend advertises
 RemoteDesktop but its GNOME backend fails CreateSession, so wtype stays first
 there. The RemoteDesktop paste itself (KWin, Mutter) has unit tests for its key
 sequences and its keymap resolution only and is not yet observed on a real
-desktop: it sends evdev keycodes only where the keymap confirms each letter and
-Ctrl, Shift, and Enter (`ctrl:swapcaps` and the like fall back to keysyms),
-rather than keysyms, which fixes KWin 6.8's fake input, where a Latin `v` under
-a Russian layout arrived as a bare `v` with Ctrl stuck down (#1939), and Mutter,
-which drops a keysym outside the active group. Neither fix is observed on a
-real KDE or GNOME session either. The modifier wait (`ShortcutKeys` in
+desktop: it sends evdev keycodes where the keymap confirms each letter and
+Ctrl, Shift, and Enter (`ctrl:swapcaps` and the like fall back to keysyms), and
+sends a letter no group has on its pc105 key, rather than keysyms, which fixes
+KWin 6.8's fake input, where a Latin `v` under a Russian layout arrived as a
+bare `v` with Ctrl stuck down (#1939), and Mutter, which drops a keysym outside
+the active group. Neither fix is observed on a real KDE or GNOME session
+either. The modifier wait (`ShortcutKeys` in
 [linux/input.rs](../../src/linux/input.rs)) has unit tests for its timing only;
 it is not yet observed on Hyprland, and a modifier held past the wait still
 changes the paste. wtype numbers its keymap from evdev code 1 in order of first
@@ -2469,12 +2403,19 @@ Windows beta                             // x64 (Vulkan GPU) and ARM64 (CPU)
 │   shown, checked every 250 ms; moves once two checks agree (#807)
 ├── HUD start -> a fresh first-frame attempt (own baseline, clock, and one
 │   recovery hide): no frame in 1.5 s -> hidden at once (not the exit fade,
-│   which needs a frame), so Rune releases the window and GPU surface and the
-│   next capture makes both again. A second start restarts the attempt, a
-│   previous attempt's reason never hides the new one, each attempt hides at
-│   most once, and the next start hides again if it is frame-less too. Rune's
-│   overlay failure is the Settings/log reason only. Logged once per reason;
-│   Settings' listener warning (dictation.md, rune_hud::FirstFrame)
+│   which needs a frame), so Rune releases the window and GPU surface. A
+│   frame-less attempt also backs the HUD off, so a GPU that can't present
+│   one is not asked to make a window, swapchain and device on every
+│   dictation: no show for 1 min, doubled per failed attempt in a row to
+│   30 min. Only a first frame its own attempt's resolve sees resets it; a
+│   late one keeps the backoff but leaves the HUD up for that recording,
+│   and a recording whose own attempt failed gets no further show either
+│   (one warning with the cooldown). A blocked start places and hides once,
+│   building nothing. A second start restarts a pending attempt, a previous
+│   attempt's reason never hides the new one, and each attempt hides at most
+│   once. Rune's overlay failure is the Settings/log reason only, still
+│   shown while the HUD backs off. Logged once per reason; Settings'
+│   listener warning (dictation.md, rune_hud::FirstFrame)
 ├── Launch again -> Running app shows its window; hidden (login) launch -> no-op
 ├── Tray icon -> White Hex mark; light taskbar (SystemUsesLightTheme) -> black mark
 │   └── Theme read when the tray is created; a later switch applies at the next launch
@@ -2777,9 +2718,7 @@ TypeScript SDK + local service             // macOS, Linux, Windows
 │   ├── ?process=global -> Global mode's output processing (Labs › Process API transcripts)
 │   └── ?timestamps=segment|word -> The model's own segment or word times
 │       └── 422 unsupported-timestamps when it has no such level (Labs › Timestamps in API transcripts)
-├── A web page's fetch -> Labs › Browser access to the local API
-│   ├── A listed origin -> OPTIONS 204 + Access-Control-Allow-Origin, then a token-bearing request
-│   └── Any other origin, or the lab off -> OPTIONS 401, no CORS headers
+├── A web page's fetch -> Never allowed: no CORS, OPTIONS is 401
 ├── Running desktop capture API -> Separate microphone ownership protocol
 │   ├── No capture silence gate           // model output, unlike hotkey dictation;
 │   │   └── its whole-clip run still drops a Whisper clip's silent edges,
@@ -2846,25 +2785,6 @@ response unchanged; off, a timed request is `403 timestamps-disabled`, and a
 model without that native level is `422 unsupported-timestamps`. Nothing
 estimates the times, and `/streams` and `/dictations` are unchanged
 ([labs.md](labs.md), [service contract](../specs/local-transcription-service.md)).
-
-Browser access (Labs › Browser access to the local API, off by default) lets a
-web page served from an origin listed in `labs.api_browser_origins` call this
-API with `fetch`. A browser sends its `OPTIONS` preflight without the bearer
-token, so Hex answers `204` for an allowed `Origin` before authentication, with
-`Access-Control-Allow-Origin` naming that origin, `GET, POST`, the four request
-headers, a 10-minute cache, and private-network permission only when the
-browser asked for it. Every other response, `401`, `404`, and SSE streams
-included, carries the same origin and `Vary: Origin`; the token is still
-required for every request. An origin that isn't listed, a missing `Origin`,
-and the lab off answer exactly as before (`OPTIONS` is `401`, with no CORS
-headers), and nothing allows credentials or `*`. Saved entries are normalized
-to `http://` or `https://` `scheme://host[:port]`; `*`, `null`, paths, queries,
-fragments, and userinfo are ignored. An IPv6 origin takes the browser's
-compressed form (`http://[::1]:5173`) and a non-ASCII host its punycode, since
-a request's `Origin` is matched exactly. Errors answered before a request is
-read (`400`, `408`, `431`, and the queue-full `503`) carry no CORS headers.
-Route tests inject the gate (`cors::Cors::gated`); nothing was observed from a
-real browser page.
 
 The [SDK guide](../../sdk/typescript/README.md),
 [service contract](../specs/local-transcription-service.md), and
@@ -2954,7 +2874,45 @@ Windows `hex app` -> one tray process, Rune window // dev.rune-ui-windows
 ├── Modes app icons: the executable's first icon (PrivateExtractIconsW)
 └── Not yet: custom caption
 iOS prototype (`HEXMobile`) -> Record/transcribe/copy and keyboard handoff
-├── Experiments: Full keyboard, Apple Intelligence cleanup, Custom vocabulary
+├── Experiments: Full keyboard, Apple Intelligence cleanup, Custom vocabulary,
+│   Hinglish, Adaptive touch, German spatial autocorrect, ABC under the emoji key,
+│   Learn each language separately
+├── Full keyboard's languages (Settings › Keyboard › Languages, with Full chosen): one or
+│   more layouts, the space bar names the current one and a slide switches letters, accents
+│   and autocorrect, and the input mode reports the language typing
+│   (`UIInputViewController.primaryLanguage`, which Apple documents as superseding the
+│   Info.plist's en-US; unit-tested, whether the host's spelling follows it is unverified on
+│   a device); Italian restores unambiguous unaccented spellings on space ("perche" →
+│   "perché", "citta" → "città", `KeyboardLanguage.accentRestorations`) and offers "è" and
+│   "c'è" in the strip for "e" and "ce", which are words of their own and are never changed
+│   by space
+├── German spatial autocorrect (off by default, `experiments.germanSpatialAutocorrect`):
+│   with Spatial autocorrect on too, the Deutsch layout reads taps with the German
+│   model Android ships (`ios/HEXKeyboard/TypingModel/de.hextm`, the same v3 file
+│   and hash as `android/app/src/main/assets/typing/de.hextm`) and the capitalisation
+│   sidecar beside it (`de.capitals`, built by `ios/scripts/build-german-capitals.py`,
+│   each word's share written with a capital): a noun takes its capital anywhere from
+│   a 95% share and after an article or determiner from 50% ("das haus" -> "das Haus",
+│   "zu leben" stays), whether the decoder corrected it or it was typed right, and a
+│   word that is also a common verb form or stem people type alone ("frage", "reise",
+│   "kauf", "schlaf") is capped at 94 so "ich frage" and "schlaf gut" stay, as is every
+│   two-letter word (a chat abbreviation like "gl", never a noun); "in" counts as a
+│   determiner ("in Ruhe") but "ohne" does not. A 50-94% word with no determiner, and
+│   any word the list lacks, keeps the dictionary's rule ("heute abend" -> "heute
+│   Abend"), and Auto-capitalization off adds none.
+│   Off, German keeps the dictionary engine and has no word list, so no letter odds,
+│   model completions or bilingual partner model
+├── Learn each language separately (off by default, `experiments.learnPerLanguage`):
+│   every typing correction and dictation fix is tagged with the language it was typed
+│   or dictated in; on, the keys learn a language's typos and rejections from that
+│   language's corrections and the untagged ones, and a dictation applies only the fixes
+│   made in its own language and the untagged ones (a fix learned in en-US applies in
+│   en-GB); learned words are one list per keyboard language
+│   (`keyboard.learnedWords.<code>`, seeded from the shared `keyboard.learnedWords`
+│   list), with bilingual autocorrect's partner keeping its own list and fixes; Delete
+│   what Hex learned erases the shared list and every language's; off, everything is the
+│   one shared list and learning it was before. Unit tests only: no CI compiles the iOS
+│   targets, and no physical iPhone run checks it
 ├── Custom vocabulary (off by default): a local list of up to 100 terms; every
 │   engine spells matched words the listed way before cleanup and again after
 │   formatting

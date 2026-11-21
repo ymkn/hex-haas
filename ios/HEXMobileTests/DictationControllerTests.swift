@@ -38,6 +38,11 @@ private final class FakeAudioManager: AudioManaging {
     var captureShouldThrow = false
     var deactivateCount = 0
     var createdCaptures: [FakeAudioCapture] = []
+    var keepaliveStarts = 0
+    /// The Settings › Microphone choice each capture was asked to record from.
+    var captureMicrophones: [MicrophoneChoice] = []
+    /// An engine that stops again by itself as soon as it starts.
+    var keepaliveStopsRightAway = false
 
     var onSystemEvent: ((AudioSystemEvent) -> Void)?
     var onUnexpectedCaptureEnd: ((URL, Bool) -> Void)?
@@ -46,12 +51,13 @@ private final class FakeAudioManager: AudioManaging {
         permissionGranted
     }
 
-    func startKeepalive(allowBluetooth: Bool) throws {
+    func startKeepalive() throws {
+        keepaliveStarts += 1
         if keepaliveShouldThrow {
             isKeepaliveRunning = false
             throw keepaliveError
         }
-        isKeepaliveRunning = true
+        isKeepaliveRunning = !keepaliveStopsRightAway
     }
 
     func stopKeepalive() {
@@ -66,8 +72,9 @@ private final class FakeAudioManager: AudioManaging {
     func beginCapture(
         at url: URL,
         maxDuration: TimeInterval,
-        allowBluetooth: Bool
+        microphone: MicrophoneChoice
     ) throws -> any ActiveAudioCapture {
+        captureMicrophones.append(microphone)
         isKeepaliveRunning = false
         if captureShouldThrow {
             throw CocoaError(.fileWriteUnknown)
@@ -246,6 +253,37 @@ final class DictationControllerTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: secondCaptureURL.path))
     }
 
+    func testDictationRecordsFromTheMicrophoneChosenInSettings() async throws {
+        let audio = FakeAudioManager()
+        let transcriber = ControlledTranscriber()
+        let bridge = KeyboardBridge(defaults: defaults)
+        let controller = DictationController(
+            audio: audio,
+            keyboardBridge: bridge,
+            transcriber: transcriber,
+            transcriberFactory: { transcriber },
+            now: { 1_500 },
+            autoPrepareOnInit: false
+        )
+        controller.prepareModel()
+        try await settle()
+        XCTAssertEqual(controller.microphone, .automatic)
+
+        controller.startRecording(keyboardJobID: "job-a")
+        try await settle()
+        XCTAssertEqual(controller.phase, .recording)
+        controller.cancelCurrentJob()
+
+        controller.setMicrophone(.bluetooth)
+        XCTAssertEqual(bridge.microphone, .bluetooth, "the keyboard's capture page follows it too")
+        controller.startRecording(keyboardJobID: "job-b")
+        try await settle()
+        XCTAssertEqual(controller.phase, .recording)
+        controller.cancelCurrentJob()
+
+        XCTAssertEqual(audio.captureMicrophones, [.automatic, .bluetooth])
+    }
+
     func testAcceptedJobDeliversTranscriptEvenWhenWarmSessionCloses() async throws {
         let now = 2_000.0
         let audio = FakeAudioManager()
@@ -286,6 +324,96 @@ final class DictationControllerTests: XCTestCase {
         let snap = bridge.snapshot()
         XCTAssertTrue(snap.hasDeliverableResult(at: now + 1))
         XCTAssertEqual(snap.transcript, "ship it tonight")
+    }
+
+    /// TestFlight build 56's sequence from Hex's side: the keyboard couldn't dictate by itself
+    /// and handed the dictation to Hex, you swiped back and tapped Done in the keyboard. Done
+    /// reaches Hex in One shot as in a warm session (One shot never read it, so the recording
+    /// ran to its limit), Hex heartbeats the job until its text is in, so the keyboard never
+    /// takes it for over, and the text stays on offer after its time to go in by itself.
+    func testAKeyboardHandoffFinishedFromTheKeyboardDeliversItsTextInEitherMode() async throws {
+        for duration in [WarmSessionDuration.off, .fifteenMinutes] {
+            var now = 7_000.0
+            let audio = FakeAudioManager()
+            let transcriber = ControlledTranscriber()
+            let bridge = KeyboardBridge(defaults: defaults)
+            let controller = DictationController(
+                audio: audio,
+                keyboardBridge: bridge,
+                transcriber: transcriber,
+                transcriberFactory: { transcriber },
+                now: { now },
+                autoPrepareOnInit: false
+            )
+            controller.prepareModel()
+            try await settle()
+            controller.setWarmDuration(duration)
+            await transcriber.armSuspension()
+
+            let job = "handoff-\(duration.rawValue)"
+            controller.handleKeyboardLaunch(.startRecording(jobID: job, requestedAt: now, style: .polished))
+            try await settle()
+            XCTAssertEqual(controller.phase, .recording, "\(duration)")
+            XCTAssertEqual(bridge.snapshot().jobID, job)
+
+            // Back in the app: only the keyboard's command tells Hex to stop.
+            now += 2
+            bridge.send(.stop, jobID: job, sentAt: now)
+            try await settle()
+            XCTAssertEqual(controller.phase, .transcribing, "\(duration): Done reached Hex")
+
+            now += 4
+            try await settle()
+            let waiting = bridge.snapshot()
+            XCTAssertEqual(waiting.state, .transcribing)
+            XCTAssertFalse(waiting.isOrphanedJob(at: now), "\(duration): the transcription heartbeats")
+
+            await transcriber.resumeSuspended(with: "ship it tonight")
+            try await settle()
+            XCTAssertEqual(controller.phase, .ready)
+            let done = bridge.snapshot()
+            XCTAssertTrue(done.hasDeliverableResult(at: now), "\(duration)")
+            XCTAssertEqual(done.transcript, controller.transcript)
+
+            now += 40
+            controller.processPendingKeyboardCommandForTesting()
+            XCTAssertFalse(bridge.snapshot().hasDeliverableResult(at: now))
+            XCTAssertTrue(bridge.snapshot().hasOfferableResult(at: now), "\(duration): offered as Paste dictation")
+            now += KeyboardSnapshot.resultOfferWindow
+            controller.processPendingKeyboardCommandForTesting()
+            XCTAssertNil(bridge.snapshot().transcript, "\(duration): not kept past the offer")
+            controller.endWarmSession()
+        }
+    }
+
+    /// A keyboard's Cancel in One shot ends the handed-off recording, as in a warm session.
+    func testAOneShotHandoffCancelledFromTheKeyboardStops() async throws {
+        let now = 7_500.0
+        let audio = FakeAudioManager()
+        let transcriber = ControlledTranscriber()
+        let bridge = KeyboardBridge(defaults: defaults)
+        let controller = DictationController(
+            audio: audio,
+            keyboardBridge: bridge,
+            transcriber: transcriber,
+            transcriberFactory: { transcriber },
+            now: { now },
+            autoPrepareOnInit: false
+        )
+        controller.prepareModel()
+        try await settle()
+        controller.setWarmDuration(.off)
+        controller.handleKeyboardLaunch(.startRecording(jobID: "one-shot", requestedAt: now, style: .polished))
+        try await settle()
+        XCTAssertEqual(controller.phase, .recording)
+
+        bridge.send(.cancel, jobID: "one-shot", sentAt: now)
+        try await settle()
+        XCTAssertEqual(controller.phase, .ready)
+        XCTAssertNil(bridge.snapshot().jobID)
+        XCTAssertNotEqual(bridge.snapshot().state, .recording)
+        let transcribed = await transcriber.transcribedURLs
+        XCTAssertTrue(transcribed.isEmpty, "nothing transcribed")
     }
 
     func testTenSecondHandoffWindow() async throws {
@@ -710,6 +838,58 @@ final class DictationControllerTests: XCTestCase {
         }
     }
 
+    /// A microphone test reads the same from the app, where Parakeet writes "Test 1, 2, 3", and
+    /// from in-keyboard dictation, where Apple's SpeechTranscriber writes "Test one, 2, 3." and
+    /// DictationTranscriber "Test 123", in every style and with Lowercase, with Clean up what I
+    /// say and Format lists on (TestFlight, Nov 20: "Test three." in the keyboard, "test 123"
+    /// in the app).
+    func testACountReadsTheSameFromTheAppAndTheKeyboard() async throws {
+        let tagger = CleanupTaggerSettings()
+        let wasEnabled = tagger.isEnabled
+        defer { tagger.isEnabled = wasEnabled }
+        tagger.isEnabled = true
+        let audio = FakeAudioManager()
+        let transcriber = ControlledTranscriber()
+        await transcriber.setCannedOutput("Test 1, 2, 3")
+        let lowercase = DictationLowercaseSettings(defaults: defaults)
+        let controller = DictationController(
+            audio: audio,
+            keyboardBridge: KeyboardBridge(defaults: defaults),
+            transcriber: transcriber,
+            transcriberFactory: { transcriber },
+            now: { 97_500 },
+            autoPrepareOnInit: false,
+            cleanupSettings: AppleIntelligenceCleanupSettings(defaults: defaults),
+            customVocabularySettings: CustomVocabularySettings(defaults: defaults),
+            lowercaseSettings: lowercase,
+            listSettings: DictationListSettings(defaults: defaults),
+            periodSettings: DictationPeriodSettings(defaults: defaults),
+            typingJournalSettings: TypingJournalSettings(defaults: defaults)
+        )
+        controller.prepareModel()
+        try await settle()
+
+        var outputs: [String] = []
+        for lower in [false, true] {
+            lowercase.isEnabled = lower
+            for style in [DictationStyle.polished, .casual, .notes] {
+                controller.clearTranscript()
+                controller.startRecording(keyboardJobID: "count-\(style)-\(lower)", styleOverride: style)
+                try await settle()
+                controller.finishRecording()
+                try await settle()
+                for heard in ["Test one, 2, 3.", "Test 123"] {
+                    let keyboard = await DictationPipeline(
+                        style: style, language: "en-US", lowercase: lower, formatLists: true
+                    ).run(heard).formatted
+                    XCTAssertEqual(keyboard, controller.transcript, "\(heard), \(style), lowercase \(lower)")
+                }
+                outputs.append(controller.transcript)
+            }
+        }
+        XCTAssertEqual(outputs, ["Test 1, 2, 3.", "test 1, 2, 3", "Test 1, 2, 3", "test 1, 2, 3.", "test 1, 2, 3", "test 1, 2, 3"])
+    }
+
     func testLowercaseAppliesOnlyWhenCaptured() async throws {
         let audio = FakeAudioManager()
         let transcriber = ControlledTranscriber()
@@ -865,7 +1045,7 @@ final class DictationControllerTests: XCTestCase {
             autoPrepareOnInit: false,
             customVocabularySettings: CustomVocabularySettings(defaults: defaults),
             typingJournalSettings: journalSettings,
-            learnedDictationCorrections: { learned }
+            learnedDictationCorrections: { _ in learned }
         )
         controller.prepareModel()
         try await settle()
@@ -913,7 +1093,7 @@ final class DictationControllerTests: XCTestCase {
             cleanupSettings: AppleIntelligenceCleanupSettings(defaults: defaults),
             customVocabularySettings: CustomVocabularySettings(defaults: defaults),
             typingJournalSettings: TypingJournalSettings(defaults: defaults),
-            learnedDictationCorrections: { [DictationCorrection(heard: "ship", meant: "send")] }
+            learnedDictationCorrections: { _ in [DictationCorrection(heard: "ship", meant: "send")] }
         )
         controller.prepareModel()
         try await settle()
@@ -1000,6 +1180,78 @@ final class DictationControllerTests: XCTestCase {
         try await settle()
         XCTAssertEqual(preparations, 5, "no change, no preparation")
         XCTAssertEqual(languages.recentDictationLanguages, ["de-DE", "nb-NO"], "picks in Hex are recents")
+    }
+
+    /// With English and Spanish on the keyboard and dictation on Automatic, a switch on the
+    /// space bar prepares the other language before the next dictation (TestFlight build 56:
+    /// Spanish speech transcribed as English was "incomprehensible"); a language picked by
+    /// hand stays put.
+    func testAutomaticDictationFollowsTheKeyboardsLanguage() async throws {
+        let transcriber = ControlledTranscriber()
+        let languages = LanguageSettings(defaults: defaults)
+        languages.supportedDictationLanguages = ["en-US", "es-ES"]
+        languages.automaticDictationLanguage = "en-US"
+        var preparations = 0
+        let controller = DictationController(
+            audio: FakeAudioManager(),
+            keyboardBridge: KeyboardBridge(defaults: defaults),
+            transcriber: transcriber,
+            transcriberFactory: {
+                preparations += 1
+                return transcriber
+            },
+            autoPrepareOnInit: false,
+            languageSettings: languages
+        )
+        controller.prepareModel()
+        try await settle()
+        XCTAssertEqual(preparations, 1)
+
+        languages.keyboardLanguages = [.english, .spanish]
+        controller.followDictationLanguageSetting()
+        try await settle()
+        XCTAssertEqual(preparations, 2, "now following the keyboard's English")
+        languages.currentKeyboardLanguage = .spanish
+        controller.followDictationLanguageSetting()
+        try await settle()
+        XCTAssertEqual(preparations, 3, "switched to Español on the space bar")
+        XCTAssertEqual(languages.effectiveDictationLanguage, "es-ES")
+        XCTAssertNil(controller.dictationLanguage, "still Automatic")
+        controller.followDictationLanguageSetting()
+        try await settle()
+        XCTAssertEqual(preparations, 3, "no change, no preparation")
+        languages.currentKeyboardLanguage = .english
+        controller.followDictationLanguageSetting()
+        try await settle()
+        XCTAssertEqual(preparations, 4, "and back to English")
+
+        controller.setDictationLanguage("es-MX")
+        try await settle()
+        XCTAssertEqual(preparations, 5)
+        languages.currentKeyboardLanguage = .spanish
+        controller.followDictationLanguageSetting()
+        try await settle()
+        XCTAssertEqual(preparations, 5, "a language picked by hand doesn't follow")
+        XCTAssertEqual(languages.effectiveDictationLanguage, "es-MX")
+    }
+
+    /// Parakeet V2 knows only English: Spanish goes to Apple Speech whatever happens, even when
+    /// Apple Speech doesn't answer, rather than Parakeet hearing it as English words.
+    func testSpanishNeverGoesToEnglishOnlyParakeet() throws {
+        guard #available(iOS 26.0, *) else { throw XCTSkip("Apple Speech arrived in iOS 26") }
+        func language(_ identifier: String, _ module: SpeechModuleKind) -> SpeechLanguage {
+            SpeechLanguage(locale: Locale(identifier: identifier), module: module)
+        }
+        typealias Controller = DictationController
+        XCTAssertEqual(Controller.appleSpeechLanguage(picked: language("es-ES", .speech), wanted: "es-ES", parakeetFits: true)?.identifier, "es-ES")
+        XCTAssertEqual(Controller.appleSpeechLanguage(picked: language("es-MX", .dictation), wanted: "es-MX", parakeetFits: true)?.identifier, "es-MX")
+        XCTAssertEqual(Controller.appleSpeechLanguage(picked: language("en-US", .speech), wanted: nil, parakeetFits: true)?.identifier, "en-US")
+        XCTAssertNil(Controller.appleSpeechLanguage(picked: language("en-US", .dictation), wanted: nil, parakeetFits: true), "English on DictationTranscriber: Parakeet, as before")
+        // Speech not answering: English may go to Parakeet, Spanish never.
+        XCTAssertNil(Controller.appleSpeechLanguage(picked: nil, wanted: "en-US", parakeetFits: true))
+        XCTAssertNil(Controller.appleSpeechLanguage(picked: nil, wanted: nil, parakeetFits: true))
+        XCTAssertEqual(Controller.appleSpeechLanguage(picked: nil, wanted: "es-ES", parakeetFits: true)?.identifier, "es-ES")
+        XCTAssertEqual(Controller.appleSpeechLanguage(picked: nil, wanted: "es-US", parakeetFits: true)?.identifier, "es-US")
     }
 
     func testErrorsShowShortMessagesNeverCodesOrTypeNames() {
@@ -1143,6 +1395,111 @@ final class DictationControllerTests: XCTestCase {
         XCTAssertTrue(AppleSpeechTranscriber.shouldUse(speech, parakeetFits: true))
     }
 
+    func testParakeetsFirstCompileKeepsTheBarMovingAndSaysWhy() {
+        var progress = ParakeetPreparationProgress(downloads: true, compiledBefore: false)
+        XCTAssertEqual(progress.snapshot(at: 0).detail, "Checking the speech model")
+        progress.download(0.5)
+        let halfDownloaded = progress.snapshot(at: 1)
+        XCTAssertEqual(halfDownloaded.fractionCompleted, 0.35, accuracy: 0.001)
+        XCTAssertEqual(halfDownloaded.detail, "Downloading the speech model")
+        progress.download(0.2)
+        XCTAssertEqual(progress.snapshot(at: 1).fractionCompleted, 0.35, accuracy: 0.001, "never back")
+
+        // Core ML reports only each model's start and end; the encoder's compile alone is
+        // a minute or more on an iPhone 14, where the bar used to sit at 50%.
+        progress.startLoading(at: 100)
+        progress.finishModel(at: 103)
+        var last = progress.snapshot(at: 103).fractionCompleted
+        XCTAssertGreaterThanOrEqual(last, 0.7)
+        // However long this iPhone's compile takes, the bar keeps moving.
+        for second in stride(from: 108.0, through: 900, by: 5) {
+            let snapshot = progress.snapshot(at: second)
+            XCTAssertGreaterThan(snapshot.fractionCompleted, last, "moves at \(second)")
+            XCTAssertLessThan(snapshot.fractionCompleted, 0.99)
+            last = snapshot.fractionCompleted
+        }
+        XCTAssertEqual(progress.snapshot(at: 120).detail, "Optimizing for this iPhone… about a minute")
+        XCTAssertEqual(
+            progress.snapshot(at: 100 + progress.expectedLoadSeconds * 2 + 1).detail,
+            "Still optimizing. The first time can take a few minutes."
+        )
+
+        progress.finishModel(at: 901)
+        XCTAssertGreaterThanOrEqual(progress.snapshot(at: 901).fractionCompleted, last, "a model's end never moves it back")
+        progress.finish()
+        XCTAssertEqual(progress.snapshot(at: 902).fractionCompleted, 1)
+    }
+
+    func testAParakeetLoadAfterTheFirstSaysLoadingAndUsesTheWholeBar() {
+        var progress = ParakeetPreparationProgress(downloads: false, compiledBefore: true)
+        progress.startLoading(at: 0)
+        XCTAssertEqual(progress.snapshot(at: 0).fractionCompleted, 0, accuracy: 0.001)
+        XCTAssertEqual(progress.snapshot(at: 0.5).detail, "Loading the speech model")
+        XCTAssertLessThan(progress.expectedLoadSeconds, 10)
+    }
+
+    func testParakeetsCompileRecordFollowsTheSystem() {
+        let record = ParakeetCompileRecord(defaults: defaults, system: "Version 18.6 (Build 22G86)")
+        XCTAssertFalse(record.isCurrent)
+        record.markCurrent()
+        XCTAssertTrue(record.isCurrent)
+        XCTAssertFalse(
+            ParakeetCompileRecord(defaults: defaults, system: "Version 18.7 (Build 22H20)").isCurrent,
+            "Core ML compiles again after an iOS update"
+        )
+    }
+
+    func testADownloadCutOffInTheBackgroundStartsAgainOnReturn() async throws {
+        let failing = UnpreparableTranscriber(error: ParakeetTranscriber.TranscriberError.downloadFailed)
+        let working = ControlledTranscriber()
+        var made = 0
+        let controller = DictationController(
+            audio: FakeAudioManager(),
+            keyboardBridge: KeyboardBridge(defaults: defaults),
+            transcriber: working,
+            transcriberFactory: {
+                made += 1
+                return made == 1 ? failing : working
+            },
+            autoPrepareOnInit: false
+        )
+        controller.appMovedToBackground()
+        controller.prepareModel()
+        try await settle()
+        guard case .failed = controller.phase else { return XCTFail("\(controller.phase)") }
+
+        controller.appBecameActive()
+        try await settle()
+        XCTAssertEqual(controller.phase, .ready)
+        XCTAssertEqual(made, 2)
+
+        controller.appBecameActive()
+        try await settle()
+        XCTAssertEqual(made, 2, "once")
+    }
+
+    func testAFailureWhileHexIsOpenWaitsForTryAgain() async throws {
+        var made = 0
+        let controller = DictationController(
+            audio: FakeAudioManager(),
+            keyboardBridge: KeyboardBridge(defaults: defaults),
+            transcriber: ControlledTranscriber(),
+            transcriberFactory: {
+                made += 1
+                return UnpreparableTranscriber(error: ParakeetTranscriber.TranscriberError.downloadFailed)
+            },
+            autoPrepareOnInit: false
+        )
+        controller.prepareModel()
+        try await settle()
+        controller.appMovedToBackground()
+        controller.appBecameActive()
+        try await settle()
+        XCTAssertEqual(made, 1)
+        XCTAssertFalse(DictationController.isDownloadInterruption(CancellationError()))
+        XCTAssertTrue(DictationController.isDownloadInterruption(StallWatch.Stalled()))
+    }
+
     func testAParakeetLoadThatEndedHexIsNotRepeatedAtLaunch() {
         let loads = ParakeetLoadGuard(defaults: defaults)
         loads.noteLaunch()
@@ -1161,6 +1518,123 @@ final class DictationControllerTests: XCTestCase {
         nextLaunch.begin()
         nextLaunch.end(loaded: true)
         XCTAssertFalse(nextLaunch.lastLoadWasInterrupted, "a load that worked clears it")
+    }
+
+    // MARK: - Experiments › Multilingual model (Parakeet)
+
+    /// 6 GB and 4 GB iPhones report about this much.
+    private static let sixGB: UInt64 = 5_900_000_000
+    private static let fourGB: UInt64 = 3_700_000_000
+
+    func testMultilingualParakeetIsOffByDefaultAndPicksNothing() {
+        let settings = MultilingualParakeetSettings(defaults: defaults)
+        XCTAssertFalse(settings.isEnabled)
+        XCTAssertNil(settings.language(set: "nl-NL", keyboard: nil, preferred: ["nl-NL"], physicalMemory: Self.sixGB))
+        XCTAssertNil(
+            ParakeetUltraTranscriber.chosenLanguage(language: settings.language(), availableMemory: 0, setAside: false),
+            "off, Hex keeps the engine it uses without it"
+        )
+    }
+
+    func testMultilingualParakeetTakesItsLanguagesOnIPhonesWithRoom() {
+        let settings = MultilingualParakeetSettings(defaults: defaults)
+        settings.isEnabled = true
+        func language(set: String? = nil, keyboard: String? = nil, preferred: [String] = ["en-US"], memory: UInt64 = Self.sixGB) -> String? {
+            settings.language(set: set, keyboard: keyboard, preferred: preferred, physicalMemory: memory)
+        }
+        XCTAssertEqual(language(set: "nl-NL"), "nl-NL")
+        XCTAssertEqual(language(keyboard: "de-DE"), "de-DE", "Automatic follows the keyboard's language")
+        XCTAssertEqual(language(preferred: ["en-NL", "nl-NL"]), "en-NL", "else the iPhone's first language")
+        XCTAssertNil(language(set: "ja-JP"), "a language it doesn't know stays with Apple Speech")
+        XCTAssertNil(language(set: "hi-IN"))
+        XCTAssertNil(language(preferred: ["ja-JP", "en-US"]), "Automatic doesn't skip the iPhone's first language")
+        XCTAssertNil(language(set: "nl-NL", memory: Self.fourGB), "4 GB iPhones can't load it")
+
+        XCTAssertEqual(ParakeetUltraTranscriber.chosenLanguage(language: "nl-NL", availableMemory: 2_500 << 20, setAside: false), "nl-NL")
+        XCTAssertEqual(ParakeetUltraTranscriber.chosenLanguage(language: "nl-NL", availableMemory: 0, setAside: false), "nl-NL", "no limit (simulator)")
+        XCTAssertNil(ParakeetUltraTranscriber.chosenLanguage(language: "nl-NL", availableMemory: 900 << 20, setAside: false), "too little left")
+        XCTAssertNil(ParakeetUltraTranscriber.chosenLanguage(language: "nl-NL", availableMemory: 0, setAside: true), "a load ended Hex")
+    }
+
+    func testAMultilingualParakeetLoadThatEndedHexIsKeptApartFromV2s() {
+        let ultra = ParakeetLoadGuard(model: ParakeetUltraTranscriber.loadGuardModel, defaults: defaults)
+        ultra.begin()
+        let v2 = ParakeetLoadGuard(defaults: defaults)
+        v2.noteLaunch()
+        ultra.noteLaunch()
+        XCTAssertFalse(v2.lastLoadWasInterrupted)
+        XCTAssertTrue(ultra.lastLoadWasInterrupted)
+        ultra.forget()
+        XCTAssertFalse(ultra.lastLoadWasInterrupted, "turning the experiment on again tries again")
+        XCTAssertFalse(ParakeetCompileRecord(key: ParakeetUltraTranscriber.compileRecordKey, defaults: defaults).isCurrent)
+    }
+
+    func testMultilingualParakeetsDownloadSaysItsSizeAndWiFi() {
+        var progress = ParakeetPreparationProgress(
+            downloads: true,
+            compiledBefore: false,
+            downloadDetail: ParakeetUltraTranscriber.downloadDetail
+        )
+        progress.download(0.5)
+        let detail = progress.snapshot(at: 1).detail
+        XCTAssertEqual(detail, ParakeetUltraTranscriber.downloadDetail)
+        XCTAssertTrue(detail.contains("632"), detail)
+        XCTAssertTrue(detail.contains("Wi-Fi"), detail)
+        XCTAssertEqual(
+            ParakeetPreparationProgress(downloads: true, compiledBefore: false).downloadDetail,
+            "Downloading the speech model",
+            "V2's words are unchanged"
+        )
+        XCTAssertTrue(DictationController.isDownloadInterruption(ParakeetUltraTranscriber.TranscriberError.downloadFailed))
+    }
+
+    func testParakeetUltrasFilesArePinnedAndComplete() throws {
+        let files = ParakeetUltraModel.files
+        XCTAssertEqual(Set(files.map(\.path)).count, files.count)
+        for model in ["Preprocessor", "Encoder", "Decoder", "JointDecisionv3"] {
+            XCTAssertTrue(files.contains { $0.path == "\(model).mlmodelc/weights/weight.bin" }, model)
+            XCTAssertTrue(files.contains { $0.path == "\(model).mlmodelc/model.mil" }, model)
+        }
+        XCTAssertTrue(files.allSatisfy { $0.sha256.count == 64 })
+        XCTAssertEqual(ParakeetUltraModel.totalBytes, 632_162_964)
+        for file in files {
+            XCTAssertTrue(ParakeetUltraModel.url(for: file).absoluteString.contains("/resolve/\(ParakeetUltraModel.revision)/"))
+        }
+
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        XCTAssertFalse(ParakeetUltraModel.isDownloaded(in: folder))
+        let vocabulary = folder.appendingPathComponent("vocab.json")
+        try Data(#"{"0": "<unk>", "8191": "▁ja"}"#.utf8).write(to: vocabulary)
+        XCTAssertEqual(try ParakeetUltraModel.vocabulary(at: vocabulary), [0: "<unk>", 8191: "▁ja"])
+        XCTAssertEqual(
+            try ParakeetUltraModel.sha256(of: vocabulary),
+            "ec2185c71d79a203174eba2b46e5d20431bdc1d0f275735d1f22f284d1759b24"
+        )
+    }
+
+    func testTurningMultilingualParakeetOnOrOffPreparesAgainOnceIdle() async throws {
+        let transcriber = ControlledTranscriber()
+        var made = 0
+        let controller = DictationController(
+            audio: FakeAudioManager(),
+            keyboardBridge: KeyboardBridge(defaults: defaults),
+            transcriber: transcriber,
+            transcriberFactory: {
+                made += 1
+                return transcriber
+            },
+            autoPrepareOnInit: false
+        )
+        controller.prepareModel()
+        try await settle()
+        XCTAssertEqual(made, 1)
+
+        controller.multilingualParakeetChanged()
+        try await settle()
+        XCTAssertEqual(made, 2)
+        XCTAssertEqual(controller.phase, .ready)
     }
 
     func testWarmSessionAudioErrorReachesAppAndKeyboardAsASentence() async throws {
@@ -1290,6 +1764,54 @@ final class DictationControllerTests: XCTestCase {
         controller.cancelCurrentJob()
     }
 
+    /// A warm session's microphone failed for a keyboard's dictation (another app held it):
+    /// Hex stays marked failed, and ignored every start the keyboard sent until it was opened,
+    /// while its snapshot kept saying so to every keyboard. The failure carries when it
+    /// happened, so the keyboard stops showing it, and the next Hex key is Hex's Try again.
+    func testAWarmSessionsMicrophoneFailureIsRetriedFromTheKeyboard() async throws {
+        var now = 52_000.0
+        let audio = FakeAudioManager()
+        let transcriber = ControlledTranscriber()
+        let bridge = KeyboardBridge(defaults: defaults)
+        let controller = DictationController(
+            audio: audio,
+            keyboardBridge: bridge,
+            transcriber: transcriber,
+            transcriberFactory: { transcriber },
+            now: { now },
+            autoPrepareOnInit: false
+        )
+        controller.prepareModel()
+        try await settle()
+        controller.selectWarmDuration(.fifteenMinutes)
+        try await settle()
+        XCTAssertTrue(audio.isKeepaliveRunning)
+
+        audio.captureShouldThrow = true
+        bridge.send(.start, jobID: "busy-mic", style: .polished, sentAt: now)
+        try await settle()
+        let message = "Hex couldn't start the microphone. Try again."
+        XCTAssertEqual(controller.phase, .failed(message))
+        let failed = bridge.snapshot()
+        XCTAssertEqual(failed.state, .failed)
+        XCTAssertEqual(failed.message, message)
+        XCTAssertEqual(failed.messageAt, now)
+        XCTAssertFalse(failed.hasStaleMessage(at: now + 2))
+        XCTAssertTrue(failed.hasStaleMessage(at: now + KeyboardSnapshot.messageShownFor + 1))
+        XCTAssertTrue(audio.isKeepaliveRunning, "the warm session goes on")
+
+        // The keyboard's next Hex key, with the microphone free again: Hex records.
+        audio.captureShouldThrow = false
+        now += 12
+        bridge.send(.start, jobID: "try-again", style: .polished, sentAt: now)
+        try await settle()
+        XCTAssertEqual(controller.phase, .recording)
+        XCTAssertEqual(bridge.snapshot().jobID, "try-again")
+        XCTAssertNil(bridge.snapshot().message)
+        XCTAssertNil(bridge.snapshot().messageAt)
+        controller.endWarmSession()
+    }
+
     /// A recorder's end can arrive after Hex already tore its capture down (Cancel, or the
     /// next dictation started): it changes nothing, and the dictation running now goes on.
     func testAnEndFromATornDownCaptureChangesNothing() async throws {
@@ -1329,6 +1851,61 @@ final class DictationControllerTests: XCTestCase {
         controller.cancelCurrentJob()
     }
 
+    /// A keepalive that keeps stopping by itself (another app changing the hardware's format,
+    /// say) is restarted at once, then less and less often instead of every 100 ms: each
+    /// restart activates the session and reopens the microphone under a screen recording.
+    func testAKeepaliveThatKeepsStoppingIsRestartedLessAndLessOften() async throws {
+        var now = 52_000.0
+        let audio = FakeAudioManager()
+        let transcriber = ControlledTranscriber()
+        let controller = DictationController(
+            audio: audio,
+            keyboardBridge: KeyboardBridge(defaults: defaults),
+            transcriber: transcriber,
+            transcriberFactory: { transcriber },
+            now: { now },
+            autoPrepareOnInit: false
+        )
+        controller.prepareModel()
+        try await settle()
+        controller.selectWarmDuration(.fifteenMinutes)
+        try await settle()
+        XCTAssertTrue(audio.isKeepaliveRunning)
+        let started = audio.keepaliveStarts
+
+        audio.keepaliveStopsRightAway = true
+        audio.isKeepaliveRunning = false
+        try await settle(twice: true)
+        XCTAssertEqual(audio.keepaliveStarts, started + 1, "restarted at once")
+        now += 0.5
+        try await settle(twice: true)
+        XCTAssertEqual(audio.keepaliveStarts, started + 1, "stopped again: the next waits 1 s")
+        now += 0.7
+        try await settle(twice: true)
+        XCTAssertEqual(audio.keepaliveStarts, started + 2)
+        now += 1.8
+        try await settle(twice: true)
+        XCTAssertEqual(audio.keepaliveStarts, started + 2, "then 2 s")
+        now += 0.4
+        try await settle(twice: true)
+        XCTAssertEqual(audio.keepaliveStarts, started + 3)
+        XCTAssertTrue(controller.keyboardSessionEnabled, "the warm session goes on")
+
+        audio.keepaliveStopsRightAway = false
+        now += 4.1
+        try await settle(twice: true)
+        XCTAssertEqual(audio.keepaliveStarts, started + 4, "then 4 s, and now it runs")
+        XCTAssertTrue(audio.isKeepaliveRunning)
+
+        now += 60
+        try await settle()
+        audio.isKeepaliveRunning = false
+        try await settle()
+        XCTAssertEqual(audio.keepaliveStarts, started + 5, "one that ran a while restarts at once")
+        XCTAssertTrue(audio.isKeepaliveRunning)
+        controller.endWarmSession()
+    }
+
     /// A recorder that stopped, or failed to start, outlives the capture that dropped it,
     /// so callbacks its audio queue already fetched still find it; then it goes.
     func testARetiredRecorderOutlivesItsTeardownWhileItsQueueCanCallBack() async throws {
@@ -1359,8 +1936,222 @@ final class DictationControllerTests: XCTestCase {
         try? FileManager.default.removeItem(at: url)
     }
 
-    private func settle() async throws {
-        for _ in 0..<8 {
+    // MARK: - Which engine dictates (SpeechEngineChoice)
+
+    private static let gigabyte: UInt64 = 1 << 30
+
+    /// An iPhone XR reports 2.8 GB; a 6 GB iPhone about 5.5 GB.
+    private func device(
+        system: Int = 18,
+        memory: UInt64 = 5_500 << 20,
+        available: UInt64 = 0,
+        setAside: Bool = false
+    ) -> SpeechEngineChoice {
+        SpeechEngineChoice(system: system, physicalMemory: memory, availableMemory: available, parakeetSetAside: setAside)
+    }
+
+    func testBeforeIOS26EnglishStaysOnParakeetOnlyWhereItHasRoom() {
+        XCTAssertEqual(device().engine(for: "en-US", appleSpeechPicks: false), .parakeet, "a 6 GB iPhone on iOS 18, as before")
+        XCTAssertEqual(device().engine(for: nil, appleSpeechPicks: false), .parakeet, "no language reads as English")
+        XCTAssertEqual(device(available: 3 * Self.gigabyte).engine(for: "en-GB", appleSpeechPicks: false), .parakeet)
+        XCTAssertEqual(
+            device(memory: 2_813 << 20).engine(for: "en-US", appleSpeechPicks: false),
+            .onDeviceRecognizer,
+            "iPhone XR, 3 GB: iOS ended Hex while Parakeet loaded (build 56)"
+        )
+        XCTAssertEqual(device(memory: 3 * Self.gigabyte).engine(for: "en-US", appleSpeechPicks: false), .onDeviceRecognizer)
+        XCTAssertEqual(
+            device(memory: 3_700 << 20, available: 1_100 << 20).engine(for: "en-US", appleSpeechPicks: false),
+            .onDeviceRecognizer,
+            "less left than loading Parakeet takes"
+        )
+        XCTAssertEqual(
+            device(memory: 3_700 << 20, available: 1_900 << 20).engine(for: "en-US", appleSpeechPicks: false),
+            .parakeet
+        )
+    }
+
+    func testBeforeIOS26EveryOtherLanguageGoesToTheOnDeviceRecognizer() {
+        for language in ["zh-CN", "zh-Hans-CN", "es-ES", "fr-FR", "ja-JP"] {
+            XCTAssertEqual(device(memory: 8 * Self.gigabyte).engine(for: language, appleSpeechPicks: false), .onDeviceRecognizer, language)
+        }
+        XCTAssertNil(device().notice(for: "zh-CN"), "nothing to say: Parakeet never had Chinese")
+        XCTAssertNil(device(memory: 2_813 << 20).notice(for: "en-US"), "nor on an iPhone it never fit")
+    }
+
+    func testFromIOS26TheRecognizerIsNeverPickedSoSpeechRecognitionIsNeverAsked() async {
+        for system in [26, 27] {
+            for memory in [2_813 << 20, 3_700 << 20, 5_500 << 20] as [UInt64] {
+                for setAside in [false, true] {
+                    for language in ["en-US", "zh-CN", nil] as [String?] {
+                        let choice = device(system: system, memory: memory, available: 1 << 20, setAside: setAside)
+                        XCTAssertEqual(choice.engine(for: language, appleSpeechPicks: true), .appleSpeech)
+                        XCTAssertEqual(choice.engine(for: language, appleSpeechPicks: false), .parakeet)
+                        XCTAssertNil(choice.notice(for: language))
+                    }
+                }
+            }
+        }
+        XCTAssertTrue(device(system: 26, memory: 5_500 << 20).parakeetFitsBesideAppleSpeech)
+        XCTAssertFalse(device(system: 26, memory: 3_700 << 20).parakeetFitsBesideAppleSpeech, "iPhone 11, as before")
+        XCTAssertFalse(device(system: 26, setAside: true).parakeetFitsBesideAppleSpeech, "Apple Speech after a load that ended Hex")
+        XCTAssertFalse(device(system: 26, available: 1 << 30).parakeetFitsBesideAppleSpeech)
+        if #available(iOS 26.0, *) {
+            // Only `OnDeviceSpeechTranscriber.prepare` asks for Speech Recognition; iOS 26's
+            // default engine is never it, whatever this iPhone's languages.
+            let transcriber = await DictationController.defaultTranscriber()
+            XCTAssertFalse(transcriber is OnDeviceSpeechTranscriber, "\(type(of: transcriber))")
+        }
+    }
+
+    func testAParakeetLoadThatEndedHexMovesEnglishToTheRecognizerBeforeIOS26() {
+        let loads = ParakeetLoadGuard(defaults: defaults)
+        loads.begin()
+        let nextLaunch = ParakeetLoadGuard(defaults: defaults)
+        nextLaunch.noteLaunch()
+        let choice = device(setAside: nextLaunch.lastLoadWasInterrupted)
+        XCTAssertEqual(choice.engine(for: "en-US", appleSpeechPicks: false), .onDeviceRecognizer)
+        XCTAssertEqual(
+            choice.notice(for: "en-US"),
+            "Parakeet needs more memory than Hex has here. Hex uses Apple's on-device speech instead."
+        )
+        let transcriber = DictationController.transcriberBeforeAppleSpeech(choice: choice, suite: suiteName, resolve: { _ in "en-US" })
+        XCTAssertTrue(transcriber is OnDeviceSpeechTranscriber)
+        XCTAssertTrue(DictationController.transcriberBeforeAppleSpeech(choice: device(), suite: suiteName) is ParakeetTranscriber)
+
+        // Too little memory at the load counts the same way, before anything loads.
+        let fresh = ParakeetLoadGuard(defaults: UserDefaults(suiteName: "\(suiteName).fresh")!)
+        fresh.setAside()
+        XCTAssertTrue(fresh.lastLoadWasInterrupted)
+        UserDefaults(suiteName: "\(suiteName).fresh")!.removePersistentDomain(forName: "\(suiteName).fresh")
+        XCTAssertTrue(ParakeetTranscriber.hasRoomToLoad(available: 0), "the simulator says nothing")
+        XCTAssertFalse(ParakeetTranscriber.hasRoomToLoad(available: 1_200 << 20))
+        XCTAssertTrue(ParakeetTranscriber.hasRoomToLoad(available: 2 << 30))
+    }
+
+    func testParakeetWithoutRoomPreparesApplesEngineInsteadOfLoading() async throws {
+        let apple = ControlledTranscriber()
+        var made = 0
+        let controller = DictationController(
+            audio: FakeAudioManager(),
+            keyboardBridge: KeyboardBridge(defaults: defaults),
+            transcriber: apple,
+            transcriberFactory: {
+                made += 1
+                return made == 1 ? UnpreparableTranscriber(error: ParakeetTranscriber.TranscriberError.notEnoughMemory) : apple
+            },
+            autoPrepareOnInit: false
+        )
+        controller.prepareModel()
+        try await settle()
+        XCTAssertEqual(made, 2, "prepared again with what Hex picks now")
+        XCTAssertEqual(controller.phase, .ready)
+        XCTAssertEqual(
+            controller.languageNotice,
+            "Parakeet needs more memory than Hex has here. Hex uses Apple's on-device speech instead."
+        )
+    }
+
+    func testTheRecognizerAsksForSpeechRecognitionOnlyAsItGetsReady() async throws {
+        let access = CountingSpeechAccess(answer: .denied)
+        let xr = device(memory: 2_813 << 20)
+        let transcriber = DictationController.transcriberBeforeAppleSpeech(
+            choice: xr,
+            suite: suiteName,
+            access: access.access,
+            resolve: { _ in "zh-CN" }
+        )
+        XCTAssertEqual(access.requests, 0, "picking the engine asks nothing")
+        let details = DetailLog()
+        do {
+            try await transcriber.prepare { details.append($0.detail) }
+            XCTFail("prepared without Speech Recognition")
+        } catch {
+            XCTAssertEqual(error as? OnDeviceSpeechTranscriber.TranscriberError, .notAllowed)
+            XCTAssertEqual(
+                UserFacingError.message(for: error, context: .model),
+                "Allow Speech Recognition for Hex in Settings. It runs on this iPhone."
+            )
+        }
+        XCTAssertEqual(access.requests, 1)
+        XCTAssertEqual(
+            details.values,
+            ["Checking Apple's on-device speech", "Allow Speech Recognition. It stays on this iPhone."],
+            "says it stays on the iPhone before iOS asks"
+        )
+        let languageID = await transcriber.languageIdentifier
+        XCTAssertEqual(languageID, "zh-CN")
+
+        // English on an iPhone Parakeet fits never asks at all.
+        let parakeet = DictationController.transcriberBeforeAppleSpeech(choice: device(), suite: suiteName, access: access.access)
+        XCTAssertTrue(parakeet is ParakeetTranscriber)
+        XCTAssertEqual(access.requests, 1)
+        XCTAssertTrue(OnDeviceSpeechTranscriber.isNoSpeech(NSError(domain: "kAFAssistantErrorDomain", code: 1110)))
+    }
+
+    func testTheRecognizerFindsChineseAndEnglishAsAppleListsThem() {
+        let supported = ["en-AU", "en-GB", "en-IN", "en-US", "fr-CA", "fr-FR", "yue-CN", "zh-CN", "zh-HK", "zh-TW"]
+        XCTAssertEqual(OnDeviceSpeechLanguages.match("zh-Hans-CN", in: supported), "zh-CN", "a Simplified Chinese iPhone")
+        XCTAssertEqual(OnDeviceSpeechLanguages.match("zh-Hans", in: supported), "zh-CN")
+        XCTAssertEqual(OnDeviceSpeechLanguages.match("zh-Hant-TW", in: supported), "zh-TW")
+        XCTAssertEqual(OnDeviceSpeechLanguages.match("zh-Hant", in: supported), "zh-TW")
+        XCTAssertEqual(OnDeviceSpeechLanguages.match("zh-Hant-HK", in: supported), "zh-HK")
+        XCTAssertEqual(OnDeviceSpeechLanguages.match("en-GB", in: supported), "en-GB")
+        XCTAssertEqual(OnDeviceSpeechLanguages.match("en", in: supported), "en-US")
+        XCTAssertEqual(OnDeviceSpeechLanguages.match("en-NZ", in: supported), "en-US")
+        XCTAssertEqual(OnDeviceSpeechLanguages.match("fr-BE", in: supported), "fr-FR")
+        XCTAssertNil(OnDeviceSpeechLanguages.match("he-IL", in: supported))
+
+        let languages = LanguageSettings(defaults: defaults)
+        let onDevice: (String) -> Bool = { $0 != "fr-CA" }
+        XCTAssertEqual(
+            OnDeviceSpeechLanguages.resolve(settings: languages, preferred: ["zh-Hans-CN", "en-CN"], supported: supported, onDevice: onDevice),
+            "zh-CN"
+        )
+        XCTAssertEqual(
+            OnDeviceSpeechLanguages.resolve(settings: languages, preferred: ["he-IL", "fr-CA"], supported: supported, onDevice: onDevice),
+            "en-US",
+            "neither Hebrew nor Canadian French on device: English, which every iPhone on iOS 18 has"
+        )
+        languages.markUnavailable("zh-CN")
+        XCTAssertEqual(
+            OnDeviceSpeechLanguages.resolve(settings: languages, preferred: ["zh-Hans-CN", "en-CN"], supported: supported, onDevice: onDevice),
+            "en-US",
+            "Automatic passes over a language set aside"
+        )
+        languages.chooseDictationLanguage("zh-Hans-CN")
+        XCTAssertEqual(
+            OnDeviceSpeechLanguages.resolve(settings: languages, preferred: ["en-US"], supported: supported, onDevice: onDevice),
+            "zh-CN",
+            "a choice made by hand is tried as it is"
+        )
+    }
+
+    func testBeforeIOS26ATranslationWithoutHexsWindowSaysSo() async {
+        XCTAssertEqual(DictationTranslator.reason(for: TranslationEngine.NoSession()), .needsHexOpen)
+        let failure = TranslationFailure(.needsHexOpen, source: Locale.Language(identifier: "zh"), target: Locale.Language(identifier: "en"))
+        XCTAssertEqual(failure.fix, "iOS 18 translates only with Hex open")
+        XCTAssertLessThanOrEqual(failure.fix.count, 40, "fits the keyboard's second line")
+
+        let settings = DictationTranslationSettings(defaults: defaults)
+        settings.isEnabled = true
+        settings.targetLanguage = "en"
+        let stub = StubTranslator()
+        stub.replies = [.failure(TranslationEngine.NoSession()), .failure(TranslationEngine.NoSession())]
+        let outcome = await DictationTranslator.translate(
+            "我们明天见。",
+            source: Locale.Language(identifier: "zh-CN"),
+            settings: settings,
+            engine: stub.engine
+        )
+        XCTAssertEqual(outcome.failure?.reason, .needsHexOpen)
+        XCTAssertEqual(stub.inputs.count, 1, "not tried again: another wait wouldn't bring a session")
+        XCTAssertEqual(settings.lastFailure?.reason, .needsHexOpen, "Settings says why")
+    }
+
+    /// `twice` lets the warm session loop (every 100 ms) look at least twice.
+    private func settle(twice: Bool = false) async throws {
+        for _ in 0..<(twice ? 16 : 8) {
             try await Task.sleep(for: .milliseconds(25))
         }
     }
@@ -1389,11 +2180,13 @@ final class SpeechLanguagePickerTests: XCTestCase {
         preferred: [String],
         current: String = "en_US",
         setAside: Set<String> = [],
-        speechTranscriber: Bool = true
+        speechTranscriber: Bool = true,
+        region: String = "US"
     ) async -> SpeechLanguage? {
         await SpeechLanguagePicker.pick(
             explicit: explicit,
-            candidates: SpeechLanguagePicker.automaticCandidates(preferred: preferred, current: current),
+            candidates: SpeechLanguagePicker.automaticCandidates(preferred: preferred, current: current, region: region),
+            region: region,
             speech: speechTranscriber ? lookup(speechLocales) : { _ in nil },
             dictation: lookup(dictationLocales),
             skip: { setAside.contains($0.identifier(.bcp47)) }
@@ -1437,6 +2230,74 @@ final class SpeechLanguagePickerTests: XCTestCase {
         XCTAssertEqual(SpeechLanguagePicker.shortNames(for: ["uk-UA"], in: Locale(identifier: "en-US"))["uk-UA"], "Ukrainian")
     }
 
+    /// Polish is `DictationTranscriber`'s only (macOS 27.2 lists pl-PL there and not in
+    /// `SpeechTranscriber`): picked by hand or by a Polish iPhone, it dictates in Polish.
+    func testPolishComesFromDictationTranscriber() async {
+        let speech = lookup(speechLocales)
+        let dictation = lookup(dictationLocales + ["pl-PL"])
+        let chosen = await SpeechLanguagePicker.pick(
+            explicit: "pl-PL", candidates: ["en-US"], speech: speech, dictation: dictation
+        )
+        XCTAssertEqual(chosen?.identifier, "pl-PL")
+        XCTAssertEqual(chosen?.module, .dictation)
+        let automatic = await SpeechLanguagePicker.pick(
+            explicit: nil,
+            candidates: SpeechLanguagePicker.automaticCandidates(preferred: ["pl-PL", "en-US"], current: "pl_PL"),
+            speech: speech,
+            dictation: dictation
+        )
+        XCTAssertEqual(automatic?.identifier, "pl-PL")
+        XCTAssertEqual(automatic?.module, .dictation)
+        XCTAssertFalse(SpeechLanguagePicker.isEnglish("pl-PL"), "Apple Speech, never English-only Parakeet")
+        XCTAssertEqual(SpeechLanguagePicker.shortNames(for: ["pl-PL"], in: Locale(identifier: "en-US"))["pl-PL"], "Polish")
+    }
+
+    /// Greek is `DictationTranscriber`'s only (macOS 27.2 lists el-GR there and not in
+    /// `SpeechTranscriber`): picked by hand or by a Greek iPhone, it dictates in Greek.
+    func testGreekComesFromDictationTranscriber() async {
+        let speech = lookup(speechLocales)
+        let dictation = lookup(dictationLocales + ["el-GR"])
+        let chosen = await SpeechLanguagePicker.pick(
+            explicit: "el-GR", candidates: ["en-US"], speech: speech, dictation: dictation
+        )
+        XCTAssertEqual(chosen?.identifier, "el-GR")
+        XCTAssertEqual(chosen?.module, .dictation)
+        let automatic = await SpeechLanguagePicker.pick(
+            explicit: nil,
+            candidates: SpeechLanguagePicker.automaticCandidates(preferred: ["el-GR", "en-US"], current: "el_GR"),
+            speech: speech,
+            dictation: dictation
+        )
+        XCTAssertEqual(automatic?.identifier, "el-GR")
+        XCTAssertEqual(automatic?.module, .dictation)
+        XCTAssertFalse(SpeechLanguagePicker.isEnglish("el-GR"), "Apple Speech, never English-only Parakeet")
+        XCTAssertEqual(SpeechLanguagePicker.shortNames(for: ["el-GR"], in: Locale(identifier: "en-US"))["el-GR"], "Greek")
+    }
+
+    /// Czech is `DictationTranscriber`'s only (macOS 27.2.1 lists cs-CZ there and not in
+    /// `SpeechTranscriber`): picked by hand, by a Czech iPhone, or by the keyboard showing
+    /// Čeština, it dictates in Czech through Apple Speech, never English-only Parakeet.
+    func testCzechComesFromDictationTranscriber() async {
+        let speech = lookup(speechLocales)
+        let dictation = lookup(dictationLocales + ["cs-CZ"])
+        let chosen = await SpeechLanguagePicker.pick(
+            explicit: "cs-CZ", candidates: ["en-US"], speech: speech, dictation: dictation
+        )
+        XCTAssertEqual(chosen?.identifier, "cs-CZ")
+        XCTAssertEqual(chosen?.module, .dictation)
+        let automatic = await SpeechLanguagePicker.pick(
+            explicit: nil,
+            candidates: SpeechLanguagePicker.automaticCandidates(preferred: ["cs-CZ", "en-US"], current: "cs_CZ"),
+            speech: speech,
+            dictation: dictation
+        )
+        XCTAssertEqual(automatic?.identifier, "cs-CZ")
+        XCTAssertEqual(automatic?.module, .dictation)
+        XCTAssertFalse(SpeechLanguagePicker.isEnglish("cs-CZ"), "Apple Speech, never English-only Parakeet")
+        XCTAssertEqual(SpeechLanguagePicker.shortNames(for: ["cs-CZ"], in: Locale(identifier: "en-US"))["cs-CZ"], "Czech")
+        XCTAssertEqual(KeyboardLanguage.czech.dictationLanguage(supported: ["en-US", "cs-CZ"], preferred: ["en-US"]), "cs-CZ")
+    }
+
     func testThePreferredOrderWinsOverTheModule() async {
         // Hebrew first: DictationTranscriber's Hebrew beats SpeechTranscriber's English.
         let picked = await pick(preferred: ["he-IL", "en-US"])
@@ -1451,6 +2312,69 @@ final class SpeechLanguagePickerTests: XCTestCase {
         )
         let picked = await pick(preferred: ["nn-NO", "en-US"], current: "nn_NO")
         XCTAssertEqual(picked?.identifier, "nb-NO")
+    }
+
+    /// Apple Speech's Spanish is Spain's es-ES and the Americas' es-US and es-MX: es-419 and
+    /// its Latin American regions are the Americas' (es-US, then es-MX), never Spain's.
+    func testLatinAmericanSpanishPicksTheAmericasVariant() async {
+        let speech = lookup(speechLocales + ["es-US"])
+        let dictation = lookup(dictationLocales + ["es-US"])
+        let latin = await SpeechLanguagePicker.pick(
+            explicit: nil,
+            candidates: SpeechLanguagePicker.automaticCandidates(
+                preferred: ["es-419", "en-US"],
+                current: "es_419",
+                region: "US"
+            ),
+            region: "US",
+            speech: speech,
+            dictation: dictation
+        )
+        XCTAssertEqual(latin?.identifier, "es-US")
+        XCTAssertEqual(latin?.module, .speech)
+
+        let withoutUS = await pick(preferred: ["es-419", "en-US"], current: "es_419", region: "ES")
+        XCTAssertEqual(withoutUS?.identifier, "es-MX", "es-US missing")
+
+        let colombian = await pick(preferred: ["es-CO", "en-US"], current: "es_CO", region: "US")
+        XCTAssertEqual(colombian?.identifier, "es-MX", "es-US missing for a Colombian iPhone too")
+
+        let explicit = await SpeechLanguagePicker.pick(
+            explicit: "es-419",
+            candidates: ["en-US"],
+            region: "US",
+            speech: speech,
+            dictation: dictation
+        )
+        XCTAssertEqual(explicit?.identifier, "es-US", "a pick from before the variants")
+    }
+
+    /// Plain "es" names no region: the iPhone's Region decides between Mexico's es-MX, the
+    /// United States' and Latin America's es-US, and Spain's es-ES.
+    func testPlainSpanishFollowsTheIPhonesRegion() async {
+        XCTAssertEqual(
+            SpeechLanguagePicker.automaticCandidates(preferred: ["es", "en-US"], current: "en_US", region: "MX").first,
+            "es-MX"
+        )
+        XCTAssertEqual(
+            SpeechLanguagePicker.automaticCandidates(preferred: ["es", "en-US"], current: "en_US", region: "US").first,
+            "es-US"
+        )
+        XCTAssertEqual(
+            SpeechLanguagePicker.automaticCandidates(preferred: ["es", "en-US"], current: "en_US", region: "ES").first,
+            "es-ES"
+        )
+        XCTAssertEqual(
+            SpeechLanguagePicker.automaticCandidates(preferred: ["es", "en-US"], current: "en_US", region: "FR").first,
+            "es-ES"
+        )
+        let mexican = await pick(preferred: ["es", "en-US"], region: "MX")
+        XCTAssertEqual(mexican?.identifier, "es-MX")
+        XCTAssertEqual(mexican?.module, .speech)
+        let spain = await pick(preferred: ["es", "en-US"], region: "ES")
+        XCTAssertEqual(spain?.identifier, "es-ES")
+        let american = await pick(preferred: ["es", "en-US"], region: "US")
+        XCTAssertEqual(american?.identifier, "es-MX", "es-US missing here, es-MX next")
     }
 
     func testAnExplicitChoiceWinsAndFallsBackToAutomaticWhenUnsupported() async {
@@ -1535,6 +2459,8 @@ final class SpeechLanguagePickerTests: XCTestCase {
         XCTAssertEqual(names["nb-NO"], "Norwegian Bokmål")
         XCTAssertEqual(names["he-IL"], "Hebrew")
         XCTAssertEqual(names["en-US"], "English (United States)")
+        XCTAssertEqual(SpeechLanguagePicker.shortName(for: "en-US", in: english), "English (US)")
+        XCTAssertEqual(SpeechLanguagePicker.shortName(for: "es-US", in: english), "Spanish (US)")
     }
 
     func testOnlyEnglishCountsAsEnglish() {
@@ -1851,4 +2777,203 @@ final class AppleSpeechClipTests: XCTestCase {
         print("HEX-SPEECH-CLIPS\n\(joined)\nHEX-SPEECH-CLIPS-END")
         try? joined.write(toFile: (folder as NSString).appendingPathComponent("transcripts.txt"), atomically: true, encoding: .utf8)
     }
+}
+
+private final class FakeAudioSession: AudioSessionControlling {
+    enum Call: Equatable {
+        case category(AVAudioSession.Category, AVAudioSession.Mode, AVAudioSession.CategoryOptions)
+        case preferredInput(AVAudioSession.Port?)
+        case active(Bool, AVAudioSession.SetActiveOptions)
+    }
+
+    var calls: [Call] = []
+    var isOtherAudioPlaying = false
+    /// What iOS offers: Bluetooth hands-free inputs only in a category that allows them.
+    var connected: [Microphone] = []
+    private var allowsBluetooth = false
+
+    var microphones: [Microphone] {
+        connected.filter { allowsBluetooth || ($0.port != .bluetoothHFP && $0.port != .bluetoothLE) }
+    }
+
+    func setCategory(
+        _ category: AVAudioSession.Category,
+        mode: AVAudioSession.Mode,
+        options: AVAudioSession.CategoryOptions
+    ) throws {
+        calls.append(.category(category, mode, options))
+        allowsBluetooth = options.contains(.allowBluetoothHFP)
+    }
+
+    func prefer(_ microphone: Microphone?) throws {
+        calls.append(.preferredInput(microphone?.port))
+    }
+
+    func setActive(_ active: Bool, options: AVAudioSession.SetActiveOptions) throws {
+        calls.append(.active(active, options))
+    }
+}
+
+private let iPhoneMic = Microphone(uid: "Built-In Microphone", name: "iPhone Microphone", port: .builtInMic)
+private let airPods = Microphone(uid: "A0:B1:C2:D3:E4:F5-tsco", name: "AirPods Pro", port: .bluetoothHFP)
+private let bluetoothCar = Microphone(uid: "10:20:30:40:50:60-tsco", name: "My Car", port: .bluetoothHFP)
+private let carPlay = Microphone(uid: "CarPlay-mic", name: "CarPlay", port: .carAudio)
+private let wiredHeadset = Microphone(uid: "Wired Headset Microphone", name: "Headset Microphone", port: .headsetMic)
+
+@MainActor
+final class AudioSessionSetupTests: XCTestCase {
+    func testRecordingMixesWithOtherAppsAudioWhateverTheMicrophone() throws {
+        let choices: [MicrophoneChoice?] = [nil] + MicrophoneChoice.allCases.map { $0 }
+        for choice in choices {
+            let session = FakeAudioSession()
+            let audio = SystemAudioManager(session: session)
+            try audio.configureAudioSession(recordingFrom: choice)
+
+            guard case .category(let category, let mode, let options)? = session.calls.first else {
+                return XCTFail("the category is set first")
+            }
+            XCTAssertEqual(category, .playAndRecord)
+            XCTAssertEqual(mode, .measurement)
+            XCTAssertTrue(options.contains(.mixWithOthers), "never interrupts another app's video or music")
+            XCTAssertFalse(options.contains(.duckOthers))
+            XCTAssertTrue(options.contains(.allowBluetoothA2DP))
+            XCTAssertEqual(
+                options.contains(.allowBluetoothHFP), choice == .bluetooth,
+                "Bluetooth hands-free microphones only for a dictation with Bluetooth chosen, never the keepalive"
+            )
+            XCTAssertEqual(session.calls[1], .active(true, []))
+        }
+    }
+
+    /// Ryan's car: in CarPlay, Automatic (the default) records from the car's microphone, not
+    /// the iPhone in its cupholder hearing the speakers. AirPods keep the iPhone's microphone
+    /// (music stays at full quality, nothing waits for call audio); Bluetooth takes theirs.
+    func testEachChoiceRecordsFromItsMicrophoneForTheRoute() {
+        let routes: [(String, [Microphone], [MicrophoneChoice: Microphone])] = [
+            ("nothing connected", [iPhoneMic], [.automatic: iPhoneMic, .iPhone: iPhoneMic, .bluetooth: iPhoneMic]),
+            ("CarPlay", [iPhoneMic, carPlay], [.automatic: carPlay, .iPhone: iPhoneMic, .bluetooth: carPlay]),
+            ("AirPods", [iPhoneMic, airPods], [.automatic: iPhoneMic, .iPhone: iPhoneMic, .bluetooth: airPods]),
+            ("a Bluetooth car kit", [iPhoneMic, bluetoothCar], [.automatic: iPhoneMic, .iPhone: iPhoneMic, .bluetooth: bluetoothCar]),
+            ("a wired headset", [iPhoneMic, wiredHeadset], [.automatic: wiredHeadset, .iPhone: iPhoneMic, .bluetooth: wiredHeadset]),
+        ]
+        for (route, inputs, expected) in routes {
+            for (choice, input) in expected {
+                XCTAssertEqual(MicrophoneRoute.capture(choice, from: inputs), input, "\(choice) with \(route)")
+            }
+            XCTAssertEqual(MicrophoneRoute.keepalive(from: inputs), iPhoneMic, "the keepalive with \(route)")
+        }
+    }
+
+    func testTheSessionPrefersTheChosenInputAndTheKeepaliveTheIPhones() throws {
+        let cases: [(MicrophoneChoice?, [Microphone], AVAudioSession.Port)] = [
+            (.automatic, [iPhoneMic, carPlay], .carAudio),
+            (.iPhone, [iPhoneMic, carPlay], .builtInMic),
+            (.bluetooth, [iPhoneMic, airPods], .bluetoothHFP),
+            (.automatic, [iPhoneMic, airPods], .builtInMic),
+            // A warm session between dictations never holds the car or headset in call audio.
+            (nil, [iPhoneMic, carPlay], .builtInMic),
+            (nil, [iPhoneMic, airPods], .builtInMic),
+        ]
+        for (choice, connected, port) in cases {
+            let session = FakeAudioSession()
+            session.connected = connected
+            try SystemAudioManager(session: session).configureAudioSession(recordingFrom: choice)
+            XCTAssertEqual(session.calls.last, .preferredInput(port), "\(String(describing: choice)) with \(connected.map(\.name))")
+        }
+    }
+
+    func testTheMicrophoneChoiceDefaultsToAutomaticAndKeepsAnOldBluetoothSwitch() throws {
+        let suite = "hex.tests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let bridge = KeyboardBridge(defaults: defaults)
+        XCTAssertEqual(bridge.microphone, .automatic, "Always use iPhone microphone left on, its default")
+
+        defaults.set(true, forKey: "settings.allowBluetoothMic")
+        XCTAssertEqual(bridge.microphone, .bluetooth, "Always use iPhone microphone turned off")
+
+        bridge.microphone = .iPhone
+        XCTAssertEqual(KeyboardBridge(defaults: defaults).microphone, .iPhone)
+    }
+
+    /// `.playAndRecord` runs the microphone and the output at one rate: a preferred 16 kHz
+    /// moved everything the iPhone played and recorded, a screen recording's audio too, to
+    /// 16 kHz while Hex held the session (the simulator went from 48 kHz to 16 kHz).
+    func testRecordingLeavesTheHardwareAtItsOwnSampleRate() throws {
+        let session = FakeAudioSession()
+        try SystemAudioManager(session: session).configureAudioSession(recordingFrom: .automatic)
+        XCTAssertEqual(session.calls, [
+            .category(.playAndRecord, .measurement, [.mixWithOthers, .allowBluetoothA2DP, .defaultToSpeaker]),
+            .active(true, []),
+            .preferredInput(nil),
+        ], "no preferred sample rate")
+
+        let shared = AVAudioSession.sharedInstance()
+        let before = shared.sampleRate
+        do {
+            try SystemAudioManager().configureAudioSession(recordingFrom: .automatic)
+        } catch {
+            throw XCTSkip("No audio session to activate here: \(error)")
+        }
+        defer { try? shared.setActive(false, options: .notifyOthersOnDeactivation) }
+        XCTAssertEqual(shared.preferredSampleRate, 0)
+        XCTAssertEqual(shared.sampleRate, before, "the session records at the rate the hardware already ran")
+    }
+
+    func testEndingTheSessionTellsInterruptedAppsTheyMayResume() {
+        let session = FakeAudioSession()
+        let audio = SystemAudioManager(session: session)
+        audio.deactivateSession()
+        XCTAssertEqual(session.calls, [.active(false, .notifyOthersOnDeactivation)])
+        XCTAssertFalse(audio.isKeepaliveRunning)
+    }
+
+    func testTheKeyboardAsksAudioItsCaptureStoppedToResume() throws {
+        XCTAssertTrue(InterruptedAudio.shouldAskToResume(playingAtStart: true, playingNow: false))
+        XCTAssertFalse(InterruptedAudio.shouldAskToResume(playingAtStart: true, playingNow: true), "audio that mixed kept playing")
+        XCTAssertFalse(InterruptedAudio.shouldAskToResume(playingAtStart: false, playingNow: false), "nothing was playing")
+
+        let session = FakeAudioSession()
+        try InterruptedAudio.askToResume(session)
+        XCTAssertEqual(session.calls, [
+            .category(.playback, .default, []),
+            .active(true, []),
+            .active(false, .notifyOthersOnDeactivation),
+        ])
+    }
+}
+
+/// Counts Speech Recognition requests and answers each with `answer`.
+private final class CountingSpeechAccess: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    private var status: SFSpeechRecognizerAuthorizationStatus = .notDetermined
+    let answer: SFSpeechRecognizerAuthorizationStatus
+
+    init(answer: SFSpeechRecognizerAuthorizationStatus) {
+        self.answer = answer
+    }
+
+    var requests: Int { lock.withLock { count } }
+
+    var access: SpeechRecognitionAccess {
+        SpeechRecognitionAccess(
+            status: { self.lock.withLock { self.status } },
+            request: {
+                self.lock.withLock {
+                    self.count += 1
+                    self.status = self.answer
+                    return self.answer
+                }
+            }
+        )
+    }
+}
+
+private final class DetailLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [String] = []
+
+    func append(_ value: String) { lock.withLock { stored.append(value) } }
+    var values: [String] { lock.withLock { stored } }
 }

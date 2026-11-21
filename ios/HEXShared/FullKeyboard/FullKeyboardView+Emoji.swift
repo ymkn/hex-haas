@@ -83,21 +83,7 @@ extension FullKeyboardView {
     /// The row's suggestions for the text before the cursor and your use, and the grid's
     /// Frequently used.
     func fillEmojiPanel() {
-        guard let panel = emojiPanel else { return }
-        let library = panel.library
-        var usage: [Int: Float] = [:]
-        var frequent: [Int] = []
-        for (emoji, score) in panel.usage.ranked(limit: 32) {
-            guard let entry = library.entryByEmoji[emoji], usage[entry] == nil else { continue }
-            usage[entry] = score
-            frequent.append(entry)
-        }
-        for emoji in EmojiSuggester.defaults where frequent.count < 16 {
-            if let entry = library.entryByEmoji[emoji], !frequent.contains(entry) { frequent.append(entry) }
-        }
-        let context = EmojiContext(before: routedTarget.document.documentContextBeforeInput, stopwords: library.stopwords)
-        let suggestions = EmojiSuggester.suggestions(context: context, library: library, usage: usage, limit: 10)
-        panel.show(suggestions: suggestions, frequent: frequent)
+        emojiPanel?.fill(before: routedTarget.document.documentContextBeforeInput)
     }
 
     func closeEmojiPanel() {
@@ -155,6 +141,7 @@ extension FullKeyboardView {
         addSubview(field)
         emojiSearchField = field
         let results = EmojiRowView()
+        results.renderer = panel.glyphs
         results.palette = palette
         results.fontSize = panel.rowFontSize
         results.emptyText = "No emoji"
@@ -223,9 +210,19 @@ extension FullKeyboardView {
             panel.frame = routedTarget.isSearching ? content : bounds
             panel.metrics = m
             panel.horizontalInset = layout.horizontalInset
+            // The panel covers the keyboard while it shows, so the emoji key's keycap sits in
+            // it at the plane's frame (the lift is zero then); the ABC experiment puts the
+            // panel's ABC under it. Searching lifts the panel and hides it, and shows ABC
+            // nowhere, so there is no key to sit under.
+            let underEmojiKey = emojiLettersUnderEmojiKeyOverride ?? FullKeyboardSettings().emojiLettersUnderEmojiKey
+            panel.emojiKeyFrame = underEmojiKey && !routedTarget.isSearching
+                ? layout.key(.emoji)?.frame.offsetBy(dx: 0, dy: lift)
+                : nil
         }
         let inset = layout.horizontalInset
-        emojiSearchField?.frame = CGRect(x: inset, y: m.stripTop + lift, width: bounds.width - 2 * inset, height: m.stripHeight)
+        // Centred on the strip's words' line, as the emoji panel's top row.
+        let band = m.stripLineBand
+        emojiSearchField?.frame = CGRect(x: inset, y: m.stripTop + lift + band.top, width: bounds.width - 2 * inset, height: band.height)
         emojiResults?.frame = CGRect(x: inset + m.side, y: 0, width: bounds.width - 2 * (inset + m.side), height: lift)
     }
 

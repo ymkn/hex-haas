@@ -161,7 +161,6 @@ const PATHS: &[(&str, &str)] = &[
     ("modes", "Window/Modes/Modes"),
     ("modes-global", "Window/Modes/Global mode"),
     ("modes-picker", "Window/Modes/App picker"),
-    ("modes-speech", "Window/Modes/Speech model"),
     (
         "modes-transformation-menu",
         "Window/Modes/Transformation menu",
@@ -246,6 +245,8 @@ const PATHS: &[(&str, &str)] = &[
         "mac-scrawl-restart",
         "Window/Annotate/Screen Recording needs restart",
     ),
+    #[cfg(hex_capture)]
+    ("mac-scrawl-agents", "Window/Annotate/Agents"),
     ("mac-voice-filter", "Window/Voice Filter/Voice Filter"),
     ("mac-voice-filter-muted", "Window/Voice Filter/Muted"),
     (

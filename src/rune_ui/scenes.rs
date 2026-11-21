@@ -241,19 +241,6 @@ pub(super) const SCENES: &[Scene] = &[
         ui.open = Some(Menu::Transformations);
         ui.pane = Pane::Modes;
     }),
-    // Labs › Switch model with app: each mode's speech model and language.
-    ("modes-speech", |ui| {
-        *ui = mac_fixture();
-        modes::fixture(ui);
-        ui.settings.labs.app_model_switching = true;
-        ui.settings.dictation_processing.modes[0].speech =
-            Some(crate::app_settings::KeyboardModelChoice {
-                model: TranscriptionModelId::ParakeetV3,
-                language: "es".into(),
-            });
-        ui.picker.installed = Some(vec![TranscriptionModelId::ParakeetV3]);
-        ui.pane = Pane::Modes;
-    }),
     ("picker", |ui| {
         *ui = portal_fixture();
         picker::fixture(ui, None);
@@ -735,6 +722,14 @@ pub(super) const SCENES: &[Scene] = &[
             view.screen_needs_restart = true;
         })
     }),
+    // Labs › Install agent skill from Annotate: every agent state, the
+    // copyable skills command, and the Command-line tool.
+    #[cfg(hex_capture)]
+    ("mac-scrawl-agents", |ui| {
+        scrawl_fixture(ui, true, |_| {});
+        ui.settings.labs.annotate_agent_install = true;
+        ui.agents = scrawl::Agents::fixture();
+    }),
     ("mac-voice-filter", |ui| {
         *ui = mac_fixture();
         ui.pane = Pane::VoiceFilter;
@@ -791,11 +786,11 @@ pub(super) const SCENES: &[Scene] = &[
         ui.pane = Pane::HudLab;
     }),
     ("mac-labs", labs_with_some_on),
-    // Where hex://labs/vocabulary-biasing lands: its group's chip.
+    // Where hex://labs/live-text lands: its group's chip.
     ("mac-labs-link", |ui| {
         *ui = mac_fixture();
         ui.labs_open = true;
-        ui.lab_store.group = Some(crate::labs::Feature::VocabularyBiasing.group());
+        ui.lab_store.group = Some(crate::labs::Feature::LiveText.group());
     }),
     ("mac-labs-on", |ui| {
         labs_with_some_on(ui);

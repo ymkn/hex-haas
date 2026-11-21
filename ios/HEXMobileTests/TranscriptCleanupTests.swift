@@ -82,6 +82,395 @@ final class TranscriptCleanupGuardTests: XCTestCase {
         )
     }
 
+    /// The reported shape: a dictated request comes back answered, with the responder as
+    /// the speaker.
+    func testRejectsAnAnsweredRequest() {
+        XCTAssertEqual(
+            TranscriptCleanupGuard.rejection(
+                original: "can you find that article about the quarterly report and send it to me",
+                cleaned: "I found one article about the quarterly report and sent it to you."
+            ),
+            "the cleaned text added words the speaker did not say"
+        )
+    }
+
+    /// The reported shape: a dictated fragment comes back answered.
+    func testRejectsARepliedToSentence() {
+        XCTAssertEqual(
+            TranscriptCleanupGuard.rejection(
+                original: "would you say",
+                cleaned: "Yes, I would say."
+            ),
+            "the cleaned text added words the speaker did not say"
+        )
+        XCTAssertEqual(
+            TranscriptCleanupGuard.rejection(
+                original: "sure, would you say",
+                cleaned: "Yes, would you say."
+            ),
+            "the cleaned text starts with a reply"
+        )
+    }
+
+    /// The reported shape: a long transcript comes back behind a preamble.
+    func testRejectsAPreambleBeforeALongTranscript() {
+        XCTAssertEqual(
+            TranscriptCleanupGuard.rejection(
+                original: "the quarterly report needs a short summary for the sales team before the meeting on monday",
+                cleaned: "Sure, I can help with that. Here's the cleaned transcript: The quarterly report needs a short summary for the sales team before the meeting on Monday."
+            ),
+            "the cleaned text added words the speaker did not say"
+        )
+    }
+
+    /// A preamble phrase the transcript never said is refused on its own, even when the
+    /// words around it stay within the added-word budget.
+    func testRejectsAPreamblePhraseTheTranscriptNeverSaid() {
+        XCTAssertEqual(
+            TranscriptCleanupGuard.rejection(
+                original: "sure here is the plan for the launch and i can help with that",
+                cleaned: "Sure, I can help with that. Here's the plan for the launch."
+            ),
+            "the cleaned text starts with a preamble"
+        )
+    }
+
+    /// A colon in the first clause is a preamble's shape when the speaker said no colon
+    /// at all.
+    func testRejectsAnAddedColonInTheFirstClause() {
+        XCTAssertEqual(
+            TranscriptCleanupGuard.rejection(
+                original: "bring these to the meeting",
+                cleaned: "Bring these: notes."
+            ),
+            "the cleaned text starts with a preamble"
+        )
+    }
+
+    /// The reported shape: the answer gained words the speaker never said.
+    func testRejectsWordsTheSpeakerNeverSaid() {
+        XCTAssertEqual(
+            TranscriptCleanupGuard.rejection(
+                original: "i will call you tomorrow",
+                cleaned: "I will definitely call you tomorrow morning."
+            ),
+            "the cleaned text added words the speaker did not say"
+        )
+    }
+
+    /// A pure insertion is new content even when it is only one word: there is no
+    /// dropped word for it to replace.
+    func testRejectsAPureInsertion() {
+        XCTAssertEqual(
+            TranscriptCleanupGuard.rejection(
+                original: "i will call you tomorrow",
+                cleaned: "I will definitely call you tomorrow."
+            ),
+            "the cleaned text added words the speaker did not say"
+        )
+    }
+
+    /// A misheard word may be replaced, including a whole phrase, as long as each added
+    /// word replaces a distinct word the cleanup dropped.
+    func testAcceptsMisheardAndReplacedWords() {
+        XCTAssertTrue(
+            TranscriptCleanupGuard.isAcceptable(
+                original: "we should use cloud code on tuesday, no wait, wednesday",
+                cleaned: "We should use Claude Code on Wednesday."
+            )
+        )
+        XCTAssertTrue(
+            TranscriptCleanupGuard.isAcceptable(
+                original: "open get hub and cloud code",
+                cleaned: "Open GitHub and Claude Code."
+            )
+        )
+        XCTAssertTrue(
+            TranscriptCleanupGuard.isAcceptable(
+                original: "open the file in vs code",
+                cleaned: "Open the file in VS Code."
+            )
+        )
+    }
+
+    /// A stutter or a repeated pronoun is dropped, never added back.
+    func testAcceptsStuttersAndRepeatedPronounSelfCorrections() {
+        XCTAssertTrue(
+            TranscriptCleanupGuard.isAcceptable(
+                original: "i i think we should ship",
+                cleaned: "I think we should ship."
+            )
+        )
+        XCTAssertTrue(
+            TranscriptCleanupGuard.isAcceptable(
+                original: "we we should ship it",
+                cleaned: "We should ship it."
+            )
+        )
+        XCTAssertTrue(
+            TranscriptCleanupGuard.isAcceptable(
+                original: "i'll send it tomorrow, i mean, i'll send it today",
+                cleaned: "I'll send it today."
+            )
+        )
+        XCTAssertTrue(
+            TranscriptCleanupGuard.isAcceptable(
+                original: "i want, i mean, i need the report",
+                cleaned: "I need the report."
+            )
+        )
+    }
+
+    /// A cleanup that keeps less than half the transcript is a spoken self-correction
+    /// only when it keeps the tail after a marker.
+    func testAcceptsSelfCorrectionMarkerTails() {
+        XCTAssertTrue(
+            TranscriptCleanupGuard.isAcceptable(
+                original: "i'll send it tomorrow, i mean, i'll send it today",
+                cleaned: "I'll send it today."
+            )
+        )
+        XCTAssertTrue(
+            TranscriptCleanupGuard.isAcceptable(
+                original: "i want, i mean, i need the report",
+                cleaned: "I need the report."
+            )
+        )
+        XCTAssertTrue(
+            TranscriptCleanupGuard.isAcceptable(
+                original: "send it on tuesday actually wednesday",
+                cleaned: "Send it on Wednesday."
+            )
+        )
+        XCTAssertTrue(
+            TranscriptCleanupGuard.isAcceptable(
+                original: "the the the build is broken",
+                cleaned: "The build is broken."
+            )
+        )
+    }
+
+    /// Dropping most of the transcript without a self-correction is a silent truncation,
+    /// even when nothing was added.
+    func testRejectsTruncationWithoutASelfCorrection() {
+        let cases = [
+            (
+                "first send the quarterly report to the sales team and then ask them to review the numbers before friday because the board meeting moved up and we need everything signed off by thursday afternoon at the latest",
+                "First send the quarterly report to the sales team."
+            ),
+            (
+                "remind me to buy milk and eggs and bread on the way home from work",
+                "Remind me to buy milk."
+            ),
+            (
+                "can you find that article about the quarterly report and send it to me",
+                "Send it to me."
+            ),
+            (
+                "i think we should ship the new version on friday and then we can tell the customers about it",
+                "I think we should ship."
+            ),
+            (
+                "scratch that send the invoice to sarah instead of the whole finance team today",
+                "Send the invoice to Sarah."
+            ),
+            (
+                "we need to review the budget and the launch plan with the whole team before friday, actually let's do it monday",
+                "Let's do it Monday."
+            ),
+            (
+                "send the budget and the launch plan to the whole team, actually just to sarah",
+                "Just to Sarah."
+            ),
+            (
+                "please tell the team the budget review moved so we will have to wait until monday",
+                "Until Monday."
+            ),
+            (
+                "the team wants to delay the launch until march but i would rather we ship",
+                "We ship."
+            ),
+            (
+                "tell sarah the launch plan and the budget are ready for review, sorry for the delay",
+                "For the delay."
+            ),
+        ]
+        for (original, cleaned) in cases {
+            XCTAssertEqual(
+                TranscriptCleanupGuard.rejection(original: original, cleaned: cleaned),
+                "the cleaned text dropped most of the transcript",
+                "\(original) -> \(cleaned)"
+            )
+        }
+    }
+
+    /// Replaced words count with multiplicity on both sides: two "cloud" occurrences may
+    /// become two "Claude" occurrences.
+    func testReplacedWordsCountWithMultiplicity() {
+        XCTAssertTrue(
+            TranscriptCleanupGuard.isAcceptable(
+                original: "ask cloud to review it and then ask cloud to merge it",
+                cleaned: "Ask Claude to review it and then ask Claude to merge it."
+            )
+        )
+    }
+
+    /// Pronoun contractions compare as their expansions, so "I'm" and "I am" are the
+    /// same words on both sides.
+    func testPronounContractionsCompareAsTheirExpansions() {
+        XCTAssertTrue(
+            TranscriptCleanupGuard.isAcceptable(
+                original: "i am going home",
+                cleaned: "I'm going home."
+            )
+        )
+        XCTAssertTrue(
+            TranscriptCleanupGuard.isAcceptable(
+                original: "we are ready",
+                cleaned: "We're ready."
+            )
+        )
+        XCTAssertTrue(
+            TranscriptCleanupGuard.isAcceptable(
+                original: "you are late",
+                cleaned: "You're late."
+            )
+        )
+        XCTAssertTrue(
+            TranscriptCleanupGuard.isAcceptable(
+                original: "i'm going home",
+                cleaned: "I am going home."
+            )
+        )
+    }
+
+    /// "i'd" reads as "i would". When the speaker meant "i had", the one added word
+    /// replaces the one dropped word, so the ambiguity costs nothing.
+    func testAHadContractionStillPassesAsItsExpansion() {
+        XCTAssertTrue(
+            TranscriptCleanupGuard.isAcceptable(
+                original: "i'd finished the report",
+                cleaned: "I had finished the report."
+            )
+        )
+    }
+
+    /// Who is speaking may not change: an answer or a preamble adds a pronoun the
+    /// transcript never used.
+    func testRejectsAChangedPerson() {
+        XCTAssertEqual(
+            TranscriptCleanupGuard.rejection(
+                original: "send the notes to me",
+                cleaned: "Send the notes to you."
+            ),
+            "the cleaned text changed who is speaking"
+        )
+        XCTAssertEqual(
+            TranscriptCleanupGuard.rejection(
+                original: "we should ship it",
+                cleaned: "We should ship it, we should."
+            ),
+            "the cleaned text changed who is speaking"
+        )
+    }
+
+    /// A spoken self-correction may drop a pronoun, since the corrected phrase is the one
+    /// the speaker settled on.
+    func testASelfCorrectionMayDropAPronoun() {
+        XCTAssertTrue(
+            TranscriptCleanupGuard.isAcceptable(
+                original: "i said tuesday, no wait, wednesday",
+                cleaned: "Wednesday."
+            )
+        )
+    }
+
+    /// The transcript may itself start with an opener; only a new one is a reply.
+    func testKeepsAnOpenerTheSpeakerSaid() {
+        XCTAssertTrue(
+            TranscriptCleanupGuard.isAcceptable(
+                original: "yes, ship it on friday",
+                cleaned: "Yes, ship it on Friday."
+            )
+        )
+        XCTAssertTrue(
+            TranscriptCleanupGuard.isAcceptable(
+                original: "no, do not delete the file",
+                cleaned: "No, do not delete the file."
+            )
+        )
+        XCTAssertTrue(
+            TranscriptCleanupGuard.isAcceptable(
+                original: "of course we should ship it",
+                cleaned: "Of course we should ship it."
+            )
+        )
+        XCTAssertEqual(
+            TranscriptCleanupGuard.rejection(
+                original: "of the course we should ship it",
+                cleaned: "Of course we should ship it."
+            ),
+            "the cleaned text starts with a reply"
+        )
+    }
+
+    /// The transcript's own leading fillers do not make its opener new, and "ok" and
+    /// "okay" are the same opener.
+    func testFillersAndOkAreNotReplies() {
+        XCTAssertTrue(
+            TranscriptCleanupGuard.isAcceptable(
+                original: "um yes ship it",
+                cleaned: "Yes, ship it."
+            )
+        )
+        XCTAssertTrue(
+            TranscriptCleanupGuard.isAcceptable(
+                original: "so okay let's go",
+                cleaned: "Okay, let's go."
+            )
+        )
+        XCTAssertTrue(
+            TranscriptCleanupGuard.isAcceptable(
+                original: "ok ship it",
+                cleaned: "Okay, ship it."
+            )
+        )
+    }
+
+    /// "hear" may come back as "here" when nothing else changed; a reply that merely
+    /// starts with "here" still does not pass.
+    func testHearBecameHereWithEverythingElseEqual() {
+        XCTAssertTrue(
+            TranscriptCleanupGuard.isAcceptable(
+                original: "hear is the doc",
+                cleaned: "Here is the doc."
+            )
+        )
+        XCTAssertEqual(
+            TranscriptCleanupGuard.rejection(
+                original: "there is the doc",
+                cleaned: "Here is the doc."
+            ),
+            "the cleaned text starts with a reply"
+        )
+    }
+
+    /// A colon between two digits is a time, not a preamble.
+    func testATimeColonIsNotAPreamble() {
+        XCTAssertTrue(
+            TranscriptCleanupGuard.isAcceptable(
+                original: "meet at 3 30",
+                cleaned: "Meet at 3:30."
+            )
+        )
+        XCTAssertTrue(
+            TranscriptCleanupGuard.isAcceptable(
+                original: "meet at 3:30",
+                cleaned: "Meet at 3:30."
+            )
+        )
+    }
+
     func testCleanupSettingIsOffByDefaultAndPersists() {
         let suite = "AppleIntelligenceCleanupSettingsTests-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
@@ -308,6 +697,56 @@ final class SpokenCleanupRulesTests: XCTestCase {
         )
     }
 
+    /// What the speech models wrote for a microphone test (macOS 27.2, `say` voices): Apple's
+    /// SpeechTranscriber mixes words and digits, Parakeet and DictationTranscriber join a quick
+    /// count into "123".
+    func testSpokenCountsBecomeDigits() {
+        for (heard, written) in [
+            ("Test one, 2, 3.", "Test 1, 2, 3."),
+            ("Test one, two, three.", "Test 1, 2, 3."),
+            ("Test, one, two, three.", "Test, 1, 2, 3."),
+            ("Testing one two three.", "Testing 1, 2, 3."),
+            ("Testing, testing, one, 2, 3.", "Testing, testing, 1, 2, 3."),
+            ("One, two, three, testing.", "1, 2, 3, testing."),
+            ("Counting one, two, three, four.", "Counting 1, 2, 3, 4."),
+            ("One, two, three, go!", "1, 2, 3, go!"),
+            ("Test 1, 2, 3", "Test 1, 2, 3"),
+            ("Test 123", "Test 1, 2, 3"),
+            ("Testing 123.", "Testing 1, 2, 3."),
+            ("Testing testing 123", "Testing testing 1, 2, 3"),
+            ("Test, 123", "Test, 1, 2, 3"),
+            ("Testing 1234, can you hear me?", "Testing 1, 2, 3, 4, can you hear me?"),
+        ] {
+            XCTAssertEqual(SpokenCleanupRules.spokenCounts(in: heard, language: "en-US"), written, heard)
+        }
+    }
+
+    func testOtherNumbersStayAsSaid() {
+        for heard in [
+            "I have two dogs and three cats.",
+            "Chapter one, two and three are done.",
+            "We'll meet at 1, 2, or 3.",
+            "One, two, buckle my shoe. Three, four, shut the door.",
+            "Two, three, four, five.",
+            "Test one, two.",
+            "Zero, one, two, three.",
+            "Twenty one two three.",
+            "One. Two. Three.",
+            "Test. 1. 2. 3.",
+            "Room 123 is free.",
+            "Test 123 passed.",
+            "This is a test. 123 people came.",
+            "Test 132.",
+            "Counting 1234",
+            "Call 1-2-3 now.",
+        ] {
+            XCTAssertEqual(SpokenCleanupRules.spokenCounts(in: heard, language: "en-US"), heard)
+        }
+        // English only: other languages keep their words.
+        XCTAssertEqual(SpokenCleanupRules.spokenCounts(in: "Prueba uno, dos, tres.", language: "es-ES"), "Prueba uno, dos, tres.")
+        XCTAssertEqual(SpokenCleanupRules.spokenCounts(in: "Test one, 2, 3.", language: "fr-FR"), "Test one, 2, 3.")
+    }
+
     /// Every style but Verbatim keeps the address whole: no capital after its dots, none on
     /// it at a sentence start, and no full stop after an address said alone.
     func testStylesKeepAnAddressWhole() {
@@ -446,6 +885,39 @@ final class SpokenCleanupRulesTests: XCTestCase {
         )
     }
 
+    /// Settings › Dictation › End with a period off (a TestFlight tester, build 56): no style
+    /// but Verbatim ends a line with a full stop, whether Apple Speech or the style wrote it.
+    /// "?" and "!" stay, and so does every mark inside the sentence.
+    func testEndWithAPeriodOff() {
+        func open(_ text: String, _ style: DictationStyle = .polished, _ language: String = "en-US") -> String {
+            TranscriptFormatter.format(text, style: style, language: language, endsWithPeriod: false)
+        }
+        XCTAssertEqual(open("erm i think i'll go, it's fine"), "I think I'll go, it's fine")
+        XCTAssertEqual(open("Sounds good. See you at 5."), "Sounds good. See you at 5")
+        XCTAssertEqual(open("Can you send the deck?"), "Can you send the deck?")
+        XCTAssertEqual(open("That's great!"), "That's great!")
+        XCTAssertEqual(open("He said \"see you later.\""), "He said \"see you later\"")
+        XCTAssertEqual(open("Wait..."), "Wait...")
+        XCTAssertEqual(open("Bring eggs, milk, etc."), "Bring eggs, milk, etc.")
+        XCTAssertEqual(open("We moved to the U.S."), "We moved to the U.S.")
+        XCTAssertEqual(open("Email john@gmail.com."), "Email john@gmail.com")
+        XCTAssertEqual(open("first line\nsecond line."), "First line\nSecond line")
+        // Chinese and Japanese: "。" goes, "？" and "！" stay.
+        XCTAssertEqual(open("好的，明天见。", .polished, "zh-CN"), "好的，明天见")
+        XCTAssertEqual(open("好的，明天见", .polished, "zh-CN"), "好的，明天见")
+        XCTAssertEqual(open("你今天来吗？", .polished, "zh-CN"), "你今天来吗？")
+        XCTAssertEqual(open("太好了！", .polished, "zh-CN"), "太好了！")
+        XCTAssertEqual(open("我到了。你在哪里。", .polished, "zh-CN"), "我到了。你在哪里")
+        XCTAssertEqual(open("「わかりました。」", .polished, "ja-JP"), "「わかりました」")
+        // Casual's longer messages, which keep it while the switch is on, lose it too.
+        XCTAssertEqual(open("One. Two. Three. Four.", .casual), "one. two. three. four")
+        XCTAssertEqual(open("Hi.\nSee you.", .casual), "hi\nsee you")
+        XCTAssertEqual(open("Call the dentist tomorrow at 9.", .notes), "Call the dentist tomorrow at 9")
+        XCTAssertEqual(open("Um, so it's done.", .verbatim), "Um, so it's done.", "Verbatim keeps the model's words")
+        // On, as before.
+        XCTAssertEqual(TranscriptFormatter.format("Sounds good", style: .polished, endsWithPeriod: true), "Sounds good.")
+    }
+
     /// Ukrainian as `DictationTranscriber` writes it (macOS 27.2, Lesya voice: Cyrillic, no
     /// punctuation): Polished capitalizes and ends it, Casual starts each sentence lowercase,
     /// Lowercase lowers Ґ, Є and Ї, and English's "i" rules never touch Cyrillic "і" ("and").
@@ -461,6 +933,75 @@ final class SpokenCleanupRulesTests: XCTestCase {
         var pipeline = DictationPipeline(style: .polished, language: "uk-UA", vocabulary: [])
         pipeline.lowercase = true
         XCTAssertEqual(pipeline.format("Єнот, Ґанок і Їжак", language: "uk-UA"), "єнот, ґанок і їжак.")
+    }
+
+    /// Polish as `DictationTranscriber` writes it (macOS 27.2, Zosia voice: diacritics kept, no
+    /// punctuation, numbers as digits): Polished capitalizes and ends it, Casual starts each
+    /// sentence lowercase, Lowercase lowers Ą Ć Ę Ł Ń Ó Ś Ź Ż, and English's "i" rules never
+    /// touch Polish "i" ("and").
+    func testPolishStylesAndLowercase() {
+        let heard = "dzień dobry spóźnię się 10 min będę w domu o 19:30 zacznijcie beze mnie"
+        XCTAssertEqual(
+            TranscriptFormatter.format(heard, style: .polished, language: "pl-PL"),
+            "Dzień dobry spóźnię się 10 min będę w domu o 19:30 zacznijcie beze mnie."
+        )
+        XCTAssertEqual(TranscriptFormatter.format("żółw i jeż. i gęś", style: .polished, language: "pl-PL"), "Żółw i jeż. I gęś.")
+        XCTAssertEqual(TranscriptFormatter.format("Łabędź i jeż. Ósma.", style: .casual, language: "pl-PL"), "łabędź i jeż. ósma")
+        XCTAssertEqual(TranscriptFormatter.format("Żółw i jeż.", style: .verbatim, language: "pl-PL"), "Żółw i jeż.")
+        var pipeline = DictationPipeline(style: .polished, language: "pl-PL", vocabulary: [])
+        pipeline.lowercase = true
+        XCTAssertEqual(
+            pipeline.format("WĄŻ, ĆMA, GĘŚ, ŁÓDŹ, KOŃ, ÓSMY ŚLAD, ŹLE, ŻÓŁW", language: "pl-PL"),
+            "wąż, ćma, gęś, łódź, koń, ósmy ślad, źle, żółw."
+        )
+    }
+
+    /// Czech as `DictationTranscriber` writes it (macOS 27.2.1, Zuzana voice: háčky and čárky
+    /// kept, no punctuation, numbers as digits): Polished capitalizes and ends it, Casual
+    /// starts each sentence lowercase, and Lowercase lowers Á Č Ď É Ě Í Ň Ó Ř Š Ť Ú Ů Ý Ž.
+    func testCzechStylesAndLowercase() {
+        let heard = "dobrý den přijdu o 10 minut později budu doma v 19:30 začněte beze mne"
+        XCTAssertEqual(
+            TranscriptFormatter.format(heard, style: .polished, language: "cs-CZ"),
+            "Dobrý den přijdu o 10 minut později budu doma v 19:30 začněte beze mne."
+        )
+        XCTAssertEqual(TranscriptFormatter.format("příliš žluťoučký kůň", style: .polished, language: "cs-CZ"), "Příliš žluťoučký kůň.")
+        XCTAssertEqual(TranscriptFormatter.format("Čau. Úterý.", style: .casual, language: "cs-CZ"), "čau. úterý")
+        XCTAssertEqual(TranscriptFormatter.format("Žluťoučký kůň.", style: .verbatim, language: "cs-CZ"), "Žluťoučký kůň.")
+        var pipeline = DictationPipeline(style: .polished, language: "cs-CZ", vocabulary: [])
+        pipeline.lowercase = true
+        XCTAssertEqual(
+            pipeline.format("ÁČĎ ÉĚÍ ŇÓŘ ŠŤÚ ŮÝŽ", language: "cs-CZ"),
+            "áčď éěí ňóř šťú ůýž."
+        )
+    }
+
+    /// Greek as `DictationTranscriber` writes it (macOS 27.2, Melina voice: tonos kept, no
+    /// punctuation, numbers as digits): Polished capitalizes and ends it, Casual starts each
+    /// sentence lowercase, and Lowercase lowers accented capitals (Ά Έ Ή Ί Ό Ύ Ώ Ϊ Ϋ) and
+    /// turns a word-final Σ into ς, never σ ("ΟΔΟΣ" -> "οδος").
+    func testGreekStylesAndLowercase() {
+        let heard = "Θα αργήσω 10 λεπτά θα είμαι στο σπίτι στις 7:30 ξεκινήστε χωρίς εμένα"
+        XCTAssertEqual(
+            TranscriptFormatter.format(heard, style: .polished, language: "el-GR"),
+            "Θα αργήσω 10 λεπτά θα είμαι στο σπίτι στις 7:30 ξεκινήστε χωρίς εμένα."
+        )
+        XCTAssertEqual(TranscriptFormatter.format("καλημέρα τι κάνεις", style: .polished, language: "el-GR"), "Καλημέρα τι κάνεις.")
+        XCTAssertEqual(TranscriptFormatter.format("Όλα καλά. Έλα αύριο.", style: .casual, language: "el-GR"), "όλα καλά. έλα αύριο")
+        XCTAssertEqual(TranscriptFormatter.format("Όλα καλά.", style: .verbatim, language: "el-GR"), "Όλα καλά.")
+        var pipeline = DictationPipeline(style: .polished, language: "el-GR", vocabulary: [])
+        pipeline.lowercase = true
+        XCTAssertEqual(
+            pipeline.format("ΟΔΟΣ ΚΑΙ ΘΑΛΑΣΣΑ, ΤΟΥΣ ΦΙΛΟΥΣ ΤΟΥΣ", language: "el-GR"),
+            "οδος και θαλασσα, τους φιλους τους."
+        )
+        XCTAssertEqual(
+            pipeline.format("Άλλος Έλα Ήλιος Ίσως Όλα Ύπνος Ώρα Ϊ Ϋ", language: "el-GR"),
+            "άλλος έλα ήλιος ίσως όλα ύπνος ώρα ϊ ϋ."
+        )
+        XCTAssertEqual(pipeline.format("Σ", language: "el-GR"), "σ.", "a lone Σ is no word's end")
+        pipeline.language = "en-US"
+        XCTAssertEqual(pipeline.format("Text JOHN about the IPHONE", language: "en-US"), "text john about the iphone.")
     }
 
     /// Lowercase comes after the style and the vocabulary's spellings, as desktop's Lowercase
@@ -572,6 +1113,36 @@ final class HinglishRomanizerTests: XCTestCase {
         XCTAssertTrue(HinglishSettings(defaults: defaults).isEnabled)
         XCTAssertEqual(settings.name(for: "hi-IN"), "Hinglish")
         XCTAssertNil(settings.name(for: "en-IN"))
+    }
+
+    /// Apple translates Hindi from Devanagari, not Hinglish's Latin letters: a Hindi dictation
+    /// going into English is translated from what Apple Speech wrote, and one that goes in as
+    /// spoken is still Hinglish.
+    @MainActor
+    func testHinglishTranslatesFromDevanagari() async {
+        let translation = DictationTranslationSettings()
+        let wasEnabled = translation.isEnabled, wasTarget = translation.targetLanguage, wasFailure = translation.lastFailure
+        defer {
+            translation.isEnabled = wasEnabled
+            translation.targetLanguage = wasTarget
+            translation.lastFailure = wasFailure
+        }
+        translation.isEnabled = true
+        translation.targetLanguage = "en"
+        let heard = "मेरा फ़ोन चार्ज नहीं हो रहा"
+        let stub = StubTranslator()
+        stub.replies = [.success("my phone isn't charging")]
+        var pipeline = DictationPipeline(style: .polished, language: "hi-IN", hinglish: true)
+        pipeline.translationEngine = stub.engine
+        var stages = await pipeline.run(heard)
+        XCTAssertEqual(stub.inputs, [heard])
+        XCTAssertEqual(stages.formatted, "My phone isn't charging.")
+        XCTAssertEqual(stages.heard, "mera phone charge nahi ho raha", "learning still compares Latin words")
+
+        stub.status = .supported
+        stages = await pipeline.run(heard)
+        XCTAssertEqual(stages.formatted, "Mera phone charge nahi ho raha.", "as spoken, in Hinglish")
+        XCTAssertEqual(stages.translationFailure?.fix, "Download Hindi in Settings")
     }
 }
 
@@ -743,6 +1314,21 @@ final class SpokenListsTests: XCTestCase {
         }
     }
 
+    /// A counted microphone test is no list, in digits or still in words, and each style
+    /// ends it its own way.
+    func testCountsAreNoList() {
+        for heard in [
+            "Test 1, 2, 3.", "Test, 1, 2, 3.", "Test 1 2 3", "test one, two, three", "testing one two three",
+            "counting one, two, three, four", "Counting 1, 2, 3, 4.", "1, 2, 3, testing.", "One, two, three, testing.",
+        ] {
+            XCTAssertEqual(lists(heard), heard)
+        }
+        XCTAssertEqual(
+            DictationStyle.allCases.map { TranscriptFormatter.format("Test 1, 2, 3", style: $0, language: "en-US", lists: true) },
+            ["Test 1, 2, 3.", "test 1, 2, 3", "Test 1, 2, 3", "Test 1, 2, 3"]
+        )
+    }
+
     /// Each style ends the lines its own way; Verbatim keeps the model's words.
     func testStylesEndTheLines() {
         let heard = "Um, so the plan is, first, um, call the bank, second, pay rent. Thanks!"
@@ -764,6 +1350,36 @@ final class SpokenListsTests: XCTestCase {
             "So the plan is, first, call the bank, second, pay rent. Thanks!",
             "off: as before"
         )
+    }
+
+    /// End with a period off ends no list line with a full stop; "!" stays.
+    func testListLinesWithoutAPeriod() {
+        let heard = "Um, so the plan is, first, um, call the bank, second, pay rent. Thanks!"
+        let formatted = DictationStyle.allCases.map {
+            TranscriptFormatter.format(heard, style: $0, language: "en-US", lists: true, endsWithPeriod: false)
+        }
+        XCTAssertEqual(formatted, [
+            "So the plan is:\n1. Call the bank\n2. Pay rent\nThanks!",
+            "so the plan is:\n1. Call the bank\n2. Pay rent\nthanks!",
+            "So the plan is:\n1. Call the bank\n2. Pay rent\nThanks!",
+            heard,
+        ])
+        XCTAssertEqual(
+            TranscriptFormatter.format("首先，买牛奶。其次，给妈妈打电话。", style: .polished, language: "zh-CN", lists: true, endsWithPeriod: false),
+            "首先，买牛奶。其次，给妈妈打电话",
+            "Chinese lists stay as said; the last 。 goes"
+        )
+
+        var pipeline = DictationPipeline(style: .polished, language: "en-US", formatLists: true)
+        XCTAssertEqual(pipeline.format("Groceries, bullet, eggs, bullet, milk.", language: "en-US"), "Groceries:\n- Eggs.\n- Milk.")
+        pipeline.endsWithPeriod = false
+        XCTAssertEqual(pipeline.format("Groceries, bullet, eggs, bullet, milk.", language: "en-US"), "Groceries:\n- Eggs\n- Milk")
+
+        let defaults = UserDefaults(suiteName: "hex.tests.\(UUID().uuidString)")!
+        let settings = DictationPeriodSettings(defaults: defaults)
+        XCTAssertTrue(settings.isEnabled, "on by default")
+        settings.isEnabled = false
+        XCTAssertFalse(DictationPeriodSettings(defaults: defaults).isEnabled)
     }
 
     /// The pipeline formats lists only with the switch on, and Lowercase still lowercases them.
@@ -829,5 +1445,458 @@ final class InformalContractionTests: XCTestCase {
             TranscriptFormatter.format("Todo bullet gotta pack bullet lemme check the car", style: .polished, language: "en-US", lists: true),
             "Todo:\n- Got to pack.\n- Let me check the car."
         )
+    }
+}
+
+/// X (Philippe): "When dictating, in some languages punctuation has a space before, like
+/// question and exclamation marks in French. Right now they're not inserted." French puts a
+/// narrow no-break space before ? ! ; and a no-break space before : and inside « » (Canada none
+/// before ? ! ;, Switzerland narrow ones inside « »). The texts are Apple Speech's (macOS 27.2.1,
+/// say -v Thomas and Amélie): fr-FR and fr-CH write "ça va ?" with a plain space, fr-CA's
+/// DictationTranscriber "ça va?", and the styles took the space out.
+final class FrenchSpacingTests: XCTestCase {
+    private let thin = "\u{202F}"
+    private let nbsp = "\u{00A0}"
+
+    func testFrenchGetsItsSpacesAfterTheStyle() {
+        let heard = "Bonjour, comment ça va ? Tu viens ce soir ?"
+        let pipeline = DictationPipeline(style: .polished, language: "fr-FR")
+        XCTAssertEqual(pipeline.format(heard, language: "fr-FR"), "Bonjour, comment ça va\(thin)? Tu viens ce soir\(thin)?")
+        XCTAssertEqual(
+            pipeline.format("il y a trois choses: le pain; le lait et «les œufs» ! c'est tout", language: "fr-FR"),
+            "Il y a trois choses\(nbsp): le pain\(thin); le lait et «\(nbsp)les œufs\(nbsp)»\(thin)! C'est tout."
+        )
+        var casual = DictationPipeline(style: .casual, language: "fr-FR")
+        XCTAssertEqual(casual.format("Tu viens ce soir ? Génial !", language: "fr-FR"), "tu viens ce soir\(thin)? génial\(thin)!")
+        casual.lowercase = true
+        XCTAssertEqual(casual.format("Tu viens ?", language: "fr-FR"), "tu viens\(thin)?")
+        XCTAssertEqual(DictationPipeline(style: .notes, language: "fr-FR").format("Tu viens ?", language: "fr-FR"), "Tu viens\(thin)?")
+        XCTAssertEqual(
+            DictationPipeline(style: .verbatim, language: "fr-FR").format(heard, language: "fr-FR"), heard,
+            "Verbatim keeps the model's spaces"
+        )
+        XCTAssertEqual(DictationPipeline(style: .polished, language: "en-US").format("Really ? Yes", language: "en-US"), "Really? Yes.")
+        XCTAssertEqual(
+            DictationPipeline(style: .polished, language: "en-US").format("Tu viens ?", language: "fr-FR"),
+            "Tu viens\(thin)?",
+            "a translation into French is spaced as French"
+        )
+    }
+
+    func testCanadaAndSwitzerlandFollowTheirOwn() {
+        let canada = DictationPipeline(style: .polished, language: "fr-CA")
+        XCTAssertEqual(canada.format("Bonjour, comment ça va? Tu viens ce soir?", language: "fr-CA"), "Bonjour, comment ça va? Tu viens ce soir?")
+        XCTAssertEqual(FrenchSpacing.apply("ça va ? Oui ! Voici : «tout»", language: "fr-CA"), "ça va? Oui! Voici\(nbsp): «\(nbsp)tout\(nbsp)»")
+        XCTAssertEqual(
+            FrenchSpacing.apply("ça va ? Voici : « tout »", language: "fr-CH"),
+            "ça va\(thin)? Voici\(nbsp): «\(thin)tout\(thin)»"
+        )
+        XCTAssertEqual(FrenchSpacing.convention(for: "fr-BE"), .france)
+        XCTAssertEqual(FrenchSpacing.convention(for: "fr"), .france)
+        XCTAssertNil(FrenchSpacing.convention(for: "en-CA"))
+        XCTAssertNil(FrenchSpacing.convention(for: nil))
+    }
+
+    func testNoDoubledSpacesAndNothingOutsideWords() {
+        let once = FrenchSpacing.apply("ça va  ?\nOui\(nbsp)! Quoi ?!", language: "fr-FR")
+        XCTAssertEqual(once, "ça va\(thin)?\nOui\(thin)! Quoi\(thin)?!")
+        XCTAssertEqual(FrenchSpacing.apply(once, language: "fr-FR"), once, "running twice changes nothing")
+        let untouched = [
+            "Rendez-vous à 10:30 ou 18:45",
+            "Super :) et ;-) puis :D et :(",
+            "Va sur https://exemple.fr/page?q=1",
+            "Écris moi@exemple.fr! ou www.exemple.fr?",
+            "Tape `a ? b : c` puis `x::y`",
+            "? au début\n: en début de ligne",
+        ]
+        for text in untouched {
+            XCTAssertEqual(FrenchSpacing.apply(text, language: "fr-FR"), text, text)
+        }
+        XCTAssertEqual(FrenchSpacing.apply("Il m'a dit «Tu viens?»", language: "fr-FR"), "Il m'a dit «\(nbsp)Tu viens\(thin)?\(nbsp)»")
+    }
+}
+
+/// Settings › Dictation › Spoken punctuation. The inputs are what the speech models wrote for
+/// spoken punctuation (macOS 27.2.1, `say` voices Samantha, Paulina, Thomas, Anna, Alice and
+/// Luciana): Apple's SpeechTranscriber, which leaves most names as words, and Parakeet (desktop
+/// Hex's unified English model), which leaves every one.
+final class SpokenPunctuationTests: XCTestCase {
+    private func punctuated(_ text: String, _ language: String = "en-US") -> String {
+        SpokenPunctuation.format(text, language: language)
+    }
+
+    func testEnglishFromSpeechTranscriber() {
+        XCTAssertEqual(punctuated("That is amazing exclamation point."), "That is amazing!")
+        XCTAssertEqual(punctuated("That is amazing exclamation mark."), "That is amazing!")
+        XCTAssertEqual(punctuated("I came semicolon, I saw semicolon, I conquered."), "I came; I saw; I conquered.")
+        XCTAssertEqual(punctuated("It was good dash really good."), "It was good – really good.")
+        XCTAssertEqual(punctuated("It is a well hyphen known fact."), "It is a well-known fact.")
+        XCTAssertEqual(punctuated("She said, open quote, hello, their close quote, and left."), "She said, “hello, their”, and left.")
+        XCTAssertEqual(punctuated("Call me, open Paren after lunch close, Paren, please."), "Call me, (after lunch), please.")
+        XCTAssertEqual(punctuated("Wait for it, ellipsis."), "Wait for it…")
+        XCTAssertEqual(punctuated("Feeling great hashtag blessed."), "Feeling great #blessed.")
+        XCTAssertEqual(punctuated("Great job, Smiley."), "Great job :-)")
+        XCTAssertEqual(punctuated("It is John Apostrophe S Carr."), "It is John's Carr.")
+        XCTAssertEqual(punctuated("Open parenthesis, just getting close parenthesis."), "(just getting).")
+        XCTAssertEqual(punctuated("Thanks so much, exclamation point CU tomorrow period."), "Thanks so much! CU tomorrow.")
+        XCTAssertEqual(
+            punctuated("Okay, comma, so here is the thing, comment, I can't make it."),
+            "Okay, so here is the thing, comment, I can't make it."
+        )
+        XCTAssertEqual(punctuated("I'll be there at noon, see you soon."), "I'll be there at noon, see you soon.", "converted already")
+    }
+
+    func testEnglishFromParakeet() {
+        XCTAssertEqual(punctuated("I'll be there at noon, comma, see you soon, period"), "I'll be there at noon, see you soon.")
+        XCTAssertEqual(punctuated("Are you coming tonight question mark?"), "Are you coming tonight?", "never doubled")
+        XCTAssertEqual(punctuated("Here is the plan colon we leave at noon full stop."), "Here is the plan: we leave at noon.")
+        XCTAssertEqual(punctuated("It is a well-hyphen known fact"), "It is a well-known fact")
+        XCTAssertEqual(punctuated("She said open quote hello there close quote and left."), "She said “hello there” and left.")
+        XCTAssertEqual(punctuated("Open parenthesis just kidding close parenthesis."), "(just kidding).")
+        XCTAssertEqual(
+            punctuated("Thanks so much exclamation point see you tomorrow period."),
+            "Thanks so much! See you tomorrow."
+        )
+        XCTAssertEqual(punctuated("Hi Sarah comma\nthanks for the update period"), "Hi Sarah,\nthanks for the update.")
+    }
+
+    func testEnglishCommands() {
+        XCTAssertEqual(punctuated("Hi Sarah comma how are you question mark"), "Hi Sarah, how are you?")
+        XCTAssertEqual(punctuated("I'm on my way period see you soon"), "I'm on my way. See you soon")
+        XCTAssertEqual(punctuated("Note to self colon buy milk"), "Note to self: buy milk")
+        XCTAssertEqual(punctuated("Dear John comma"), "Dear John,")
+        XCTAssertEqual(punctuated("Can you send it today question mark thanks"), "Can you send it today? Thanks")
+        XCTAssertEqual(punctuated("Meet me at 5 period"), "Meet me at 5.")
+        XCTAssertEqual(punctuated("Who are you going with question mark"), "Who are you going with?")
+        XCTAssertEqual(punctuated("He said open quote no way close quote period"), "He said “no way”.")
+        XCTAssertEqual(punctuated("He said quote I'm fine unquote and left"), "He said “I'm fine” and left")
+        XCTAssertEqual(punctuated("Hashtag throwback"), "#throwback")
+        XCTAssertEqual(punctuated("It costs dollar sign 50"), "It costs $50")
+        XCTAssertEqual(punctuated("Escríbeme a ana arroba gmail.com", "es-ES"), "Escríbeme a ana@gmail.com")
+        XCTAssertEqual(punctuated("Bring snacks open paren chips or pretzels close paren"), "Bring snacks (chips or pretzels)")
+        XCTAssertEqual(punctuated("Love you smiley face"), "Love you :-)")
+        XCTAssertEqual(punctuated("Okay comma sounds good period"), "Okay, sounds good.")
+        XCTAssertEqual(punctuated("Thanks exclamation point exclamation point"), "Thanks!")
+    }
+
+    /// Apple's DictationTranscriber writes the marks itself; its text passes through.
+    func testDictationTranscriberTextStays() {
+        for text in [
+            "That is amazing!", "Here is the plan: we leave at noon.", "I came; I saw; I conquered",
+            "It was good – really good", "She said \"hello there\" and left", "Call me (after lunch) please",
+            "Wait for it…", "Email me a john@gmail.com", "Feeling great. #Blessed.", "Great job :-)",
+            "It is John's car", "Hi Sarah,\nThanks for the update.", "He has a? Tattoo on his arm.",
+            "Thanks so much! See you tomorrow.",
+        ] {
+            XCTAssertEqual(punctuated(text), text)
+        }
+    }
+
+    func testSpanish() {
+        XCTAssertEqual(punctuated("Llego mañana, punto nos vemos", "es-ES"), "Llego mañana. Nos vemos")
+        XCTAssertEqual(punctuated("Dijo abrir comillas sola, cerrar comillas si se fue.", "es-ES"), "Dijo “sola” si se fue.")
+        XCTAssertEqual(
+            punctuated("Llámame a abrir paréntesis después de comer, cerrar paréntesis.", "es-MX"),
+            "Llámame a (después de comer)."
+        )
+        XCTAssertEqual(punctuated("Espera puntos suspensivos.", "es-ES"), "Espera…")
+        XCTAssertEqual(
+            punctuated("Abrir signo de interrogación vienes cerrar signo de interrogación", "es-ES"),
+            "¿vienes?"
+        )
+        XCTAssertEqual(punctuated("Hola coma Juan punto y aparte nos vemos", "es-ES"), "Hola, Juan.\n\nNos vemos")
+        XCTAssertEqual(punctuated("Gracias coma nos vemos mañana punto", "es-ES"), "Gracias, nos vemos mañana.")
+        XCTAssertEqual(punctuated("Vine punto y coma vi", "es-ES"), "Vine; vi")
+        XCTAssertEqual(punctuated("Es genial signo de exclamación", "es-ES"), "Es genial!")
+        XCTAssertEqual(punctuated("La lista dos puntos pan y leche", "es-ES"), "La lista dos puntos pan y leche", "two points, maybe")
+    }
+
+    func testFrench() {
+        XCTAssertEqual(punctuated("Bonjour virgule comment ça va point d'interrogation", "fr-FR"), "Bonjour, comment ça va?")
+        XCTAssertEqual(punctuated("Je suis venu, point, j'ai vu", "fr-FR"), "Je suis venu. J'ai vu")
+        XCTAssertEqual(punctuated("Je suis venu point-virgule j'ai vu", "fr-FR"), "Je suis venu; j'ai vu")
+        XCTAssertEqual(punctuated("C'est génial point d’exclamation", "fr-FR"), "C'est génial!")
+        XCTAssertEqual(
+            punctuated("Il a dit ouvrez les guillemets bonjour, fermez les guillemets", "fr-FR"),
+            "Il a dit «bonjour»"
+        )
+        XCTAssertEqual(punctuated("Appelle-moi ouvrir la parenthèse après le déjeuner", "fr-CA"), "Appelle-moi (après le déjeuner")
+
+        // French spacing comes after, in the pipeline.
+        let pipeline = DictationPipeline(style: .polished, language: "fr-FR", spokenPunctuation: true)
+        XCTAssertEqual(
+            pipeline.format("bonjour virgule comment ça va point d'interrogation", language: "fr-FR"),
+            "Bonjour, comment ça va\u{202F}?"
+        )
+        XCTAssertEqual(
+            pipeline.format("il a dit ouvrez les guillemets bonjour fermez les guillemets", language: "fr-FR"),
+            "Il a dit «\u{00A0}bonjour\u{00A0}»."
+        )
+    }
+
+    func testGerman() {
+        XCTAssertEqual(punctuated("Der Plan Doppelpunkt, wir gehen um 12.", "de-DE"), "Der Plan: wir gehen um 12.")
+        XCTAssertEqual(punctuated("Er sagte Anführungszeichen Hallo, Abführungszeichen.", "de-DE"), "Er sagte „Hallo“.")
+        XCTAssertEqual(
+            punctuated("Er sagte Anführungszeichen unten Hallo, Anführungszeichen oben.", "de-DE"),
+            "Er sagte „Hallo“."
+        )
+        XCTAssertEqual(punctuated("Ich kam Semikolon ich sah", "de-DE"), "Ich kam; ich sah")
+        XCTAssertEqual(punctuated("Warte Auslassungspunkte", "de-DE"), "Warte…")
+        XCTAssertEqual(punctuated("Ich komme morgen Punkt bis bald", "de-DE"), "Ich komme morgen. Bis bald")
+        XCTAssertEqual(punctuated("Hallo Komma wie geht es dir Fragezeichen", "de-AT"), "Hallo, wie geht es dir?")
+        XCTAssertEqual(punctuated("Danke für das Update Punkt", "de-DE"), "Danke für das Update.")
+        XCTAssertEqual(punctuated("Ruf mich an Punkt", "de-DE"), "Ruf mich an.")
+        XCTAssertEqual(punctuated("Ruf mich an Klammer auf nach dem Essen Klammer zu", "de-DE"), "Ruf mich an (nach dem Essen)")
+    }
+
+    func testItalian() {
+        XCTAssertEqual(punctuated("Ciao virgola come stai punto interrogativo", "it-IT"), "Ciao, come stai?")
+        XCTAssertEqual(punctuated("Chiamami, apri parentesi dopo pranzo)", "it-IT"), "Chiamami, (dopo pranzo)")
+        XCTAssertEqual(punctuated("Ha detto apri virgolette ciao chiudi virgolette", "it-IT"), "Ha detto “ciao”")
+        XCTAssertEqual(punctuated("Sono venuto punto e virgola ho visto", "it-IT"), "Sono venuto; ho visto")
+        XCTAssertEqual(punctuated("È fantastico punto esclamativo", "it-IT"), "È fantastico!")
+        XCTAssertEqual(punctuated("Arrivo domani punto a presto", "it-IT"), "Arrivo domani. A presto")
+    }
+
+    func testPortuguese() {
+        XCTAssertEqual(punctuated("Olá vírgula tudo bem?", "pt-BR"), "Olá, tudo bem?")
+        XCTAssertEqual(punctuated("Chego amanhã ponto final até logo.", "pt-BR"), "Chego amanhã. Até logo.")
+        XCTAssertEqual(punctuated("Ele disse abre aspas ou lá fecha aspas.", "pt-BR"), "Ele disse “ou lá”.")
+        XCTAssertEqual(
+            punctuated("Me liga abre parênteses depois do almoço fecha parênteses.", "pt-PT"),
+            "Me liga (depois do almoço)."
+        )
+        XCTAssertEqual(punctuated("Eu vim ponto e vírgula eu vi.", "pt-BR"), "Eu vim; eu vi.")
+        XCTAssertEqual(punctuated("É incrível o ponto de exclamação!", "pt-BR"), "É incrível o ponto de exclamação!", "after an article")
+    }
+
+    /// Everyday sentences that use the names as words: none may change.
+    func testProseStaysAsSaid() {
+        let english = [
+            "It was a long period of time.",
+            "The comma is optional here.",
+            "She put a dash of salt in the soup.",
+            "He has a question mark tattoo on his arm.",
+            "The colon is part of the digestive system.",
+            "Put a period at the end of the sentence.",
+            "I'm not sure what the hashtag is.",
+            "The trial period ends tomorrow.",
+            "There's a big question mark over his future.",
+            "My period started this morning.",
+            "We had a free period after lunch.",
+            "The grace period is thirty days.",
+            "Do you use the Oxford comma?",
+            "She made a mad dash for the door.",
+            "I watched a period drama last night.",
+            "He was diagnosed with colon cancer.",
+            "My dash cam caught the whole thing.",
+            "Add a dash of lemon juice.",
+            "The hyphen in that word is wrong.",
+            "Use an apostrophe for possession.",
+            "That hashtag is trending right now.",
+            "What does the at sign mean in an email?",
+            "He ended the call with a smiley face emoji.",
+            "During that period we lived in Boston.",
+            "The question mark key is broken.",
+            "An exclamation point at the end feels too loud.",
+            "Commas and periods go inside the quotes.",
+            "Is that a comma or a period?",
+            "I need a quote for the kitchen remodel.",
+            "Can you quote me on that?",
+            "He used air quotes around the word.",
+            "The open quote was missing.",
+            "It's a quote unquote expert opinion.",
+            "The time period doesn't matter.",
+            "He's in colon surgery right now.",
+            "Every comma counts in a contract.",
+            "That was the last period of the game.",
+            "They scored in the third period.",
+            "A semicolon joins two clauses.",
+            "The ellipsis at the end looks passive aggressive.",
+            "Click the dollar sign to see prices.",
+            "Type the hashtag before the word.",
+            "A smiley can soften a message.",
+            "Draw a dash between the numbers.",
+            "The comma-separated list is attached.",
+            "The waiting period was annoying.",
+            "Can you dash off a quick reply?",
+            "We need to dash to the store.",
+            "I'll dash home after work.",
+            "This colon cleanse is a scam.",
+            "Her period was late this month.",
+            "What a period of growth for the company.",
+            "The comma after Hi is optional.",
+            "I love the Oxford comma debate.",
+            "The quote from the plumber was too high.",
+            "The ten-year period ended in June.",
+            "That was a really tough period for us.",
+            "It happened over a short period.",
+            "The colon in the time looks wrong.",
+            "Where is the question mark on this keyboard?",
+            "Is there an exclamation mark in the title?",
+            "My dog is called Dash.",
+            "I'll text Dash later.",
+            "George Smiley is a spy.",
+            "We waited for a period of hours.",
+            "The Jurassic period was long ago.",
+            "Your period tracker sent a notification.",
+            "Use a colon before a list.",
+            "The dollar sign is missing.",
+            "No comma needed.",
+            "I used comma separated values.",
+            "Period cramps are the worst.",
+            "Comma placement matters.",
+            "That smiley was a bit much.",
+            "Leave the quote as it is.",
+            "Write an exclamation point if you're excited.",
+            "She's the period expert on the team.",
+            "Hashtags are everywhere.",
+            "Quote me if you want.",
+            "He gave a quote to the press.",
+            "In the past, period films were huge.",
+            "Colon health is important.",
+            "The first period starts at eight.",
+            "Send a smiley to Mom.",
+        ]
+        let others: [(String, [String])] = [
+            ("es-ES", [
+                "El punto de vista es claro.",
+                "La coma es opcional.",
+                "Es un punto de encuentro.",
+                "Entró en coma ayer.",
+                "Tres coma cinco.",
+                "Ganamos por dos puntos.",
+                "Ese es el punto.",
+                "Está en su punto.",
+                "Hay dos puntos de vista.",
+                "Escribió el guion de la película.",
+                "Lo dijo entre comillas.",
+                "Pon una coma aquí.",
+                "El paciente sigue en coma.",
+                "Llegamos al punto de partida.",
+            ]),
+            ("fr-FR", [
+                "C'est un point important.",
+                "La virgule est facultative.",
+                "Deux points de vue différents.",
+                "Le point de vue est clair.",
+                "Il a marqué deux points.",
+                "Mettez une virgule ici.",
+                "Entre guillemets c'est faux.",
+                "Un tiret suffit.",
+                "C'est mon point fort.",
+                "On fait le point demain.",
+                "La cuisson à point.",
+            ]),
+            ("de-DE", [
+                "Das ist ein wichtiger Punkt.",
+                "Das Komma ist optional.",
+                "Der Punkt ist, dass wir gehen.",
+                "Wir treffen uns um Punkt acht.",
+                "Das ist der springende Punkt.",
+                "Ohne Komma geht es nicht.",
+                "Zwei Komma fünf Prozent.",
+                "Ein Fragezeichen bleibt.",
+                "Setz einen Punkt dahinter.",
+                "Das war ein guter Punkt.",
+                "Der Doppelpunkt fehlt.",
+                "Er hat ein Komma vergessen.",
+            ]),
+            ("it-IT", [
+                "Il punto è questo.",
+                "Un punto di vista diverso.",
+                "La virgola è facoltativa.",
+                "Ho fatto due punti.",
+                "È un buon punto.",
+                "Siamo al punto di partenza.",
+                "Metti una virgola qui.",
+                "Lo ha detto tra virgolette.",
+                "Il trattino è corto.",
+                "Facciamo il punto della situazione.",
+            ]),
+            ("pt-BR", [
+                "O ponto de vista é claro.",
+                "Esse é o ponto principal.",
+                "A vírgula é opcional.",
+                "Ganhamos por dois pontos.",
+                "Esse é um bom ponto.",
+                "Ele falou entre aspas.",
+                "Coloque um hífen aqui.",
+                "Estou no ponto de ônibus.",
+                "Chegamos ao ponto final da viagem.",
+                "Faltou uma vírgula.",
+            ]),
+        ]
+        XCTAssertGreaterThanOrEqual(english.count, 60)
+        for sentence in english {
+            XCTAssertEqual(punctuated(sentence), sentence)
+        }
+        for (language, sentences) in others {
+            for sentence in sentences {
+                XCTAssertEqual(punctuated(sentence, language), sentence, language)
+            }
+        }
+        // Numbers: a decimal or a time stays as said.
+        XCTAssertEqual(punctuated("It costs two comma five million"), "It costs two comma five million")
+        XCTAssertEqual(punctuated("The meeting is at 3 colon 30"), "The meeting is at 3 colon 30")
+        XCTAssertEqual(punctuated("Tres coma cinco", "es-ES"), "Tres coma cinco")
+        XCTAssertEqual(punctuated("Zwei Komma fünf Prozent", "de-DE"), "Zwei Komma fünf Prozent")
+    }
+
+    /// A closing name needs an open quote or bracket; a bare "quote" needs a closing one.
+    func testQuotesAndBracketsPair() {
+        XCTAssertEqual(punctuated("Close quote that"), "Close quote that")
+        XCTAssertEqual(punctuated("He was fine close paren"), "He was fine close paren")
+        XCTAssertEqual(punctuated("Can you quote me on that"), "Can you quote me on that")
+        XCTAssertEqual(punctuated("He said \"hi end quote"), "He said \"hi\"", "a straight quote closes straight")
+        XCTAssertEqual(punctuated("Lo dijo entre comillas", "es-ES"), "Lo dijo entre comillas")
+    }
+
+    func testOtherLanguagesStayAsSaid() {
+        XCTAssertEqual(punctuated("Hallo komma", "nl-NL"), "Hallo komma")
+        XCTAssertEqual(punctuated("你好逗号", "zh-CN"), "你好逗号")
+    }
+
+    /// Polished, Casual and Notes write the marks, Verbatim keeps the words, and the pipeline
+    /// writes them only with the switch on (on by default).
+    func testStylesAndPipeline() {
+        let heard = "Okay comma so here is the plan colon we leave at noon period see you there exclamation point"
+        let formatted = DictationStyle.allCases.map {
+            TranscriptFormatter.format(heard, style: $0, language: "en-US", punctuation: true)
+        }
+        XCTAssertEqual(formatted, [
+            "Okay, so here is the plan: we leave at noon. See you there!",
+            "okay so here is the plan: we leave at noon. see you there!",
+            "- So here is the plan: we leave at noon\n- See you there!",
+            heard,
+        ])
+        XCTAssertEqual(
+            TranscriptFormatter.format("love you smiley face", style: .polished, language: "en-US", punctuation: true),
+            "Love you :-)"
+        )
+
+        var pipeline = DictationPipeline(style: .polished, language: "en-US")
+        XCTAssertEqual(pipeline.format("Wow exclamation point", language: "en-US"), "Wow exclamation point.", "off")
+        pipeline.spokenPunctuation = true
+        XCTAssertEqual(pipeline.format("Wow exclamation point", language: "en-US"), "Wow!")
+        pipeline.formatLists = true
+        XCTAssertEqual(
+            pipeline.format("Hi Sarah comma new line thanks for the update period", language: "en-US"),
+            "Hi Sarah,\nThanks for the update."
+        )
+        XCTAssertEqual(
+            pipeline.format("Groceries, dash, eggs, dash, milk.", language: "en-US"),
+            "Groceries:\n- Eggs.\n- Milk.",
+            "a spoken list's dashes stay bullets"
+        )
+        pipeline.lowercase = true
+        XCTAssertEqual(pipeline.format("Wow exclamation point", language: "en-US"), "wow!")
+
+        let defaults = UserDefaults(suiteName: "hex.tests.\(UUID().uuidString)")!
+        let settings = DictationPunctuationSettings(defaults: defaults)
+        XCTAssertTrue(settings.isEnabled, "on by default")
+        settings.isEnabled = false
+        XCTAssertFalse(DictationPunctuationSettings(defaults: defaults).isEnabled)
     }
 }
