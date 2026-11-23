@@ -107,6 +107,7 @@ fn execute(
             VARIANTS.join(", ")
         );
     }
+    let channel_given = channel_arg.is_some();
     let channel = channel_arg.unwrap_or_else(|| local.channel.clone());
     if channel != "stable" && channel != "daily" {
         bail!("channel must be 'stable' or 'daily', not '{channel}'");
@@ -114,7 +115,7 @@ fn execute(
     // The exact re-run command the report-only paths point at, keeping any
     // --channel / --variant overrides this invocation was given.
     let mut rerun = String::from("hex haas-upgrade --yes");
-    if channel_arg.is_some() {
+    if channel_given {
         rerun.push_str(&format!(" --channel {channel}"));
     }
     if let Some(variant) = &variant_arg {
