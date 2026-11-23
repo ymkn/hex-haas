@@ -218,6 +218,8 @@ struct SettingsSegments<Item: Hashable>: View {
 /// - `settings-home`: home, everything ready. `setup`: home, keyboard added but Full Access
 ///   not confirmed yet. `setup-sheet`: the same, with the setup sheet open;
 ///   `setup-sheet-microphone`: the sheet before iOS has asked for the microphone.
+///   A scene with `-noaccess` (`setup-sheet-noaccess`, `settings-keyboard-noaccess`) has the
+///   keyboard report Full Access off.
 /// - `settings-<page>` opens a page (`dictation`, `keyboard`, `privacy`, `experiments`) with
 ///   every switch at its default; `-on` turns the switches on, `-end` starts scrolled to the end.
 ///   `settings-keyboard-languages[-on]` opens Keyboard › Languages.
@@ -276,15 +278,24 @@ enum SettingsSnapshotFixture {
         let args = ProcessInfo.processInfo.arguments
         keyboard.hexKeyOnLeft = args.firstIndex(of: FullKeyboardSettings.hexKeyLaunchArgument)
             .flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil } == "left"
+        keyboard.numberRow = on
         keyboard.autocorrect = true
         keyboard.spatialAutocorrect = true
         keyboard.germanSpatialAutocorrect = on
+        keyboard.koreanKeyboard = on
+        keyboard.dvorakPunctuation = on
+        keyboard.commaPeriodKeys = on
+        keyboard.quickAccents = on
+        keyboard.emojiShortcodes = on
         keyboard.emojiLettersUnderEmojiKey = on
+        keyboard.keyboardThemesEnabled = false
+        keyboard.keyboardTheme = .automatic
         keyboard.suggestSwearWords = on
         keyboard.keyPopups = true
         keyboard.haptics = true
         keyboard.emoji = true
         keyboard.swipeTyping = true
+        keyboard.swipeMoreLanguages = on
         let emojiUsage = EmojiUsageStore()
         emojiUsage.clear()
         if on {
@@ -300,11 +311,16 @@ enum SettingsSnapshotFixture {
         CustomVocabularySettings().isEnabled = on
         CustomVocabularySettings().terms = on ? ["OpenCode", "SwiftUI", "TestFlight"] : []
         DictationTranslationSettings().isEnabled = on
+        LiveDictationSettings().showsPreview = true
+        LiveDictationSettings().typesIntoField = on
         DictationTranslationSettings().targetLanguage = "ja"
         TypingJournalSettings().isEnabled = on
         TypingJournalSettings().learnsPerLanguage = on
         TypingLogSettings().isEnabled = on
         HinglishSettings().isEnabled = on
+        GreeklishSettings().isEnabled = on
+        TwoLanguageDictationSettings().isEnabled = on
+        VoiceIsolationSettings().isEnabled = on
         AdaptiveTouchSettings().isEnabled = on
         // Settings scenes skip preparing a model, so this only draws the switch.
         MultilingualParakeetSettings().isEnabled = on

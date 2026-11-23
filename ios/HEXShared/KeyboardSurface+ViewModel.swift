@@ -30,6 +30,8 @@ final class KeyboardViewModel: ObservableObject {
     static let commandAckTimeout: TimeInterval = 1.6
 
     let clock = KeyboardClockModel()
+    /// The words so far while the keyboard records with live words on (`LiveDictationPreviewHost`).
+    let liveText = LiveDictationText()
 
     @Published var hasFullAccess = true
     @Published var needsGlobeKey = true
@@ -67,14 +69,11 @@ final class KeyboardViewModel: ObservableObject {
     @Published var translationLanguage: String?
     /// The targets the full keyboard's Hex key menu offers (`DictationTranslationSettings.targetChoices`).
     @Published var translationTargetChoices: [String] = []
-    /// Record typing logs is recording this field: both keyboards show a small mark the
-    /// whole time, so logging is never hidden.
-    @Published var isLoggingTyping = false
     /// The dictation bar's emoji key: Settings › Keyboard › Emoji, in a field that takes emoji.
     @Published var showsEmojiKey = true
     /// A finished dictation the keyboard didn't insert by itself (it missed its moment, or
-    /// the keyboard came back in another field): the full keyboard's strip offers Paste
-    /// dictation, which calls `onPasteDictation`.
+    /// the keyboard came back in another field): the full keyboard's strip and the dictation
+    /// bar's top row offer Paste dictation, which calls `onPasteDictation`.
     @Published var offeredDictation: String?
 
     // Non-published live telemetry read directly by `DotScopeHostView` / button tap handlers

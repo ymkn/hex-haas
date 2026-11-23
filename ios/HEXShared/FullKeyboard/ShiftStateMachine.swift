@@ -20,12 +20,18 @@ nonisolated struct ShiftStateMachine: Equatable, Sendable {
     private var lastTapDown: TimeInterval?
     /// This press turned shift on (from off).
     private var pressTurnedOn = false
+    /// Auto-capitalization turned this shift on, rather than a press of yours or caps lock.
+    private var isAutomatic = false
 
     init(state: ShiftState = .off) {
         self.state = state
     }
 
     var isUppercase: Bool { state != .off || isHeld }
+
+    /// Whether shift is yours (a press or caps lock) rather than auto-capitalization's. Letters
+    /// capitalize either way; only the Dvorak punctuation keys' `<`, `>` and `:` read it.
+    var isUserShift: Bool { isHeld || state == .locked || (state == .on && !isAutomatic) }
 
     /// Whether the keys still look as they did before this press. Apple's keyboard shows a press
     /// that turns shift on only when it lifts (iOS 27.2: held from off, the key isn't shaded and
@@ -37,6 +43,7 @@ nonisolated struct ShiftStateMachine: Equatable, Sendable {
         isHeld = true
         typedWhileHeld = false
         pressTurnedOn = false
+        isAutomatic = false
         if state == .locked {
             state = .off
             lastTapDown = nil
@@ -69,14 +76,32 @@ nonisolated struct ShiftStateMachine: Equatable, Sendable {
             typedWhileHeld = true
         } else if state == .on {
             state = .off
+            isAutomatic = false
         }
         lastTapDown = nil
     }
 
-    /// Auto-capitalization after an edit or a field change. Leaves caps lock and a held shift alone.
+    /// Call after a key in a layout without capitals (Hangul) commits: shift is one key's,
+    /// and a lock lifts with it.
+    mutating func didTypeOneShot() {
+        didType()
+        if state == .locked {
+            state = .off
+        }
+    }
+
+    /// Auto-capitalization after an edit or a field change. Leaves caps lock, a held shift and a
+    /// shift you turned on yourself alone.
     mutating func refreshAutoCapitalization(_ shouldCapitalize: Bool) {
         guard state != .locked, !isHeld else { return }
-        state = shouldCapitalize ? .on : .off
+        if shouldCapitalize {
+            guard state == .off else { return }
+            state = .on
+            isAutomatic = true
+        } else {
+            state = .off
+            isAutomatic = false
+        }
     }
 
     mutating func reset() {
@@ -167,7 +192,7 @@ nonisolated struct KeyboardLayerState: Equatable, Sendable {
 
     mutating func didInsert(_ text: String) {
         guard layer != .letters else { return }
-        if text == " " || text == "\n" || text == "'" {
+        if text == " " || text == "\n" || text == "'" || text == "\u{02BC}" {
             layer = .letters
         }
     }
@@ -198,5 +223,13 @@ nonisolated enum KeyboardFieldRouting {
         default:
             return .keys(.text, initialLayer: .letters)
         }
+    }
+
+    /// Whether a number pad (`.handOff`) goes to the next keyboard: where iOS asks for a globe,
+    /// except where Apple's keyboard is split (the Duo unfolded and upright). There iOS 27.2's
+    /// switch to the next keyboard can end the app being typed in (TestFlight build 121,
+    /// `InputModeListTouch`), so Hex stays on its 123 page.
+    static func handsOffNumberPad(needsInputModeSwitchKey: Bool, posture: KeyboardPosture) -> Bool {
+        needsInputModeSwitchKey && !posture.splitsKeyboard
     }
 }

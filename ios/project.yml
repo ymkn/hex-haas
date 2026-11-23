@@ -44,8 +44,8 @@ targets:
             CFBundleURLName: anomaly.hex.mobile.keyboard-session
             CFBundleURLSchemes:
               - hex-dictation
-        NSMicrophoneUsageDescription: Hex turns what you say into text on this iPhone. Audio never leaves your iPhone and is deleted once it's transcribed.
-        NSSpeechRecognitionUsageDescription: Hex turns your recordings into text with Apple's on-device speech recognition. Nothing you say is sent to a server.
+        NSMicrophoneUsageDescription: Hex turns what you say into text on this iPhone. Audio never leaves it and is deleted once it's transcribed.
+        NSSpeechRecognitionUsageDescription: Hex uses Apple's on-device speech recognition to turn what you say into text. Nothing you say is sent to a server.
         NSSupportsLiveActivities: true
         ITSAppUsesNonExemptEncryption: false
         UIBackgroundModes:
@@ -88,19 +88,22 @@ targets:
       # The app's String Catalog, so the keyboard's words (the Hex key menu first) follow
       # the iPhone's language where Hex is translated.
       - HEXMobile/Localizable.xcstrings
+    dependencies:
+      # Experiments › Speech model in keyboard: Parakeet in the keyboard (KeyboardParakeet).
+      - package: FluidAudio
     info:
       path: HEXKeyboard/Info.plist
       properties:
         CFBundleDisplayName: Hex Keyboard
-        NSMicrophoneUsageDescription: Hex turns what you say into text on this iPhone. Audio never leaves your iPhone and is deleted once it's transcribed.
-        NSSpeechRecognitionUsageDescription: Hex turns your recordings into text with Apple's on-device speech recognition. Nothing you say is sent to a server.
+        NSMicrophoneUsageDescription: Hex turns what you say into text on this iPhone. Audio never leaves it and is deleted once it's transcribed.
+        NSSpeechRecognitionUsageDescription: Hex uses Apple's on-device speech recognition to turn what you say into text. Nothing you say is sent to a server.
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSExtension:
           NSExtensionAttributes:
             IsASCIICapable: true
             PrefersRightToLeft: false
-            PrimaryLanguage: en-US
+            PrimaryLanguage: mul
             RequestsOpenAccess: true
           NSExtensionPointIdentifier: com.apple.keyboard-service
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).KeyboardViewController

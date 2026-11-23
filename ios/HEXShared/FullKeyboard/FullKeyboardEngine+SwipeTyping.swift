@@ -15,8 +15,94 @@ extension FullKeyboardEngine {
         /// What the swipe put in: a space when one was needed, then the word.
         var inserted: String
         var word: String
+        /// The text before and after the cursor right after it went in, as Hex expects the host
+        /// to report them: an update that matches is the echo of Hex's own edit (`hostEchoed`).
+        var before: String?
+        var after: String?
         /// Its other readings, cased as the word is, best first.
         var alternatives: [String]
+    }
+
+    /// Words taken back right after a swipe typed them, at one place in the text: the next
+    /// swipe there types its next reading instead, and the strip may still offer them (Record
+    /// typing logs: "two" swiped three times running for "yep", with "yep" in the strip). Taken
+    /// back: delete took the whole word back, or deletes took out all its letters (Settings ›
+    /// Experiments › Delete swiped words letter by letter), with nothing else typed since the
+    /// swipe. One place: the text before it is the same, trailing spaces aside, in the same
+    /// field. Every word taken back there in a row counts. Any other edit (a letter, a space,
+    /// punctuation, a pick from the strip), a swipe somewhere else or another field forgets
+    /// them. Only which reading goes in changes; the decoder's readings for a path don't.
+    @MainActor
+    final class SwipeRetries {
+        private var place: String?
+        /// Lowercased, the first taken back first.
+        private var words: [String] = []
+        /// A swiped word deletes are taking out one character at a time: its place, the word,
+        /// the characters left (the word and the space the swipe added) and that space's length.
+        private var deleting: (place: String?, word: String, left: Int, space: Int)?
+        /// The next edit is this record's own (a swipe here, or a delete taking a swiped word
+        /// back), not one that forgets it.
+        private var ownEdit = false
+
+        /// `readings` with the words taken back where `before` ends moved after the others.
+        func reordered(_ readings: [String], before: String?) -> [String] {
+            guard !words.isEmpty, Self.place(of: before) == place else { return readings }
+            return readings.filter { !words.contains($0.lowercased()) } + readings.filter { words.contains($0.lowercased()) }
+        }
+
+        /// `reordered`, for a swipe going in now; one somewhere else forgets the words.
+        func typing(_ readings: [String], before: String?) -> [String] {
+            guard !readings.isEmpty else { return readings }
+            deleting = nil
+            if Self.place(of: before) == place { ownEdit = true } else { forget() }
+            return reordered(readings, before: before)
+        }
+
+        /// Delete took back the whole word `swiped` typed.
+        func tookBack(_ swiped: SwipedWord) {
+            took(swiped.word, at: Self.place(of: swiped.before.map { String($0.dropLast(swiped.inserted.count)) }))
+        }
+
+        /// A delete is about to go; `swiped` is the word a swipe just typed when this delete
+        /// starts taking it out one character at a time.
+        func willDelete(letterOf swiped: SwipedWord?) {
+            if let swiped {
+                let place = Self.place(of: swiped.before.map { String($0.dropLast(swiped.inserted.count)) })
+                deleting = (place, swiped.word, swiped.inserted.count, swiped.inserted.count - swiped.word.count)
+            }
+            guard var pending = deleting else { return }
+            pending.left -= 1
+            ownEdit = true
+            if pending.left == pending.space { took(pending.word, at: pending.place) }
+            deleting = pending.left > 0 ? pending : nil
+        }
+
+        /// The keys edited the text (`FullKeyboardEngine.didEdit`).
+        func edited() {
+            if ownEdit { ownEdit = false } else { forget() }
+        }
+
+        func forget() {
+            place = nil
+            words = []
+            deleting = nil
+            ownEdit = false
+        }
+
+        private func took(_ word: String, at place: String?) {
+            if place != self.place { words = [] }
+            self.place = place
+            words.append(word.lowercased())
+            ownEdit = true
+        }
+
+        /// A real iPhone reports nothing before the cursor in an empty field (nil, where a
+        /// swipe's record keeps ""): the same place.
+        private static func place(of before: String?) -> String {
+            var text = before ?? ""
+            while text.last == " " { text.removeLast() }
+            return text
+        }
     }
 
     /// Whether a letter touch may become a swipe now: on the letters page of a text field
@@ -61,7 +147,7 @@ extension FullKeyboardEngine {
     var swipeCapital: Bool {
         if shift.isUppercase { return true }
         guard shift.state == .off, !shift.isHeld else { return false }
-        let before = textBefore
+        let before = typingContext
         guard SwipeTyping.needsSpace(before: before) else { return false }
         return AutoCapitalization.shouldCapitalize(
             mode: autoCapitalizationMode,

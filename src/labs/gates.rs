@@ -101,6 +101,19 @@ pub fn copy_capture_zip() -> bool {
     COPY_CAPTURE_ZIP.load(Ordering::Acquire) && Feature::CopyCaptureZip.on_this_os()
 }
 
+/// While an Annotate capture records, the dictation shortcut dictates as it
+/// always does: hold, toggle, or double-tap lock it, and the text pastes
+/// into the app in front, History, and Paste Last. The capture keeps
+/// recording, and its narration hears the words too. Read at each press the
+/// capture would otherwise swallow, on every OS.
+#[cfg_attr(not(hex_capture), allow(dead_code))]
+pub fn dictate_while_annotating() -> bool {
+    // The state word has no bit for it: its own atomic, written by
+    // `labs::apply`, and loaded here first in a process that never applied.
+    let _ = state();
+    DICTATE_WHILE_ANNOTATING.load(Ordering::Acquire) && Feature::DictateWhileAnnotating.on_this_os()
+}
+
 /// A kept dictation recording may be copied from History and the menu bar or
 /// tray as a file on the clipboard (read as each Copy audio runs and each
 /// menu or tray opens). It needs Labs › Keep recordings, which owns every
@@ -263,6 +276,35 @@ pub fn notch_indicator() -> bool {
     on(NOTCH_INDICATOR) && Feature::NotchIndicator.on_this_os()
 }
 
+/// Labs › HUD height: with the HUD position Bottom, its plate keeps a chosen
+/// gap above the Dock or the screen's edge (macOS; read each time the HUD is
+/// placed).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn hud_height() -> bool {
+    on(HUD_HEIGHT) && Feature::HudHeight.on_this_os()
+}
+
+/// The plate's gap above the Dock or the screen's bottom edge at the Bottom
+/// position: Labs › HUD height's saved points, or the fixed 24 pt while the
+/// lab is off (macOS; read each time the HUD is placed).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn hud_bottom_gap() -> f64 {
+    let _ = state();
+    if hud_height() {
+        HUD_BOTTOM_GAP.load(Ordering::Acquire) as f64
+    } else {
+        crate::rune_hud::hud_placement::BOTTOM_OFFSET
+    }
+}
+
+/// Dictation's microphone opens through Apple's voice processing, so Control
+/// Center's Mic Mode can offer Voice Isolation (macOS; read as each dictation
+/// stream opens, and when an idle one may be replaced).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn voice_isolation() -> bool {
+    on(VOICE_ISOLATION) && Feature::VoiceIsolation.on_this_os()
+}
+
 /// A paste on a Wayland desktop without data-control (GNOME) snapshots and
 /// restores the clipboard through an already running XWayland (Linux; read
 /// as each paste starts).
@@ -408,6 +450,46 @@ pub fn stop_phrase_text() -> String {
         .read()
         .unwrap_or_else(|error| error.into_inner())
         .clone()
+}
+
+/// Labs › Signature: a normal dictation's final text carries the saved
+/// signature on its own line at the end, before it is pasted, kept in
+/// History, and remembered for Paste Last (every OS; read as each output
+/// commits).
+pub fn signature() -> bool {
+    // The state word has no bit for it: its own atomic, written by
+    // `labs::apply`, and loaded here first in a process that never applied.
+    let _ = state();
+    SIGNATURE.load(Ordering::Acquire) && Feature::Signature.on_this_os()
+}
+
+/// The signature line appended while [`signature`] is on (read as each
+/// output commits, only while the gate is on). Empty appends nothing.
+pub fn signature_text() -> String {
+    // The state word has no bit for it: its own atomic, written by
+    // `labs::apply`, and loaded here first in a process that never applied.
+    let _ = state();
+    SIGNATURE_TEXT
+        .read()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone()
+}
+
+/// Labs › Dictation style: the style each normal dictation is written as,
+/// or None while the lab is off (every OS; read once as each dictation's
+/// processing starts).
+pub fn dictation_style() -> Option<crate::app_settings::DictationStyle> {
+    // The state word has no bit for it: its own atomic, written by
+    // `labs::apply`, and loaded here first in a process that never applied.
+    let _ = state();
+    DICTATION_STYLE
+        .load(Ordering::Acquire)
+        .then(|| {
+            *DICTATION_STYLE_CHOICE
+                .read()
+                .unwrap_or_else(|error| error.into_inner())
+        })
+        .filter(|_| Feature::DictationStyle.on_this_os())
 }
 
 /// Whether the Caps Lock light blinks slowly while recording instead of

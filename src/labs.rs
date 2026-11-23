@@ -30,7 +30,10 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{LazyLock, RwLock};
 
-use crate::app_settings::{AppSettings, AppearanceTheme, CapsLockLight, LabsSettings};
+use crate::app_settings::{
+    AppSettings, AppearanceTheme, CapsLockLight, DictationStyle, HUD_BOTTOM_GAP_DEFAULT,
+    HUD_BOTTOM_GAP_MAX, LabsSettings,
+};
 
 mod card;
 mod catalog;
@@ -183,6 +186,10 @@ impl Feature {
             Self::PauseMenu => settings.labs.pause_menu,
             Self::VoicePrompt => settings.labs.voice_prompt,
             Self::StopPhrase => settings.labs.stop_phrase,
+            Self::Signature => settings.labs.signature,
+            Self::DictationStyle => settings.labs.dictation_style,
+            Self::HudHeight => settings.labs.hud_height,
+            Self::VoiceIsolation => settings.labs.voice_isolation,
             Self::HoldThroughKeys => settings.labs.hold_through_keys,
             Self::CopyCaptureZip => settings.labs.copy_capture_zip,
             Self::DropTranscribe => settings.labs.drop_transcribe,
@@ -195,6 +202,7 @@ impl Feature {
             Self::VocabularyFiles => settings.labs.vocabulary_files,
             Self::AnnotateAgentTools => settings.labs.annotate_agent_tools,
             Self::AnnotateAgentInstall => settings.labs.annotate_agent_install,
+            Self::DictateWhileAnnotating => settings.labs.dictate_while_annotating,
         }
     }
 
@@ -270,6 +278,10 @@ impl Feature {
             &mut labs.pause_menu,
             &mut labs.voice_prompt,
             &mut labs.stop_phrase,
+            &mut labs.signature,
+            &mut labs.dictation_style,
+            &mut labs.hud_height,
+            &mut labs.voice_isolation,
             &mut labs.hold_through_keys,
             &mut labs.copy_capture_zip,
             &mut labs.drop_transcribe,
@@ -282,6 +294,7 @@ impl Feature {
             &mut labs.vocabulary_files,
             &mut labs.annotate_agent_tools,
             &mut labs.annotate_agent_install,
+            &mut labs.dictate_while_annotating,
         ]
     }
 
@@ -368,6 +381,10 @@ impl Feature {
             Self::PauseMenu => settings.labs.pause_menu = on,
             Self::VoicePrompt => settings.labs.voice_prompt = on,
             Self::StopPhrase => settings.labs.stop_phrase = on,
+            Self::Signature => settings.labs.signature = on,
+            Self::DictationStyle => settings.labs.dictation_style = on,
+            Self::HudHeight => settings.labs.hud_height = on,
+            Self::VoiceIsolation => settings.labs.voice_isolation = on,
             Self::HoldThroughKeys => settings.labs.hold_through_keys = on,
             Self::CopyCaptureZip => settings.labs.copy_capture_zip = on,
             Self::DropTranscribe => settings.labs.drop_transcribe = on,
@@ -380,6 +397,7 @@ impl Feature {
             Self::VocabularyFiles => settings.labs.vocabulary_files = on,
             Self::AnnotateAgentTools => settings.labs.annotate_agent_tools = on,
             Self::AnnotateAgentInstall => settings.labs.annotate_agent_install = on,
+            Self::DictateWhileAnnotating => settings.labs.dictate_while_annotating = on,
             // Off, no shortcut keeps a key only the feature allows.
             Self::StandaloneSpecialKeys => {
                 settings.labs.standalone_special_keys = on;
@@ -433,9 +451,14 @@ const FASTER_LIVE_TEXT: u64 = 1 << 23;
 // Kept only for the state-word encoding; no gate reads it.
 const VOCABULARY_FILES: u64 = 1 << 24;
 const GNOME_CLIPBOARD_RESTORE: u64 = 1 << 25;
-// 1 << 26 is free (Vocabulary in meeting notes graduated).
+/// Labs › HUD height: the plate's gap above the Dock when the position is
+/// Bottom, on the bit Vocabulary in meeting notes left free.
+const HUD_HEIGHT: u64 = 1 << 26;
 const NOTCH_INDICATOR: u64 = 1 << 27;
-// 1 << 28 is free (Meeting finished event graduated).
+/// Dictation's microphone opens through Apple's voice processing, so Control
+/// Center's Mic Mode can offer Voice Isolation (macOS), on the bit Meeting
+/// finished event left free.
+const VOICE_ISOLATION: u64 = 1 << 28;
 const GNOME_MEETING_CAPSULES: u64 = 1 << 29;
 const SCREENSHOTS: u64 = 1 << 30;
 const ANNOTATE_REPLAY: u64 = 1 << 31;
@@ -499,6 +522,10 @@ static STATE: AtomicU64 = AtomicU64::new(0);
 /// window itself has no room in the word.
 static MICROPHONE_LINGER_SECONDS: AtomicU64 = AtomicU64::new(0);
 
+/// Labs › HUD height's gap in points above the Dock, set beside [`STATE`]
+/// like [`MICROPHONE_LINGER_SECONDS`]: the word has no room for it.
+static HUD_BOTTOM_GAP: AtomicU64 = AtomicU64::new(HUD_BOTTOM_GAP_DEFAULT as u64);
+
 /// Labs › Words on screen's switch, set beside [`STATE`] like [`SCREEN_VOCABULARY`]:
 /// that lab reads the focused window once per dictation.
 static SCREEN_VOCABULARY: AtomicBool = AtomicBool::new(false);
@@ -522,9 +549,24 @@ static VOICE_PROMPT: AtomicBool = AtomicBool::new(false);
 /// [`state`] and [`apply`].
 static STOP_PHRASE: AtomicBool = AtomicBool::new(false);
 
+/// Labs › Signature's switch, set beside [`STATE`] like [`STOP_PHRASE`]: the
+/// state word is full, so this lab has its own atomic, written by [`state`]
+/// and [`apply`].
+static SIGNATURE: AtomicBool = AtomicBool::new(false);
+
+/// Labs › Dictation style's switch, set beside [`STATE`] like
+/// [`SIGNATURE`]: the state word is full, so this lab has its own atomic,
+/// written by [`state`] and [`apply`].
+static DICTATION_STYLE: AtomicBool = AtomicBool::new(false);
+
 /// Labs › Copy a capture as one file's switch, set beside [`STATE`] like
 /// [`SCREEN_VOCABULARY`]: a written capture copies as one zip file.
 static COPY_CAPTURE_ZIP: AtomicBool = AtomicBool::new(false);
+
+/// Labs › Dictate while annotating's switch, set beside [`STATE`] like
+/// [`SCREEN_VOCABULARY`]: the listener reads it at each shortcut press while
+/// an Annotate capture records.
+static DICTATE_WHILE_ANNOTATING: AtomicBool = AtomicBool::new(false);
 
 /// Labs › Copy dictation audio's switch, set beside [`STATE`] like
 /// [`SCREEN_VOCABULARY`]: History and the menu bar or tray put an entry's kept WAV
@@ -585,6 +627,17 @@ static VOICE_PROMPT_PHRASE: LazyLock<RwLock<String>> =
 static STOP_PHRASE_TEXT: LazyLock<RwLock<String>> =
     LazyLock::new(|| RwLock::new(crate::dictation::stop_phrase::DEFAULT_PHRASE.to_owned()));
 
+/// The signature appended to each normal dictation, set beside [`STATE`] by
+/// [`state`] and [`apply`]. Empty appends nothing; an invalid saved text
+/// reads as the default.
+static SIGNATURE_TEXT: LazyLock<RwLock<String>> =
+    LazyLock::new(|| RwLock::new(crate::dictation::signature::DEFAULT_TEXT.to_owned()));
+
+/// The style each normal dictation is written as, set beside [`STATE`] by
+/// [`state`] and [`apply`], read only while [`DICTATION_STYLE`] is on.
+static DICTATION_STYLE_CHOICE: LazyLock<RwLock<DictationStyle>> =
+    LazyLock::new(|| RwLock::new(DictationStyle::Polished));
+
 fn on(bit: u64) -> bool {
     state() & bit != 0
 }
@@ -601,13 +654,18 @@ fn state() -> u64 {
                 // between them sees the switch on with no window, which reads
                 // as off, and the next read is right.
                 MICROPHONE_LINGER_SECONDS.store(linger_seconds(&saved), Ordering::Release);
+                HUD_BOTTOM_GAP.store(hud_gap_points(&saved), Ordering::Release);
                 SCREEN_VOCABULARY.store(screen_vocabulary_enabled(&saved), Ordering::Release);
                 LEARN_FROM_CORRECTIONS
                     .store(learn_from_corrections_enabled(&saved), Ordering::Release);
                 CURSOR_CONTEXT.store(cursor_context_enabled(&saved), Ordering::Release);
                 VOICE_PROMPT.store(voice_prompt_enabled(&saved), Ordering::Release);
                 STOP_PHRASE.store(stop_phrase_enabled(&saved), Ordering::Release);
+                SIGNATURE.store(signature_enabled(&saved), Ordering::Release);
+                DICTATION_STYLE.store(dictation_style_enabled(&saved), Ordering::Release);
                 COPY_CAPTURE_ZIP.store(copy_capture_zip_enabled(&saved), Ordering::Release);
+                DICTATE_WHILE_ANNOTATING
+                    .store(dictate_while_annotating_enabled(&saved), Ordering::Release);
                 COPY_DICTATION_AUDIO.store(copy_dictation_audio_enabled(&saved), Ordering::Release);
                 K_QUANT_MODELS.store(k_quant_models_enabled(&saved), Ordering::Release);
                 DROP_TRANSCRIBE.store(drop_transcribe_enabled(&saved), Ordering::Release);
@@ -620,11 +678,18 @@ fn state() -> u64 {
                 ANNOTATE_AGENT_TOOLS.store(annotate_agent_tools_enabled(&saved), Ordering::Release);
                 store_voice_prompt_phrase(&saved.voice_prompt_phrase);
                 store_stop_phrase_text(&saved.stop_phrase_text);
+                store_signature_text(&saved.signature_text);
+                store_dictation_style_choice(saved.dictation_style_choice);
             }
             STATE.load(Ordering::Acquire)
         }
         state => state,
     }
+}
+
+/// The HUD bottom gap a saved setting names, clamped to the offered range.
+fn hud_gap_points(settings: &LabsSettings) -> u64 {
+    u64::from(settings.hud_bottom_gap.min(HUD_BOTTOM_GAP_MAX))
 }
 
 /// The window a saved setting holds, in seconds; 0 when it's off.
@@ -672,12 +737,34 @@ fn stop_phrase_enabled(settings: &LabsSettings) -> bool {
     settings.stop_phrase && Feature::StopPhrase.shipped() && Feature::StopPhrase.managed().is_none()
 }
 
+/// Whether `settings` turn on Labs › Signature in this build, before its
+/// managed lock; the state word has no bit for it.
+fn signature_enabled(settings: &LabsSettings) -> bool {
+    settings.signature && Feature::Signature.shipped() && Feature::Signature.managed().is_none()
+}
+
+/// Whether `settings` turn on Labs › Dictation style in this build, before
+/// its managed lock; the state word has no bit for it.
+fn dictation_style_enabled(settings: &LabsSettings) -> bool {
+    settings.dictation_style
+        && Feature::DictationStyle.shipped()
+        && Feature::DictationStyle.managed().is_none()
+}
+
 /// Whether `settings` turn on Labs › Copy a capture as one file in this build,
 /// before its managed lock; the state word has no bit for it.
 fn copy_capture_zip_enabled(settings: &LabsSettings) -> bool {
     settings.copy_capture_zip
         && Feature::CopyCaptureZip.shipped()
         && Feature::CopyCaptureZip.managed().is_none()
+}
+
+/// Whether `settings` turn on Labs › Dictate while annotating in this build,
+/// before its managed lock; the state word has no bit for it.
+fn dictate_while_annotating_enabled(settings: &LabsSettings) -> bool {
+    settings.dictate_while_annotating
+        && Feature::DictateWhileAnnotating.shipped()
+        && Feature::DictateWhileAnnotating.managed().is_none()
 }
 
 /// Whether `settings` turn on Labs › Smaller model files in this build,
@@ -787,6 +874,28 @@ fn store_stop_phrase_text(phrase: &str) {
         );
 }
 
+/// Records the signature each normal dictation gets; invalid text reads as
+/// the default, and empty stays empty so it appends nothing.
+fn store_signature_text(signature: &str) {
+    let signature = signature.trim();
+    let accepted = if crate::dictation::signature::text_problem(signature).is_none() {
+        signature
+    } else {
+        crate::dictation::signature::DEFAULT_TEXT
+    };
+    *SIGNATURE_TEXT
+        .write()
+        .unwrap_or_else(|error| error.into_inner()) = accepted.to_owned();
+}
+
+/// Records the style each normal dictation is written as. An unknown value
+/// never reaches here (serde rejects it on load).
+fn store_dictation_style_choice(style: DictationStyle) {
+    *DICTATION_STYLE_CHOICE
+        .write()
+        .unwrap_or_else(|error| error.into_inner()) = style;
+}
+
 /// Whether the main window draws dark: the OS's appearance, unless Labs ›
 /// Appearance is on and names one. Resolved for each view, so System keeps
 /// following the OS live. Overlay windows (the HUD, capsules, live text) keep
@@ -809,12 +918,19 @@ pub(crate) fn apply(settings: &LabsSettings) {
     // after both is right.
     STATE.store(encode(settings), Ordering::Release);
     MICROPHONE_LINGER_SECONDS.store(linger_seconds(settings), Ordering::Release);
+    HUD_BOTTOM_GAP.store(hud_gap_points(settings), Ordering::Release);
     SCREEN_VOCABULARY.store(screen_vocabulary_enabled(settings), Ordering::Release);
     LEARN_FROM_CORRECTIONS.store(learn_from_corrections_enabled(settings), Ordering::Release);
     CURSOR_CONTEXT.store(cursor_context_enabled(settings), Ordering::Release);
     VOICE_PROMPT.store(voice_prompt_enabled(settings), Ordering::Release);
     STOP_PHRASE.store(stop_phrase_enabled(settings), Ordering::Release);
+    SIGNATURE.store(signature_enabled(settings), Ordering::Release);
+    DICTATION_STYLE.store(dictation_style_enabled(settings), Ordering::Release);
     COPY_CAPTURE_ZIP.store(copy_capture_zip_enabled(settings), Ordering::Release);
+    DICTATE_WHILE_ANNOTATING.store(
+        dictate_while_annotating_enabled(settings),
+        Ordering::Release,
+    );
     COPY_DICTATION_AUDIO.store(copy_dictation_audio_enabled(settings), Ordering::Release);
     K_QUANT_MODELS.store(k_quant_models_enabled(settings), Ordering::Release);
     DROP_TRANSCRIBE.store(drop_transcribe_enabled(settings), Ordering::Release);
@@ -827,6 +943,8 @@ pub(crate) fn apply(settings: &LabsSettings) {
     ANNOTATE_AGENT_TOOLS.store(annotate_agent_tools_enabled(settings), Ordering::Release);
     store_voice_prompt_phrase(&settings.voice_prompt_phrase);
     store_stop_phrase_text(&settings.stop_phrase_text);
+    store_signature_text(&settings.signature_text);
+    store_dictation_style_choice(settings.dictation_style_choice);
     // Labs › Pause from menu bar: turning it off resumes at once, without
     // waiting for the menu to refresh; the menu row hides itself there.
     crate::shortcut_pause::reconcile(pause_menu());
@@ -990,6 +1108,12 @@ fn encode_where(settings: &LabsSettings, reaches: impl Fn(Feature) -> bool) -> u
             ANNOTATE_POINTER_SCREEN,
         ),
         (Feature::Screenshots, settings.screenshots, SCREENSHOTS),
+        (Feature::HudHeight, settings.hud_height, HUD_HEIGHT),
+        (
+            Feature::VoiceIsolation,
+            settings.voice_isolation,
+            VOICE_ISOLATION,
+        ),
         (
             Feature::KeepMicrophoneOpen,
             settings.keep_microphone_open,
@@ -1253,6 +1377,57 @@ mod tests {
         assert_eq!(
             Feature::for_settings_key("labs.stop_phrase_text"),
             Some(Feature::StopPhrase)
+        );
+    }
+
+    #[test]
+    fn signature_is_its_own_atomic_and_carries_its_text() {
+        let labs = LabsSettings::default();
+        assert!(!signature_enabled(&labs));
+        assert_eq!(
+            labs.signature_text,
+            crate::dictation::signature::DEFAULT_TEXT
+        );
+        let on = LabsSettings {
+            signature: true,
+            ..LabsSettings::default()
+        };
+        assert!(signature_enabled(&on));
+        assert!(Feature::Signature.on_this_os());
+        assert_eq!(Feature::Signature.added(), 20261121);
+        assert_eq!(Feature::Signature.audience(), Audience::Everyone);
+        assert_eq!(Feature::Signature.group(), Group::Output);
+        assert_eq!(Feature::Signature.settings_key(), "labs.signature");
+        assert_eq!(Feature::Signature.name(), "signature");
+        assert_eq!(
+            Feature::for_settings_key("labs.signature_text"),
+            Some(Feature::Signature)
+        );
+    }
+
+    #[test]
+    fn dictation_style_is_its_own_atomic_and_carries_its_choice() {
+        let labs = LabsSettings::default();
+        assert!(!dictation_style_enabled(&labs));
+        assert_eq!(labs.dictation_style_choice, DictationStyle::Polished);
+        let on = LabsSettings {
+            dictation_style: true,
+            dictation_style_choice: DictationStyle::Casual,
+            ..LabsSettings::default()
+        };
+        assert!(dictation_style_enabled(&on));
+        assert!(Feature::DictationStyle.on_this_os());
+        assert_eq!(Feature::DictationStyle.added(), 20261122);
+        assert_eq!(Feature::DictationStyle.audience(), Audience::Everyone);
+        assert_eq!(Feature::DictationStyle.group(), Group::Output);
+        assert_eq!(
+            Feature::DictationStyle.settings_key(),
+            "labs.dictation_style"
+        );
+        assert_eq!(Feature::DictationStyle.name(), "dictation-style");
+        assert_eq!(
+            Feature::for_settings_key("labs.dictation_style_choice"),
+            Some(Feature::DictationStyle)
         );
     }
 
@@ -1528,6 +1703,72 @@ mod tests {
         let state = encode_where(&labs, |_| true);
         assert_ne!(state & NOTCH_INDICATOR, 0);
         assert_eq!(state >> MINUTES_SHIFT, 24 * 60);
+    }
+
+    #[test]
+    fn hud_height_is_its_own_bit_and_off_by_default() {
+        assert_eq!(HUD_HEIGHT, 1 << 26);
+        let mut labs = LabsSettings::default();
+        assert!(!labs.hud_height);
+        assert_eq!(
+            labs.hud_bottom_gap,
+            crate::app_settings::HUD_BOTTOM_GAP_DEFAULT
+        );
+        assert_eq!(encode_where(&labs, |_| true) & HUD_HEIGHT, 0);
+        labs.hud_height = true;
+        labs.hud_bottom_gap = 120;
+        labs.unload_idle_minutes = 24 * 60;
+        let state = encode_where(&labs, |_| true);
+        assert_ne!(state & HUD_HEIGHT, 0);
+        assert_eq!(state & GNOME_CLIPBOARD_RESTORE, 0);
+        assert_eq!((state >> MINUTES_SHIFT) & MINUTES_MASK, 24 * 60);
+        assert_eq!(hud_gap_points(&labs), 120);
+        // A hand-edited gap above the offered range is clamped at placement.
+        labs.hud_bottom_gap = u16::MAX;
+        assert_eq!(
+            hud_gap_points(&labs),
+            u64::from(crate::app_settings::HUD_BOTTOM_GAP_MAX)
+        );
+        assert_eq!(Feature::HudHeight.on_this_os(), cfg!(target_os = "macos"));
+        assert_eq!(Feature::HudHeight.added(), 20261122);
+        assert_eq!(Feature::HudHeight.audience(), Audience::Everyone);
+        assert_eq!(Feature::HudHeight.group(), Group::Dictation);
+        assert_eq!(Feature::HudHeight.settings_key(), "labs.hud_height");
+        assert_eq!(Feature::HudHeight.name(), "hud-height");
+        assert_eq!(
+            Feature::for_settings_key("labs.hud_bottom_gap"),
+            Some(Feature::HudHeight)
+        );
+    }
+
+    #[test]
+    fn voice_isolation_is_its_own_bit_and_off_by_default() {
+        assert_eq!(VOICE_ISOLATION, 1 << 28);
+        let mut labs = LabsSettings::default();
+        assert!(!labs.voice_isolation);
+        assert_eq!(encode_where(&labs, |_| true) & VOICE_ISOLATION, 0);
+        labs.voice_isolation = true;
+        labs.unload_idle_minutes = 24 * 60;
+        let state = encode_where(&labs, |_| true);
+        assert_ne!(state & VOICE_ISOLATION, 0);
+        assert_eq!(state & NOTCH_INDICATOR, 0);
+        assert_eq!((state >> MINUTES_SHIFT) & MINUTES_MASK, 24 * 60);
+        assert_eq!(
+            Feature::VoiceIsolation.on_this_os(),
+            cfg!(target_os = "macos")
+        );
+        assert_eq!(Feature::VoiceIsolation.added(), 20261122);
+        assert_eq!(Feature::VoiceIsolation.audience(), Audience::Everyone);
+        assert_eq!(Feature::VoiceIsolation.group(), Group::Dictation);
+        assert_eq!(
+            Feature::VoiceIsolation.settings_key(),
+            "labs.voice_isolation"
+        );
+        assert_eq!(Feature::VoiceIsolation.name(), "voice-isolation");
+        assert_eq!(
+            Feature::for_settings_key("labs.voice_isolation"),
+            Some(Feature::VoiceIsolation)
+        );
     }
 
     #[test]
@@ -1976,6 +2217,43 @@ mod tests {
             "labs.drop_transcribe"
         );
         assert_eq!(Feature::DropTranscribe.name(), "drop-transcribe");
+    }
+
+    #[test]
+    fn dictate_while_annotating_is_its_own_switch_and_everywhere() {
+        let mut labs = LabsSettings::default();
+        assert!(!dictate_while_annotating_enabled(&labs));
+        assert!(!labs.dictate_while_annotating);
+        labs.dictate_while_annotating = true;
+        labs.unload_idle_minutes = 24 * 60;
+        assert!(dictate_while_annotating_enabled(&labs));
+        // The state word has no bit for it: the other switches keep theirs.
+        let state = encode_where(&labs, |_| true);
+        assert_eq!(state & PARAKEET_ULTRA, 0);
+        assert_eq!(state & HUD_HEIGHT, 0);
+        assert_eq!((state >> MINUTES_SHIFT) & MINUTES_MASK, 24 * 60);
+        assert!(
+            Feature::DictateWhileAnnotating.on_this_os(),
+            "every OS Hex runs has the capture host"
+        );
+        assert_eq!(Feature::DictateWhileAnnotating.added(), 20261122);
+        assert_eq!(
+            Feature::DictateWhileAnnotating.audience(),
+            Audience::Everyone
+        );
+        assert_eq!(Feature::DictateWhileAnnotating.group(), Group::Annotate);
+        assert_eq!(
+            Feature::DictateWhileAnnotating.settings_key(),
+            "labs.dictate_while_annotating"
+        );
+        assert_eq!(
+            Feature::DictateWhileAnnotating.name(),
+            "dictate-while-annotating"
+        );
+        assert_eq!(
+            Feature::for_settings_key("labs.dictate_while_annotating"),
+            Some(Feature::DictateWhileAnnotating)
+        );
     }
 
     #[test]

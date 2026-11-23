@@ -10,6 +10,7 @@
 //! design language (`rune-theme-opencode`); see `docs/design-system.md`.
 
 mod activity;
+mod calls;
 #[cfg(hex_capture)]
 pub(crate) mod capture_capsule;
 mod controls;
@@ -286,21 +287,19 @@ pub(crate) fn render_app(rune_args: Vec<String>) -> rune::App<Ui> {
     app
 }
 
-/// The window's compositor: the UI (through the first run's GPU stage or
-/// the practice game's strike and burn while they show), then the Sounds
-/// sheet's HUD over its stage.
+/// The window's compositor: the UI, through the first run's GPU stage or
+/// the practice game's strike and burn while they show.
 #[derive(Default)]
 pub(crate) struct WindowCompositor {
     onboarding: Option<onboarding_kit::gpu_stage::OnboardingGpu>,
     game: Option<onboarding_kit::game::fx::GameFx>,
-    sounds: sound_sets::Preview,
     /// The device whose backend `process.log` names.
     logged: Option<rune::compose::DeviceKey>,
 }
 
 impl rune::compose::Compositor<Ui> for WindowCompositor {
     fn features(&self) -> wgpu::Features {
-        // The Sounds sheet's HUD, and one device shared with the HUD overlay.
+        // One device shared with the HUD overlay.
         crate::rune_hud::Painter::FEATURES
     }
 
@@ -330,7 +329,6 @@ impl rune::compose::Compositor<Ui> for WindowCompositor {
         } else {
             f.draw_ui();
         }
-        self.sounds.render(f);
         onboarding_kit::live::frame_drawn();
     }
 }
@@ -686,7 +684,6 @@ pub(crate) struct Ui {
     /// When a text field last changed without being saved.
     draft_since: Option<Instant>,
     duck_volume_drag: Option<f32>,
-    sound_volume_drag: Option<f32>,
     models: models::Models,
     history: history::HistoryPane,
     /// Labs › Transcribe dropped audio: the drop target, its queue, and the
@@ -705,6 +702,8 @@ pub(crate) struct Ui {
     found: found::FoundState,
     explainer: explainer::Explainer,
     sound_sets: sound_sets::SoundSets,
+    /// Meetings › Settings' Calls sheet and the calls Hex has seen.
+    calls: calls::Calls,
     tour: Option<onboarding::Tour>,
     /// The new first run over the tour (Labs).
     first_run: Option<onboarding_kit::Onboard>,
@@ -732,6 +731,7 @@ struct Drafts {
     vocabulary: bool,
     phrase: bool,
     stop_phrase: bool,
+    signature: bool,
 }
 
 impl Ui {
@@ -821,7 +821,6 @@ impl Ui {
             preparing: None,
             draft_since: None,
             duck_volume_drag: None,
-            sound_volume_drag: None,
             models: models::Models::default(),
             history: history::HistoryPane::default(),
             drop: drop_transcribe::DropTranscribe::default(),
@@ -835,6 +834,7 @@ impl Ui {
             found: found::FoundState::default(),
             explainer: explainer::Explainer::default(),
             sound_sets: sound_sets::SoundSets::default(),
+            calls: calls::Calls::default(),
             tour: None,
             first_run: None,
             platform: platform::PlatformState::new(platform::Capabilities::current()),
@@ -907,14 +907,7 @@ impl Ui {
         if candidate.vocabulary != submitted.vocabulary {
             self.vocabulary.reload(&candidate.vocabulary);
         }
-        self.lab_store.rebase_phrase(
-            &submitted.labs.voice_prompt_phrase,
-            &candidate.labs.voice_prompt_phrase,
-        );
-        self.lab_store.rebase_stop_phrase(
-            &submitted.labs.stop_phrase_text,
-            &candidate.labs.stop_phrase_text,
-        );
+        self.lab_store.rebase_labs(&submitted.labs, &candidate.labs);
         self.settings = candidate;
         self.modes.committed(&self.settings);
         self.draft_since = None;
@@ -937,6 +930,7 @@ impl Ui {
         candidate.vocabulary = self.vocabulary.project();
         self.lab_store.project_phrase(&mut candidate);
         self.lab_store.project_stop_phrase(&mut candidate);
+        self.lab_store.project_signature(&mut candidate);
         candidate
     }
 
@@ -950,6 +944,7 @@ impl Ui {
             vocabulary: self.vocabulary.project() != settings.vocabulary,
             phrase: self.lab_store.phrase_dirty(settings),
             stop_phrase: self.lab_store.stop_phrase_dirty(settings),
+            signature: self.lab_store.signature_dirty(settings),
         }
     }
 
@@ -1128,33 +1123,15 @@ impl Ui {
             if !drafts.vocabulary && service.vocabulary != self.settings.vocabulary {
                 self.vocabulary.reload(&service.vocabulary);
             }
-            // Only a saved phrase that actually changed may reset the field,
-            // so any other external save leaves its focus and caret alone. A
-            // lab toggled elsewhere resyncs it, dropping a stale draft.
-            if service.labs.voice_prompt != self.settings.labs.voice_prompt {
-                self.lab_store
-                    .sync_phrase(&service.labs.voice_prompt_phrase);
-            } else if !drafts.phrase
-                && service.labs.voice_prompt_phrase != self.settings.labs.voice_prompt_phrase
-            {
-                self.lab_store.rebase_phrase(
-                    &self.settings.labs.voice_prompt_phrase,
-                    &service.labs.voice_prompt_phrase,
-                );
-            }
-            // Stop phrase's field follows its lab and its saved phrase the
-            // same way.
-            if service.labs.stop_phrase != self.settings.labs.stop_phrase {
-                self.lab_store
-                    .sync_stop_phrase(&service.labs.stop_phrase_text);
-            } else if !drafts.stop_phrase
-                && service.labs.stop_phrase_text != self.settings.labs.stop_phrase_text
-            {
-                self.lab_store.rebase_stop_phrase(
-                    &self.settings.labs.stop_phrase_text,
-                    &service.labs.stop_phrase_text,
-                );
-            }
+            // A lab field follows its lab and its saved text: only a saved
+            // text that actually changed may reset the field, so any other
+            // external save leaves its focus and caret alone. A lab toggled
+            // elsewhere resyncs it, dropping a stale draft.
+            self.lab_store.follow_saved(
+                &self.settings.labs,
+                &service.labs,
+                (drafts.phrase, drafts.stop_phrase, drafts.signature),
+            );
             self.settings = service.clone();
             self.settings_changed();
         }
@@ -1180,6 +1157,7 @@ impl Ui {
         picker::close(self);
         explainer::close(self);
         sound_sets::close(self);
+        calls::close(self);
         vocabulary::close(self);
         history::close_stats(self);
     }
@@ -1257,6 +1235,7 @@ fn on_key(ui: &mut Ui, event: &rune::KeyEvent, tx: &mut Tx) -> bool {
         && !ui.picker.open
         && !ui.explainer.open
         && !ui.sound_sets.open
+        && !ui.calls.open
         && !ui.vocabulary.open
         && !ui.history.stats_open
         && ui.tour.is_none()
@@ -1281,6 +1260,14 @@ fn on_key(ui: &mut Ui, event: &rune::KeyEvent, tx: &mut Tx) -> bool {
         true
     } else if ui.sound_sets.open {
         sound_sets::close(ui);
+        true
+    } else if ui.calls.open {
+        // A row's open menu closes first.
+        if matches!(ui.open, Some(Menu::Call(_))) {
+            ui.open = None;
+        } else {
+            calls::close(ui);
+        }
         true
     } else if ui.vocabulary.open {
         vocabulary::close(ui);
@@ -1477,7 +1464,8 @@ fn poll(ui: &mut Ui, clock: f64, tx: &mut Tx) -> bool {
     changed |= general::poll_level(ui, clock, tx);
     let visible = ui.window.as_ref().is_none_or(rune::AppHandle::is_visible);
     changed |= explainer::poll(ui, clock, visible, tx);
-    changed |= sound_sets::poll(ui, clock, visible, tx);
+    changed |= sound_sets::poll(ui, clock, tx);
+    changed |= calls::poll(ui, clock, visible);
     changed | settings::advance_capture(ui, clock, tx)
 }
 
@@ -1515,7 +1503,10 @@ fn view(ui: &Ui, cx: &mut Cx<Ui>) -> El {
     let (actions, body) = match ui.pane {
         _ if ui.labs_open => (vec![labs::tabs(ui, p)], labs::page(ui, p, cx, &mut layer)),
         Pane::General => (Vec::new(), general::pane(ui, p, &mut layer)),
-        Pane::Output => (Vec::new(), output::pane(ui, p, cx.is_reduced_motion())),
+        Pane::Output => (
+            Vec::new(),
+            output::pane(ui, p, cx.is_reduced_motion(), &mut layer),
+        ),
         Pane::Modes => modes::pane(ui, p, &mut layer),
         Pane::History => history::pane(ui, p, cx, &mut layer),
         #[cfg(hex_capture)]
@@ -1578,6 +1569,9 @@ fn view(ui: &Ui, cx: &mut Cx<Ui>) -> El {
         layer.extend(modal);
     }
     if let Some(modal) = vocabulary::modal(ui, p) {
+        layer.extend(modal);
+    }
+    if let Some(modal) = calls::modal(ui, p) {
         layer.extend(modal);
     }
     if let Some(first_run) = onboarding_kit::live::overlay(ui, p, cx.is_reduced_motion()) {

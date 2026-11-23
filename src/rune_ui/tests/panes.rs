@@ -64,7 +64,7 @@ fn settings_rows_follow_each_os() {
         "toggle-listening",
         "enable-on-launch",
         "meetings-enabled",
-        "detected-calls",
+        "calls",
         "hex-mic-driver",
         "command-model-notice",
     ] {
@@ -415,6 +415,7 @@ fn contributed_options_are_labs_toggles_off_by_default() {
         "lab-mouse-shortcuts",
         "lab-pause-browser",
         "lab-keep-on-clipboard",
+        "lab-signature",
         "lab-copy-only",
         "lab-return-to-app",
         "lab-spoken-formatting",
@@ -449,6 +450,9 @@ fn contributed_options_are_labs_toggles_off_by_default() {
     assert!(!rt.state.settings.labs.keep_on_clipboard);
     tap(&mut rt, "lab-keep-on-clipboard");
     assert!(rt.state.settings.labs.keep_on_clipboard);
+    assert!(!rt.state.settings.labs.signature);
+    tap(&mut rt, "lab-signature");
+    assert!(rt.state.settings.labs.signature);
     assert!(!rt.state.settings.labs.copy_only);
     tap(&mut rt, "lab-copy-only");
     assert!(rt.state.settings.labs.copy_only);
@@ -470,6 +474,7 @@ fn contributed_options_are_labs_toggles_off_by_default() {
     open_labs(&mut rt);
     assert!(rt.find("lab-mouse-shortcuts").is_none(), "macOS only");
     assert!(rt.find("lab-keep-on-clipboard").is_some(), "every OS");
+    assert!(rt.find("lab-signature").is_some(), "every OS");
     assert!(rt.find("lab-copy-only").is_some(), "macOS and Windows");
     assert!(rt.find("lab-spoken-formatting").is_some(), "every OS");
     assert!(rt.find("lab-filler-words").is_some(), "every OS");
@@ -577,7 +582,7 @@ fn keep_audio_shows_with_meetings_and_saves_its_window() {
     );
 }
 
-/// Export's two switches and Detected calls' Stop when the call ends save
+/// Export's two switches and the Calls sheet's Stop when the call ends save
 /// their meeting settings; the Stop row names the grace it waits.
 #[test]
 fn meeting_export_and_stop_when_call_ends_save_their_settings() {
@@ -590,16 +595,17 @@ fn meeting_export_and_stop_when_call_ends_save_their_settings() {
     assert!(rt.state.settings.meetings.export.descriptive_filenames);
     tap(&mut rt, "meeting-notes-file");
     assert!(rt.state.settings.meetings.export.notes_file);
+    // Slack huddles record automatically, so the sheet offers Stop.
+    tap(&mut rt, "calls");
     tap(&mut rt, "meeting-stop-when-call-ends");
     assert!(rt.state.settings.meetings.stop_when_call_ends);
     let grace = format!(
-        " {} s ",
+        "{} seconds after",
         crate::meeting::detection::AUTO_STOP_GRACE.as_secs()
     );
     assert!(
-        super::super::platform_settings::STOP_WHEN_CALL_ENDS_CAPTION.contains(&grace),
-        "{}",
-        super::super::platform_settings::STOP_WHEN_CALL_ENDS_CAPTION
+        texts(&rt).iter().any(|text| text.starts_with(&grace)),
+        "the Stop row names its {grace}"
     );
 }
 
@@ -1383,33 +1389,50 @@ fn meetings_settings_save_and_ask_for_system_audio() {
     refresh(&mut rt);
     tap(&mut rt, "meeting-system-audio-allow");
     assert_eq!(asked(&rt), [PlatformRequest::SystemAudio]);
-    use crate::app_settings::MeetingPolicy;
-    let policy = |rt: &Runtime<Ui>, key: &str| {
-        rt.state
-            .settings
-            .meetings
-            .providers
-            .iter()
-            .find(|choice| choice.key == key)
-            .map(|choice| choice.policy)
-    };
-    // Known services first (Zoom is second), then the sites and apps chosen for.
-    pick(&mut rt, "call1-policy", 1);
-    assert_eq!(
-        policy(&rt, "us.zoom.xos"),
-        Some(MeetingPolicy::AlwaysRecord)
-    );
-    let chosen = format!(
-        "call{}",
-        crate::app_settings::known_meeting_providers().count()
-    );
-    pick(&mut rt, &format!("{chosen}-policy"), 0);
-    assert_eq!(policy(&rt, "example.com"), Some(MeetingPolicy::Ask));
-    assert!(rt.find(&chosen).is_some());
     tap(&mut rt, "meetings-enabled");
     assert!(!rt.state.settings.meetings.enabled);
     assert!(rt.find("meeting-folder").is_none());
+    assert!(rt.find("calls").is_none());
     assert!(rt.find("meetings-enabled").is_some(), "the opt-in remains");
+}
+
+/// The Calls row opens the sheet; its radios set the answer every call
+/// gets, and each row's menu gives one app or website its own.
+#[test]
+fn the_calls_sheet_saves_the_default_and_each_answer() {
+    use crate::app_settings::MeetingPolicy;
+    let mut rt = runtime("meetings-settings", true, (980.0, 2400.0));
+    let policy = |rt: &Runtime<Ui>, key: &str| rt.state.settings.meetings.policy_for(key);
+    assert_eq!(
+        a11y_value(&rt, "calls-control").as_deref(),
+        Some("Ask each time")
+    );
+    tap(&mut rt, "calls");
+    assert!(rt.state.calls.open);
+    // Seen calls newest first (Slack, Zoom, Google Meet, a website), then
+    // the saved answer Hex hasn't seen a call in.
+    pick(&mut rt, "call1-policy", 1);
+    assert_eq!(policy(&rt, "us.zoom.xos"), MeetingPolicy::AlwaysRecord);
+    pick(&mut rt, "call4-policy", 0);
+    assert_eq!(policy(&rt, "example.com"), MeetingPolicy::Ask);
+    assert!(rt.find("call4").is_some(), "a saved answer stays listed");
+    // A new default carries the calls that followed the old one.
+    tap(&mut rt, "default-never");
+    let meetings = &rt.state.settings.meetings;
+    assert_eq!(meetings.default_policy, MeetingPolicy::NeverOffer);
+    assert_eq!(policy(&rt, "meet.google.com"), MeetingPolicy::NeverOffer);
+    assert_eq!(policy(&rt, "example.com"), MeetingPolicy::NeverOffer);
+    assert_eq!(policy(&rt, "us.zoom.xos"), MeetingPolicy::AlwaysRecord);
+    tap(&mut rt, "close-calls");
+    assert!(!rt.state.calls.open);
+}
+
+/// Before Hex has seen a call, the sheet says where they'll come from.
+#[test]
+fn an_empty_calls_sheet_says_what_fills_it() {
+    let rt = runtime("meetings-calls-empty", true, (980.0, 2400.0));
+    assert!(rt.find("calls-empty").is_some());
+    assert!(rt.find("call0").is_none());
 }
 
 #[test]
@@ -1997,6 +2020,9 @@ fn platform_goldens() {
     check_golden("meetings-delete", false, PANE_SIZE);
     check_golden("meetings-rename", true, PANE_SIZE);
     check_golden("meetings-empty", false, PANE_SIZE);
+    check_golden("meetings-calls", true, PANE_SIZE);
+    check_golden("meetings-calls", false, PANE_SIZE);
+    check_golden("meetings-calls-empty", true, PANE_SIZE);
 }
 
 #[test]
@@ -2091,16 +2117,27 @@ fn voice_filter_sliders_set_the_filter_from_the_pointer() {
 
 #[test]
 fn sound_volume_slider_sets_the_level_and_zero_turns_tones_off() {
-    let mut rt = runtime("mac-settings-advanced", true, (980.0, 1500.0));
+    let mut rt = runtime("sound-sets", true, (980.0, 1500.0));
     let (x, y) = rt.find("sound-volume-slider/track").unwrap();
-    rt.pointer_down(x + 75.0, y);
-    rt.pointer_up(x + 75.0, y);
+    // A press between steps lands on one: the volume moves in 5% steps.
+    rt.pointer_down(x + 12.0, y);
+    rt.pointer_up(x + 12.0, y);
+    settle(&mut rt);
+    let volume = rt.state.settings.sound_effect_volume;
+    assert!(volume > 0.5 && volume < 0.7, "{volume}");
+    assert!(
+        ((volume * 20.0).round() - volume * 20.0).abs() < 1e-4,
+        "{volume}"
+    );
+
+    rt.pointer_down(x + 99.0, y);
+    rt.pointer_up(x + 99.0, y);
     settle(&mut rt);
     assert!(rt.state.settings.sound_effects);
     assert_eq!(rt.state.settings.sound_effect_volume, 1.0);
 
-    rt.pointer_down(x - 75.0, y);
-    rt.pointer_up(x - 75.0, y);
+    rt.pointer_down(x - 99.0, y);
+    rt.pointer_up(x - 99.0, y);
     settle(&mut rt);
     assert!(!rt.state.settings.sound_effects);
     assert_eq!(
@@ -2520,6 +2557,57 @@ fn stop_phrase_shows_its_phrase_on_its_card_while_on() {
 }
 
 #[test]
+fn signature_shows_its_line_on_its_card_while_on() {
+    use crate::labs::Feature;
+    let mut rt = runtime("mac-labs", true, (980.0, 4000.0));
+    rt.update(|ui, _| ui.lab_store.group = Some(Feature::Signature.group()));
+    settle(&mut rt);
+    assert!(rt.find("signature-text").is_none(), "hidden while off");
+    tap(&mut rt, "lab-signature");
+    assert!(rt.state.settings.labs.signature);
+    assert!(rt.find("signature-text").is_some());
+    assert_eq!(
+        rt.state.lab_store.signature.text,
+        crate::dictation::signature::DEFAULT_TEXT,
+        "the field starts at the saved line"
+    );
+
+    // A draft that fails validation stays in the field, says why, and leaves
+    // the saved line working.
+    let saved = rt.state.settings.labs.signature_text.clone();
+    let too_long = "x".repeat(crate::dictation::signature::MAX_CHARS + 1);
+    rt.update(|ui, _| ui.lab_store.signature = rune::TextEdit::new(too_long));
+    rt.state.flush_drafts();
+    assert_eq!(rt.state.settings.labs.signature_text, saved);
+    refresh(&mut rt);
+    assert!(rt.find("signature-text-error").is_some());
+
+    // A valid draft saves, and an empty one saves too (it appends nothing).
+    rt.update(|ui, _| {
+        ui.lab_store.signature = rune::TextEdit::new("Dax, from Hex".to_string());
+    });
+    rt.state.flush_drafts();
+    assert_eq!(rt.state.settings.labs.signature_text, "Dax, from Hex");
+    refresh(&mut rt);
+    assert!(rt.find("signature-text-error").is_none());
+    rt.update(|ui, _| ui.lab_store.signature = rune::TextEdit::new(String::new()));
+    rt.state.flush_drafts();
+    assert!(rt.state.settings.labs.signature_text.is_empty());
+
+    // A line saved elsewhere updates the field.
+    let mut external = rt.state.settings.clone();
+    external.labs.signature_text = "Sent from Dax".to_string();
+    assert!(rt.state.adopt(external));
+    refresh(&mut rt);
+    assert_eq!(rt.state.lab_store.signature.text, "Sent from Dax");
+
+    // The field leaves with its lab.
+    tap(&mut rt, "lab-signature");
+    assert!(!rt.state.settings.labs.signature);
+    assert!(rt.find("signature-text").is_none());
+}
+
+#[test]
 fn a_labs_card_shows_its_description_and_its_switch_turns_it_on() {
     use crate::labs::Feature;
     let mut rt = runtime("mac-labs", true, (980.0, 2000.0));
@@ -2632,6 +2720,53 @@ fn caps_lock_light_shows_its_choices_on_its_card_while_on() {
     tap(&mut rt, "lab-caps-lock-dictation");
     assert!(rt.state.settings.labs.caps_lock_dictation);
     assert!(rt.find("caps-lock-light").is_some());
+}
+
+#[test]
+fn dictation_style_shows_its_choices_on_its_card_while_on() {
+    let mut rt = runtime("mac-labs", true, (980.0, 4000.0));
+    rt.update(|ui, _| {
+        ui.lab_store.group = Some(crate::labs::Feature::DictationStyle.group());
+        ui.lab_store.search = rune::TextEdit::new("Dictation style".to_owned());
+    });
+    settle(&mut rt);
+    assert!(
+        rt.find("dictation-style-choice-trigger").is_none(),
+        "hidden while off"
+    );
+    assert_eq!(
+        rt.state.settings.labs.dictation_style_choice,
+        crate::app_settings::DictationStyle::Polished
+    );
+    tap(&mut rt, "lab-dictation-style");
+    assert!(rt.state.settings.labs.dictation_style);
+    assert!(rt.find("dictation-style-choice-trigger").is_some());
+    tap(&mut rt, "dictation-style-choice-trigger");
+    tap(&mut rt, "option2");
+    assert_eq!(
+        rt.state.settings.labs.dictation_style_choice,
+        crate::app_settings::DictationStyle::Notes
+    );
+}
+
+#[test]
+fn output_shows_the_style_row_while_its_lab_is_on() {
+    let mut rt = runtime("output", true, (980.0, 4000.0));
+    settle(&mut rt);
+    assert!(rt.find("dictation-style-row").is_none(), "hidden while off");
+    rt.update(|ui, _| ui.settings.labs.dictation_style = true);
+    refresh(&mut rt);
+    assert!(rt.find("dictation-style-row").is_some());
+    assert_eq!(
+        rt.state.settings.labs.dictation_style_choice,
+        crate::app_settings::DictationStyle::Polished
+    );
+    tap(&mut rt, "dictation-style-choice-field-trigger");
+    tap(&mut rt, "dictation-style-choice-item3");
+    assert_eq!(
+        rt.state.settings.labs.dictation_style_choice,
+        crate::app_settings::DictationStyle::Verbatim
+    );
 }
 
 #[test]

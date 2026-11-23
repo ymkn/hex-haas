@@ -754,6 +754,8 @@ fn offline_model(command: ModelCommand) -> u8 {
     use crate::transcription::models::{definition, is_installed, is_verified, model_path};
     report((|| match command {
         ModelCommand::Status { model, language } => {
+            // Found catalog files count as installed, as `hex model list` says.
+            let _ = crate::transcription::found_models::scan();
             let selection = selection(model, language)?;
             let model = definition(selection.model);
             let installed = is_installed(model, &selection.language);
@@ -1458,6 +1460,26 @@ mod tests {
         assert!(text.ends_with("Labs         none\n"));
         report.labs = vec!["live-text".into(), "meetings".into()];
         assert!(human_status(&report).ends_with("Labs         live-text, meetings\n"));
+    }
+
+    #[test]
+    fn status_reads_the_speech_backend() {
+        let mut report = StatusReport::default();
+        report.model.backend = Some(crate::transcription::SpeechBackend {
+            kind: "vulkan".into(),
+            device: "AMD Radeon RX 9060 XT".into(),
+            crash_fallback: false,
+        });
+        assert!(human_status(&report).contains("Speech       Vulkan — AMD Radeon RX 9060 XT\n"));
+        report.model.backend = Some(crate::transcription::SpeechBackend {
+            kind: "cpu".into(),
+            device: "CPU".into(),
+            crash_fallback: true,
+        });
+        assert!(human_status(&report).contains("Speech       CPU (GPU start crashed twice)\n"));
+        // A stopped or unloaded model reports no device, so the line goes.
+        report.model.backend = None;
+        assert!(!human_status(&report).contains("Speech       "));
     }
 
     #[test]

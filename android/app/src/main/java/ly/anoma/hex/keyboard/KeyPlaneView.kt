@@ -18,12 +18,14 @@ import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
+import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import androidx.core.view.children
 import androidx.emoji2.emojipicker.EmojiPickerView
 import ly.anoma.hex.R
 import ly.anoma.hex.typing.KeyGrid
@@ -111,6 +113,7 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
         addView(bottom, LayoutParams(LayoutParams.MATCH_PARENT, rowHeight + bottomExtra))
         modeKey = caps.cap(context.getString(R.string.keyboard_numbers_label), context.getString(R.string.keyboard_numbers),
             modifier, 17f, ime.engine::mode)
+        modeKey.textEntry = false
         // ?123 switches pages as it goes down, as Gboard's; a slide onto a key types it and comes back.
         modeKey.setOnTouchListener { v, e ->
             when (e.actionMasked) {
@@ -134,6 +137,7 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
             text = context.getString(R.string.keyboard_pad_label); textSize = 13f; useInter(500); setTextColor(ink)
             gravity = Gravity.CENTER; includeFontPadding = false; setLineSpacing(0f, 0.9f); visibility = GONE
         }, FrameLayout.LayoutParams(-1, -1))
+        emojiKey.textEntry = false
         typesOnLift(emojiKey, preview = { null }, holds = { emptyList() }, type = { emojiKey.performClick() })
         spaceKey = caps.cap("", context.getString(R.string.keyboard_space), caps.key, 14f) {
             ime.engine.space(spacePoint, if (current?.symbols == false) geometry() else null); spacePoint = null
@@ -173,6 +177,10 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
         }
         period = caps.cap(".", context.getString(R.string.keyboard_period), modifier) { ime.engine.type(".") }
         // Held on the letters page, period offers Gboard's punctuation; on the symbol pages an ellipsis.
+        period.setOnLongClickListener {
+            host.openAccents(if (current?.symbols == false) LetterFeedback.periodHolds.flatten() else LetterFeedback.symbolHolds('.'), it); true
+        }
+        period.longClickLabel = context.getString(R.string.keyboard_more_characters)
         typesOnLift(period, preview = { null },
             holds = { if (current?.symbols == false) LetterFeedback.periodHolds else listOf(LetterFeedback.symbolHolds('.')) },
             default = { if (current?.symbols == false) LetterFeedback.PERIOD_DEFAULT else 0 },
@@ -180,6 +188,7 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
         bottomSlides[period] = { ime.engine.type(".") }
         enterKey = caps.cap("", context.getString(R.string.keyboard_return), modifier, 17f, ime.engine::enter)
         enterKey.sound = AudioManager.FX_KEYPRESS_RETURN
+        enterKey.textEntry = false
         typesOnLift(enterKey, preview = { null }, holds = { emptyList() }, type = { enterKey.performClick() })
         enterIcon.setImageResource(R.drawable.ic_enter)
         enterIcon.imageTintList = ColorStateList.valueOf(ink)
@@ -190,6 +199,7 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
         // Gboard's emoji panel ends with ABC and delete; Hex puts a space bar between them.
         val letters = caps.cap(context.getString(R.string.keyboard_letters_label), context.getString(R.string.keyboard_letters),
             modifier, 17f) { host.closeEmoji(); ime.engine.letters() }
+        letters.textEntry = false
         typesOnLift(letters, preview = { null }, holds = { emptyList() }, type = { letters.performClick() })
         val emojiSpace = caps.cap("", context.getString(R.string.keyboard_space), caps.key, 14f) { ime.engine.space() }
         emojiSpace.sound = AudioManager.FX_KEYPRESS_SPACEBAR
@@ -205,9 +215,13 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
 
     fun showPage(page: KeyboardPage) {
         val shown = current
-        if (shown != null && !page.symbols && page.copy(shifted = shown.shifted, locked = shown.locked) == shown) {
-            current = page; relabel(page); return
+        // Shift only recases the letters and changes nothing on the symbol pages: neither draws the keys again,
+        // which would drop a key a second finger is already on (typing the first of a sentence turns shift off).
+        if (shown != null && page.copy(shifted = shown.shifted, locked = shown.locked) == shown) {
+            current = page; if (!page.symbols) relabel(page); return
         }
+        // Another kind of field in the same box (the app changed its type): the keys, not the emoji panel over them.
+        if (emojiOpen) host.closeEmoji()
         current = page
         clearCallout(); endSlide(); grid = null; letters.clear(); caseKeys.clear(); slides.clear(); shiftIcon = null
         rows.removeAllViews()
@@ -227,7 +241,7 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
             val width = if (index < 2) 1f else (columns - 2 * side) / line.length
             if (index == 2) {
                 val switch = if (symbols) caps.cap(context.getString(if (page.more) R.string.keyboard_page_numbers else R.string.keyboard_page_symbols),
-                    context.getString(R.string.keyboard_more_symbols), modifier, 15f, ime.engine::shiftUp)
+                    context.getString(R.string.keyboard_more_symbols), modifier, 15f, ime.engine::shiftUp).also { it.textEntry = false }
                 else caps.icon(shiftIconFor(page), shiftDescription(page), modifier, { ime.engine.shiftDown(); ime.engine.shiftUp() }).also { key ->
                     shiftIcon = key.face.getChildAt(0) as ImageView
                     // Shift acts as it goes down and again as it lifts: a chord types capitals, and a slide
@@ -263,7 +277,10 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
                 val digit = if (symbols) null else KeyboardLetters.digit(index, position)
                 k.hint(digit?.toString())
                 fun holds() = if (symbols) LetterFeedback.symbolHolds(c) else LetterFeedback.holds(cased(c).single(), language.layoutCode, digit)
-                if (holds().isNotEmpty()) k.setOnLongClickListener { host.openAccents(holds()); true }
+                if (holds().isNotEmpty()) {
+                    k.setOnLongClickListener { host.openAccents(holds(), it); true }
+                    k.longClickLabel = context.getString(R.string.keyboard_more_characters)
+                }
                 slides[k] = { p ->
                     val g = if (symbols) null else geometry()
                     if (g != null) ime.engine.letter(cased(c), p.x, p.y, g) else ime.engine.type(cased(c))
@@ -335,8 +352,7 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
             PadAction.Enter -> (page.enter.label?.let { caps.cap(it, it, fill, 17f, ime.engine::enter) }
                 ?: caps.icon(actionIcon(page.enter.action), actionLabel(page.enter.action) ?: context.getString(R.string.keyboard_return),
                     fill, ime.engine::enter)).also { it.sound = AudioManager.FX_KEYPRESS_RETURN }
-            else -> caps.cap(label, if (key.action is PadAction.Go && key.word == 0) context.getString(R.string.keyboard_phone_symbols) else label,
-                fill, when { key.word != 0 -> 17f; label.length > 1 -> 21f; else -> 26f }) { act(key.action) }
+            else -> caps.cap(label, padDescription(key, label), fill, when { key.word != 0 -> 17f; label.length > 1 -> 21f; else -> 26f }) { act(key.action) }
         }
         // A phone digit's letters beside it, small and quiet, as Gboard's.
         key.letters?.let { letters ->
@@ -346,9 +362,21 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
                 setSpan(Centred, label.length, length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
             }
         }
+        k.textEntry = key.action is PadAction.Text || key.action == PadAction.Space
+        key.hold?.let { held ->
+            k.setOnLongClickListener { ime.engine.type(held); true }
+            k.longClickLabel = context.getString(R.string.keyboard_type_held, held)
+        }
         typesOnLift(k, preview = { null }, holds = { key.hold?.let { listOf(listOf(it)) } ?: emptyList() },
             type = { option -> if (option != null) ime.engine.type(option) else k.performClick() })
         return k
+    }
+    // What TalkBack calls a pad's switches; other keys are their own label.
+    private fun padDescription(key: PadKey, label: String) = when (val action = key.action) {
+        is PadAction.Go -> context.getString(if (action.pad == Pad.PhoneSymbols) R.string.keyboard_phone_symbols else R.string.keyboard_phone_keypad)
+        PadAction.Letters -> context.getString(R.string.keyboard_letters)
+        PadAction.SymbolsPage -> context.getString(R.string.keyboard_symbols)
+        else -> label
     }
     /** Small letters beside a big digit sit at its middle, not on its baseline. */
     private object Centred : MetricAffectingSpan() {
@@ -440,9 +468,9 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
 
     /** The emoji panel opens in place of the letter rows and the strip above them ([extra]), and grows as
      * Gboard's does (124 dp above the keys), as long as the keyboard stays within 60% of the screen (two
-     * thirds turned). A new
-     * picker each time: it reads its recents and skin tones as it starts (its own preferences, on this
-     * device), and only refreshes them later once its Recently used row scrolls away. */
+     * thirds turned). One picker for the keys' life, hidden while closed: a new one per opening was never
+     * collected (its emoji are drawn into bitmaps, about 5 MB a panel). Each opening hands it the recents
+     * again, which redraws its Recently used row, and starts it at the top, as a new picker did. */
     fun openEmoji(extra: Int) {
         cancelGestures()
         val keyboard = height + extra // the keys' and the strip's height as they are
@@ -450,22 +478,25 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
         val share = if (landscape) 0.67f else 0.6f
         val grow = minOf(px(KeyboardMetrics.EMOJI_GROW), (resources.displayMetrics.heightPixels * share).toInt() - keyboard).coerceAtLeast(0)
         val height = 3 * rowHeight + reach + extra + grow
-        picker?.let(::removeView)
-        val p = EmojiPickerView(ContextThemeWrapper(context, R.style.HexEmoji))
-        p.setOnEmojiPickedListener { item ->
-            // Gboard's tap as an emoji is chosen; the picker's own view plays the click.
-            if (vibrates(context, ime.feedback.haptics)) p.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-            ime.engine.type(item.emoji)
+        val p = picker?.also { it.setRecentEmojiProvider(recents); it.post { it.toTop() } } ?: EmojiPickerView(ContextThemeWrapper(context, R.style.HexEmoji)).also { p ->
+            p.setRecentEmojiProvider(recents)
+            p.setOnEmojiPickedListener { item ->
+                // Gboard's tap as an emoji is chosen; the picker's own view plays the click.
+                if (vibrates(context, ime.feedback.haptics)) p.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                ime.engine.type(item.emoji)
+            }
+            picker = p; addView(p, 0, LayoutParams(LayoutParams.MATCH_PARENT, height))
         }
-        picker = p; addView(p, 0, LayoutParams(LayoutParams.MATCH_PARENT, height))
-        // Square cells about Gboard's size: nine across in portrait, more when turned. The picker sizes its rows
-        // from what its grid has left after two category titles.
-        val cell = if (landscape) KeyboardMetrics.EMOJI_CELL_LANDSCAPE else KeyboardMetrics.EMOJI_CELL
-        val columns = maxOf(9, (resources.displayMetrics.widthPixels / (cell * density)).toInt())
-        p.emojiGridColumns = columns
-        p.emojiGridRows = ((height - (KeyboardMetrics.EMOJI_HEADER + 2 * KeyboardMetrics.EMOJI_TITLE) * density) /
-            (resources.displayMetrics.widthPixels.toFloat() / columns)).coerceAtLeast(1f)
-        p.layoutParams.height = height
+        if (pickerSized != height) {
+            // Square cells about Gboard's size: nine across in portrait, more when turned. The picker sizes its rows
+            // from what its grid has left after two category titles.
+            val cell = if (landscape) KeyboardMetrics.EMOJI_CELL_LANDSCAPE else KeyboardMetrics.EMOJI_CELL
+            val columns = maxOf(9, (resources.displayMetrics.widthPixels / (cell * density)).toInt())
+            p.emojiGridColumns = columns
+            p.emojiGridRows = ((height - (KeyboardMetrics.EMOJI_HEADER + 2 * KeyboardMetrics.EMOJI_TITLE) * density) /
+                (resources.displayMetrics.widthPixels.toFloat() / columns)).coerceAtLeast(1f)
+            p.layoutParams.height = height; p.requestLayout(); pickerSized = height
+        }
         rows.visibility = GONE; bottom.visibility = GONE
         p.visibility = VISIBLE; emojiBottom.visibility = VISIBLE
         emojiOpen = true
@@ -473,9 +504,19 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
     fun closeEmoji() {
         if (!emojiOpen) return
         cancelGestures()
-        picker?.let(::removeView); picker = null; emojiBottom.visibility = GONE
+        picker?.visibility = GONE; emojiBottom.visibility = GONE
         rows.visibility = VISIBLE; bottom.visibility = VISIBLE
         emojiOpen = false
+    }
+    private val recents by lazy { RecentEmoji(context) }
+    private var pickerSized = 0
+    /** The picker back at Recently used: its tab for them (the icon's clickable item), tapped. */
+    private fun EmojiPickerView.toTop() {
+        val name = context.getString(R.string.emoji_category_recent)
+        fun tab(v: View): View? = if (v.contentDescription == name) v else (v as? ViewGroup)?.children?.firstNotNullOfOrNull(::tab)
+        var item = tab(this)
+        while (item != null && !item.isClickable) item = item.parent as? View
+        item?.performClick()
     }
 
     /** Touches for a key that types as it lifts: pressed, its pop-up, after [KeyboardMetrics.HOLD_MS] its held
@@ -554,7 +595,10 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
     }
 
     private fun shiftIconFor(page: KeyboardPage) = when { page.locked -> R.drawable.ic_caps_lock; page.shifted -> R.drawable.ic_shift_on; else -> R.drawable.ic_shift }
-    private fun shiftDescription(page: KeyboardPage) = context.getString(if (page.locked) R.string.keyboard_caps_lock else R.string.keyboard_shift)
+    // As Gboard's: "Shift", "Shift enabled", "Caps lock enabled".
+    private fun shiftDescription(page: KeyboardPage) = context.getString(when {
+        page.locked -> R.string.keyboard_caps_lock_on; page.shifted -> R.string.keyboard_shift_on; else -> R.string.keyboard_shift
+    })
     /** Shift changed and nothing else: new labels on the same keys. */
     private fun relabel(page: KeyboardPage) {
         for ((c, key) in caseKeys) { val text = cased(c); key.label?.text = text; key.contentDescription = text }
@@ -609,11 +653,13 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
     }
     private fun geometry(): KeyGrid? {
         grid?.let { return it }
-        val q = letters['q'] ?: return null; val w = letters['w'] ?: return null
-        if (q.width == 0 || w.left == q.left) return null
-        val centres = letters.mapValues { (_, cap) -> capCentre(cap) }
-        return KeyGrid(centres, centres.getValue('w').x - centres.getValue('q').x,
-            centres.getValue('a').y - centres.getValue('q').y, spaceRect()).also { grid = it }
+        // The pitch from the layout's own first two keys and the row under them: on AZERTY, q, w and a sit on
+        // other rows (160 x -155 px instead of 107 x 155). The apostrophe is no letter for the touch model.
+        val rows = KeyboardLetters.rows((current ?: return null).language.layoutCode)
+        val first = letters[rows[0][0]] ?: return null; val next = letters[rows[0][1]] ?: return null; val below = letters[rows[1][0]] ?: return null
+        if (first.width == 0 || next.left == first.left) return null
+        val centres = letters.filterKeys { it.isLetter() }.mapValues { (_, cap) -> capCentre(cap) }
+        return KeyGrid(centres, capCentre(next).x - capCentre(first).x, capCentre(below).y - capCentre(first).y, spaceRect()).also { grid = it }
     }
     override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
         super.onLayout(changed, l, t, r, b)
@@ -624,7 +670,9 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
     }
     fun refreshSpace() {
         val next = ime.preferences.options(ime.nextEnglish)
-        spaceKey.contentDescription = context.getString(R.string.keyboard_space_language, next.spoken.label)
+        spaceKey.contentDescription = context.getString(R.string.keyboard_space)
+        spaceKey.longClickLabel = context.getString(R.string.keyboard_space_language_action,
+            if (next.translate) context.getString(R.string.keyboard_space_translate, next.spoken.label) else next.spoken.label)
         spaceKey.label?.text = if (next.translate) context.getString(R.string.keyboard_space_translate, next.spoken.label) else next.spoken.label
         spaceKey.label?.textSize = if (next.translate) 12f else 14f
     }

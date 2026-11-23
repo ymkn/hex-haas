@@ -83,10 +83,15 @@ pub enum Feature {
     VocabularyFiles,
     AnnotateAgentTools,
     AnnotateAgentInstall,
+    Signature,
+    DictationStyle,
+    HudHeight,
+    VoiceIsolation,
+    DictateWhileAnnotating,
 }
 
 impl Feature {
-    pub const ALL: [Self; 78] = [
+    pub const ALL: [Self; 83] = [
         Self::Meetings,
         Self::VoiceFilter,
         Self::Playground,
@@ -165,5 +170,10 @@ impl Feature {
         Self::VocabularyFiles,
         Self::AnnotateAgentTools,
         Self::AnnotateAgentInstall,
+        Self::Signature,
+        Self::DictationStyle,
+        Self::HudHeight,
+        Self::VoiceIsolation,
+        Self::DictateWhileAnnotating,
     ];
 }

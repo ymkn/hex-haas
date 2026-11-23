@@ -82,7 +82,7 @@ struct DictationLanguageRow: View {
             .padding(.horizontal, 16)
             .frame(minHeight: 48)
             if listsOnDeviceLanguages {
-                Text("The languages Apple's on-device speech has on this iPhone. One shows here once its keyboard and dictation are on in Settings › General › Keyboard.")
+                Text("To add a language, turn on its keyboard and dictation in Settings › General › Keyboard.")
                     .font(.system(size: 12))
                     .foregroundStyle(HexTheme.textMuted)
                     .fixedSize(horizontal: false, vertical: true)
@@ -117,7 +117,9 @@ struct DictationLanguageRow: View {
         options = await AppleSpeechLanguages.options()
         refreshLanguageChoices()
         automaticName = await AppleSpeechLanguages.automatic().map {
-            HinglishSettings().name(for: $0.identifier) ?? SpeechLanguagePicker.displayName(for: $0.identifier)
+            HinglishSettings().name(for: $0.identifier)
+                ?? GreeklishSettings().name(for: $0.identifier)
+                ?? SpeechLanguagePicker.displayName(for: $0.identifier)
         }
     }
 
@@ -160,6 +162,7 @@ struct DictationLanguageRow: View {
 
     private func name(for id: String) -> String {
         if let hinglish = HinglishSettings().name(for: id) { return hinglish }
+        if let greeklish = GreeklishSettings().name(for: id) { return greeklish }
         return SpeechLanguagePicker.shortNames(for: options.map(\.id))[id]
             ?? SpeechLanguagePicker.displayName(for: id)
     }
@@ -183,7 +186,7 @@ struct KeyboardLanguagesRow: View {
 
     private var summary: String {
         guard !chosen.isEmpty else {
-            return String(localized: "\(automaticKeyboardLanguage().displayName), like your dictation language")
+            return String(localized: "\(automaticKeyboardLanguage().displayName), same as dictation")
         }
         return chosen.map(\.displayName).joined(separator: ", ")
     }
@@ -243,12 +246,12 @@ struct KeyboardLanguagesPage: View {
 
     var body: some View {
         let onPhone = suggested.filter { !chosen.contains($0) }
-        let others = KeyboardLanguage.allCases.filter { !chosen.contains($0) && !onPhone.contains($0) }
+        let others = KeyboardLanguage.selectable().filter { !chosen.contains($0) && !onPhone.contains($0) }
         List {
             Section {
                 LanguageChoiceRow(
                     title: String(localized: "Automatic"),
-                    detail: String(localized: "\(automatic.displayName), like your dictation language"),
+                    detail: String(localized: "\(automatic.displayName), same as dictation"),
                     isChosen: chosen.isEmpty
                 ) {
                     choose([])
@@ -269,7 +272,7 @@ struct KeyboardLanguagesPage: View {
                     .id(chosen.map(\.rawValue).joined(separator: ","))
                 } footer: {
                     if chosen.count > 1 {
-                        Text("Slide along the space bar right away to switch. Hold it first and the slide moves the cursor.")
+                        Text("Slide the space bar to switch. Hold it first to move the cursor.")
                             .font(.system(size: 12))
                             .foregroundStyle(HexTheme.textMuted)
                     }
@@ -284,7 +287,7 @@ struct KeyboardLanguagesPage: View {
                 } header: {
                     LanguageSectionHeader(title: "Layout")
                 } footer: {
-                    Text("Moves the letters. Accents and autocorrect stay the language's.")
+                    Text("Accents and autocorrect still follow the language.")
                         .font(.system(size: 12))
                         .foregroundStyle(HexTheme.textMuted)
                 }
@@ -346,8 +349,8 @@ struct KeyboardLanguagesPage: View {
     }
 
     /// The languages whose keys the keyboard shows, with more than one layout to pick: each
-    /// chosen one (Automatic's while none is), but only the first of English and Spanish
-    /// together, whose keys both type on (`KeyboardLanguageList.layout`).
+    /// chosen one (Automatic's while none is), but only the first of English and Spanish, or
+    /// English and German, together, whose keys both type on (`KeyboardLanguageList.layout`).
     private var arranged: [KeyboardLanguage] {
         let typing = chosen.isEmpty ? [automatic] : chosen
         var seen = Set<KeyboardLanguage>()

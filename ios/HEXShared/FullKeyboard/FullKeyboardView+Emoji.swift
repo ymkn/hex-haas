@@ -35,7 +35,7 @@ extension FullKeyboardView {
         if let library = emojiLibrary, library.language == language || !EmojiLibrary.languages.contains(language) {
             return library
         }
-        emojiLibrary = EmojiLibrary.load(language: language, bundle: Bundle(for: FullKeyboardView.self))
+        emojiLibrary = EmojiLibrary.bundled(language: language, bundle: Bundle(for: FullKeyboardView.self))
         return emojiLibrary
     }
 
@@ -53,6 +53,7 @@ extension FullKeyboardView {
         guard emojiPanel == nil, !showsRecording else { return }
         let started = CACurrentMediaTime()
         guard let library = loadEmojiLibrary() else { return }
+        engine.commitHangulComposition()
         typingLog?.ui("emoji_open")
         dismissStyleMenu()
         plane.cancelAllTouches()
@@ -103,6 +104,8 @@ extension FullKeyboardView {
     }
 
     func insertEmoji(_ text: String, entry: Int, source: String) {
+        // An emoji ends a Hangul run, whether the keys search emoji first or not.
+        engine.commitHangulComposition()
         if routedTarget.isSearching {
             // The keys type into the search; the emoji goes into the field.
             suspendedTypingLog?.edit("insert", [
@@ -123,6 +126,99 @@ extension FullKeyboardView {
     func recordEmojiUse(_ emoji: String) {
         guard let library = emojiLibrary, let entry = library.entryByEmoji[emoji] else { return }
         makeEmojiUsage().record(library.entries[entry].emoji)
+    }
+
+    // MARK: - Shortcodes (Settings › Experiments; EmojiShortcode)
+
+    /// A shortcode works where the finished word's emoji does: a text field that takes emoji
+    /// (the emoji key shows), with autocorrect on and no secure entry. The emoji search types
+    /// into its own query, so the keys there are not a field's either.
+    var allowsEmojiShortcodes: Bool {
+        engine.target.autocorrectionType != .no && engine.target.isSecureTextEntry != true
+    }
+
+    /// The strip's emoji for the token right before the cursor, or nil (the strip shows what
+    /// it always does) when the experiment is off, the field keeps emoji or autocorrect away,
+    /// no token is being typed, or none matches.
+    func emojiShortcodeSuggestions() -> [KeyboardSuggestion]? {
+        guard emojiShortcodesEnabled, engine.showsEmoji, !routedTarget.isSearching,
+              emojiPanel == nil, allowsEmojiShortcodes,
+              let before = engine.typingContext ?? engine.textBefore,
+              let token = EmojiShortcode.token(before: before) else { return nil }
+        guard let library = loadEmojiLibrary() else { return nil }
+        let usage = makeEmojiUsage()
+        let entries = EmojiShortcode.matches(
+            token: token,
+            library: library,
+            usage: emojiUsageScores(usage, library: library)
+        )
+        guard !entries.isEmpty else { return nil }
+        // The same kind as the finished word's emoji: both are an emoji in a slot, and a tap
+        // tells them apart by the token still before the cursor (`acceptEmojiShortcode`).
+        return entries.map { entry in
+            let emoji = emojiText(entry, library: library, usage: usage)
+            return KeyboardSuggestion(displayText: emoji, replacement: emoji, kind: .emoji)
+        }
+    }
+
+    /// A strip emoji was tapped while a shortcode token is before the cursor: the whole
+    /// ":name" goes, and the emoji is counted like one picked from the panel. False for the
+    /// finished word's own emoji, or a chip that no longer matches the token.
+    @discardableResult
+    func acceptEmojiShortcode(_ suggestion: KeyboardSuggestion) -> Bool {
+        guard emojiShortcodesEnabled,
+              let token = EmojiShortcode.token(before: engine.typingContext ?? engine.textBefore),
+              let library = loadEmojiLibrary(),
+              let entry = library.entryByEmoji[suggestion.replacement] else { return false }
+        let usage = makeEmojiUsage()
+        let matches = EmojiShortcode.matches(
+            token: token,
+            library: library,
+            usage: emojiUsageScores(usage, library: library)
+        )
+        guard matches.contains(entry) else { return false }
+        // A host still reporting the text from before the token caught up: the replacement
+        // does nothing, and the tap is swallowed here rather than fall through to the ordinary
+        // emoji pick, which would take back only part of the token. The next edit refreshes
+        // the strip once the host shows the token again.
+        if engine.replaceEmojiShortcode(suggestion.replacement, token: token) {
+            usage.record(library.entries[entry].emoji)
+        }
+        return true
+    }
+
+    /// The engine's closing ":" hook: a name typed in full (":pizza") types its emoji instead.
+    func emojiShortcodeReplacement(before text: String?) -> EmojiShortcode.Replacement? {
+        guard emojiShortcodesEnabled, engine.showsEmoji, !routedTarget.isSearching,
+              emojiPanel == nil, allowsEmojiShortcodes,
+              let text, EmojiShortcode.token(before: text) != nil,
+              let library = loadEmojiLibrary() else { return nil }
+        let usage = makeEmojiUsage()
+        guard let completion = EmojiShortcode.completion(
+            before: text,
+            library: library,
+            usage: emojiUsageScores(usage, library: library)
+        ) else { return nil }
+        return EmojiShortcode.Replacement(
+            token: completion.token.text,
+            emoji: emojiText(completion.entry, library: library, usage: usage)
+        )
+    }
+
+    /// An entry's emoji with your skin tone for it, as the panel and the finished word's chip.
+    func emojiText(_ entry: Int, library: EmojiLibrary, usage: EmojiUsageStore) -> String {
+        let item = library.entries[entry]
+        let tone = item.hasTones ? usage.tone(for: item.emoji) : 0
+        return tone > 0 ? item.tones[tone - 1] : item.emoji
+    }
+
+    /// Your emoji use as a score per index entry, for ranking shortcode matches.
+    func emojiUsageScores(_ usage: EmojiUsageStore, library: EmojiLibrary) -> [Int: Float] {
+        var scores: [Int: Float] = [:]
+        for (emoji, score) in usage.ranked() {
+            if let entry = library.entryByEmoji[emoji] { scores[entry] = score }
+        }
+        return scores
     }
 
     // MARK: - Search

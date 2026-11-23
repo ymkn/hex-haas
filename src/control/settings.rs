@@ -857,6 +857,40 @@ mod tests {
     }
 
     #[test]
+    fn the_hud_height_gap_is_whole_points_in_range() {
+        let change = apply(
+            &AppSettings::default(),
+            "labs.hud_bottom_gap",
+            "120",
+            &rules(),
+        )
+        .unwrap();
+        assert_eq!(change.settings.labs.hud_bottom_gap, 120);
+        assert_eq!(
+            apply(
+                &AppSettings::default(),
+                "labs.hud_bottom_gap",
+                "401",
+                &rules()
+            )
+            .unwrap_err()
+            .code,
+            "invalid-value"
+        );
+        assert_eq!(
+            apply(
+                &AppSettings::default(),
+                "labs.hud_bottom_gap",
+                "-1",
+                &rules()
+            )
+            .unwrap_err()
+            .code,
+            "invalid-value"
+        );
+    }
+
+    #[test]
     fn a_microphone_linger_window_is_seconds_in_settings_json() {
         let settings = apply(
             &AppSettings::default(),
@@ -969,6 +1003,49 @@ mod tests {
         assert_eq!(
             get(&change.settings, "labs.stop_phrase_text").unwrap()[0].value,
             Value::String("that's all".into())
+        );
+    }
+
+    #[test]
+    fn a_signature_is_trimmed_and_must_be_one_line() {
+        let change = apply(&AppSettings::default(), "labs.signature", "on", &rules()).unwrap();
+        assert!(change.settings.labs.signature);
+        assert_eq!(
+            change.settings.labs.signature_text,
+            crate::dictation::signature::DEFAULT_TEXT
+        );
+        let change = apply(
+            &change.settings,
+            "labs.signature_text",
+            "  Dax, from Hex ",
+            &rules(),
+        )
+        .unwrap();
+        assert_eq!(
+            change.settings.labs.signature_text, "Dax, from Hex",
+            "a saved signature is trimmed"
+        );
+        let error = apply(
+            &change.settings,
+            "labs.signature_text",
+            "two\nlines",
+            &rules(),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "invalid-value");
+        assert!(error.message.contains("one line"), "{}", error.message);
+        assert_eq!(
+            change.settings.labs.signature_text, "Dax, from Hex",
+            "a refused draft leaves the saved signature"
+        );
+        let change = apply(&change.settings, "labs.signature_text", "", &rules()).unwrap();
+        assert!(
+            change.settings.labs.signature_text.is_empty(),
+            "empty is allowed and appends nothing"
+        );
+        assert_eq!(
+            get(&change.settings, "labs.signature_text").unwrap()[0].value,
+            Value::String(String::new())
         );
     }
 
@@ -1186,6 +1263,39 @@ mod tests {
         assert_eq!(
             get(&change.settings, "labs.appearance_theme").unwrap()[0].value,
             Value::String("dark".into())
+        );
+        let change = apply(&settings, "labs.dictation_style", "on", &rules()).unwrap();
+        assert!(change.settings.labs.dictation_style);
+        assert_eq!(
+            change.settings.labs.dictation_style_choice,
+            crate::app_settings::DictationStyle::Polished,
+            "polished is the default"
+        );
+        let change = apply(
+            &change.settings,
+            "labs.dictation_style_choice",
+            "notes",
+            &rules(),
+        )
+        .unwrap();
+        assert_eq!(
+            change.settings.labs.dictation_style_choice,
+            crate::app_settings::DictationStyle::Notes
+        );
+        assert_eq!(
+            get(&change.settings, "labs.dictation_style_choice").unwrap()[0].value,
+            Value::String("notes".into())
+        );
+        assert_eq!(
+            apply(
+                &change.settings,
+                "labs.dictation_style_choice",
+                "song",
+                &rules()
+            )
+            .unwrap_err()
+            .code,
+            "invalid-value"
         );
         let change = apply(&settings, "ui_language", "none", &rules()).unwrap();
         assert_eq!(change.settings.ui_language, None);

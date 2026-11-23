@@ -3,8 +3,9 @@ import UIKit
 
 /// Settings › Keyboard › Swipe typing: slide from a letter through the letters of a word and lift,
 /// and the word goes in, as with Apple's QuickPath and Gboard's glide typing. English and
-/// Spanish layouts only (the languages with a typing model); every other layout keeps a drag
-/// as a slide to another key.
+/// Spanish, and with Settings › Experiments › Swipe typing in more languages on every layout
+/// with a typing model (French (France), Polish, and German while its model is chosen); every
+/// other layout keeps a drag as a slide to another key.
 ///
 /// A touch on a letter key becomes a swipe once it travels more than a key's pitch from
 /// where it went down: the key no longer types, a light trail follows the finger, and the
@@ -179,7 +180,7 @@ final class SwipeTyping {
             stroke.points.map(layout.joinedForSwipe), times: stroke.times, keys: engine.swipeKeys,
             previous: engine.swipePreviousWord, limit: 8
         )
-        let words = ranked(candidates)
+        let words = engine.autocorrect.readingsOfferingOwnCapitals(ranked(candidates), capsLock: engine.shift.state == .locked, model: model)
         let elapsed = clock() - started
         lastDecodeTime = elapsed
         if let letter = slidTapLetter(stroke), let start = stroke.points.first,
@@ -262,12 +263,16 @@ final class SwipeTyping {
     // MARK: - Spacing
 
     /// Whether a swiped word needs a space before it, as Apple's keyboard adds one: unless
-    /// the text before the cursor is empty or ends in a space, a line break or opening
-    /// punctuation (a bracket, an opening quote, ¿ or ¡, or a mark that starts a word such
-    /// as @ # /). A straight quote opens when nothing or a space comes before it.
+    /// the text before the cursor is empty or ends in a space, a line break, an attachment
+    /// (U+FFFC: a shared link's card or a picture in the text) or opening punctuation (a
+    /// bracket, an opening quote, ¿ or ¡, or a mark that starts a word such as @ # /). A
+    /// straight quote opens when nothing or a space comes before it. Apple's keyboard swipes
+    /// "hello" right after an attachment with no space, in Messages after a link's card (which
+    /// then moves the word to its own line) and in a text view after a picture mid-line (black
+    /// box, iOS 27.2 simulator); Hex's space there began the word's line.
     static func needsSpace(before: String?) -> Bool {
         guard let before, let last = before.last else { return false }
-        if last.isWhitespace || last.isNewline || opening.contains(last) { return false }
+        if last.isWhitespace || last.isNewline || last == "\u{FFFC}" || opening.contains(last) { return false }
         if last == "\"" || last == "'" {
             let previous = before.dropLast().last
             return !(previous == nil || previous!.isWhitespace || previous!.isNewline || opening.contains(previous!))
@@ -279,8 +284,9 @@ final class SwipeTyping {
 }
 
 extension KeyboardLanguage {
-    /// Swipe typing reads only the layouts with a typing model; elsewhere a drag stays a
-    /// slide to another key.
+    /// Swipe typing's default layouts, English and Spanish. Another language swipes too with a
+    /// typing model when Settings › Experiments › Swipe typing in more languages is on
+    /// (`FullKeyboardSettings.swipesIn`); elsewhere a drag stays a slide to another key.
     var supportsSwipeTyping: Bool { self == .english || self == .spanish }
 }
 

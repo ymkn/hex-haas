@@ -26,6 +26,44 @@ extension AutocorrectEngine {
         return target
     }
 
+    /// Whether `word`, one of your own words with capitals after its first letter ("DONT",
+    /// "McQuorv"), is read for `typed`, which has none: the strip offers it, but neither space
+    /// nor a swipe puts it in. Record typing logs showed a word from someone's own list in
+    /// capitals put in for "don't" and for swiped common words. Words typed in capitals, your
+    /// own lowercase words and names, and your vocabulary's spellings ("GitHub") are as before.
+    func isOwnCapitals(_ word: String, typed: String) -> Bool {
+        word.dropFirst().contains(where: \.isUppercase) && !typed.dropFirst().contains(where: \.isUppercase)
+            && !isVocabularySpelling(word)
+    }
+
+    /// Spatial autocorrect's decision for `token`, putting in no `isOwnCapitals` reading:
+    /// space takes the next reading that clears the margin, if any, and the strip keeps them all.
+    func decisionOfferingOwnCapitals(
+        _ decoder: TypingDecoder, taps: [CGPoint], typed token: String, previous: String?, valid: Bool, keys: TypingDecoder.Keys
+    ) -> TypingDecoder.Decision? {
+        let lower = token.lowercased()
+        var decision = decoder.decide(taps: taps, typed: lower, previous: previous, literalIsValid: valid, keys: keys)
+        guard let replacement = decision?.replacement, isOwnCapitals(replacement, typed: token),
+              let readings = decision?.readings else { return decision }
+        decision?.replacement = readings.lazy.map(\.text).first {
+            !self.isOwnCapitals($0, typed: token)
+                && decoder.replaces(with: $0, taps: taps, typed: lower, previous: previous, literalIsValid: valid, keys: keys) == true
+        }
+        return decision
+    }
+
+    /// A swipe's readings, best first, putting in no `isOwnCapitals` one unless caps lock is
+    /// on: the model's word of the same letters in lowercase ("in" for "IN", which takes its
+    /// place in the decoder), else the first ordinary reading, goes first; the strip offers yours.
+    func readingsOfferingOwnCapitals(_ readings: [String], capsLock: Bool, model: TypingDecoderModel) -> [String] {
+        guard !capsLock, let first = readings.first, isOwnCapitals(first, typed: "") else { return readings }
+        if model.index(of: first.lowercased()) != nil { return [first.lowercased()] + readings }
+        guard let index = readings.firstIndex(where: { !isOwnCapitals($0, typed: "") }) else { return readings }
+        var ordered = readings
+        ordered.insert(ordered.remove(at: index), at: 0)
+        return ordered
+    }
+
     /// `word` without a capital first letter it only has from where it was learned: a fix
     /// you picked at the start of a sentence ("Helli" to "Hello"), a guess iOS knows
     /// capitalised, a Contacts name that is also a common word ("Bell", "Will"). When `typed`
@@ -81,9 +119,18 @@ extension AutocorrectEngine {
         // are as cheap as one missing Spanish accent, a little more for each further one. Greek
         // likewise: a tonos or diaeresis left out ("καλημερα" -> "καλημέρα", "αυπνια" ->
         // "αϋπνία"), or σ where the word ends in ς ("λογοσ" -> "λόγος"). Czech too: háčky and
-        // čárky left out ("cesky" -> "český", "prilis" -> "příliš").
-        if language == .polish || language == .greek || language == .czech, s.count == t.count {
-            let same = language == .greek ? sameGreekLetterIgnoringAccents : samePolishLetterIgnoringDiacritics
+        // čárky left out ("cesky" -> "český", "prilis" -> "příliš"), and Hungarian: its accented
+        // vowels left out ("koszonom" -> "köszönöm", "kesobb" -> "később", "szivesen" ->
+        // "szívesen"), ő and ű included, as o and u with the combining double acute.
+        if language == .polish || language == .greek || language == .czech || language == .hungarian,
+           s.count == t.count {
+            func same(_ a: Character, _ b: Character) -> Bool {
+                switch language {
+                case .greek: Self.sameGreekLetterIgnoringAccents(a, b)
+                case .hungarian: Self.sameLetterIgnoringAccents(a, b)
+                default: Self.samePolishLetterIgnoringDiacritics(a, b)
+                }
+            }
             let missed = zip(s, t).filter { $0 != $1 }
             if !missed.isEmpty, missed.allSatisfy({ same($0, $1) }) {
                 return 0.15 + 0.05 * Double(missed.count - 1)

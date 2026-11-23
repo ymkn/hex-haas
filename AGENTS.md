@@ -49,8 +49,9 @@ Vocabulary files, Words on screen, Learn from corrections
 language (#216), Mouse shortcuts (#209, macOS), Also pause the browser (#301,
 macOS), Share dictation shortcut (#176, Windows), Free memory when idle
 (#442), Smaller model files (macOS), Terminal paste (Windows), Terminal
-paste shortcut (Windows, Linux), Stop phrase, Hold through other keys
-(macOS and Windows), and Microphone key alone (#181, macOS).
+paste shortcut (Windows, Linux), Stop phrase, Signature, Hold through other keys
+(macOS and Windows), Microphone key alone (#181, macOS), and Dictate while
+annotating.
 Externally contributed features land there too.
 Every `Everyone` lab also gets a page on Hex's website,
 `anoma.ly/hex/labs/<id>` (index at `/hex/labs`), built from
@@ -950,11 +951,12 @@ CoreAudio formats, AppleScript details, or event serialization.
   missing or changed stays saved while the listener runs the default model;
   never rewrite it away.
 - Models found in the Hugging Face cache are scanned only when the picker or
-  onboarding opens (or `hex model list` runs), never in the background, and
-  only their headers are read. A found file is used in place and is
-  read-only: Hex never writes, moves, or deletes anything in the cache, keeps
-  its receipts in its own models folder, hashes a file in full once when it is
-  chosen (against the pin or the blob name), and removing one only forgets it.
+  onboarding opens (or `hex model list`/`hex model status` runs), never in the
+  background, and only their headers are read. A found file is used in place
+  and is read-only: Hex never writes, moves, or deletes anything in the cache,
+  keeps its receipts in its own models folder, hashes a file in full once when
+  it is chosen or when Enable's installed-only check finds it unverified
+  (against the pin or the blob name), and removing one only forgets it.
 - Hex has one onboarding, on every build and OS, stable and dev alike: the
   first-run story (`rune_ui/onboarding_kit/live.rs`) over the tour state
   machine (`rune_ui/onboarding.rs`, `desktop::onboarding::Flow`). No flag,
@@ -1246,7 +1248,10 @@ CoreAudio formats, AppleScript details, or event serialization.
   no undo. There is no separate draw shortcut and no send-to list
   shortcut; Send to… is a capsule click. `hex annotate draw` toggles the
   pen for desktops without the portal. While a capture records, the
-  dictation shortcut starts nothing on either OS. Sends
+  dictation shortcut starts nothing on either OS, unless Labs › Dictate while
+  annotating (off by default) lets it dictate as usual: the text pastes into
+  the app in front, History and Paste Last keep it, and the capture keeps
+  recording, its words including the dictated span. Sends
   carry the contact sheet and keyframes as inline `data:` image parts, never
   a local path. The Linux capsule doesn't open suggestions by itself.
   `validate-app.sh` requires
@@ -1677,7 +1682,10 @@ New, unproven, user-requested, and externally contributed features
 its settings key, description, and group (`Feature::group`), a card on the Labs page, and a
 `hex settings` key; gate where the feature's work starts (worker, thread,
 capture), not just its UI. Never add a master switch or ship such a feature
-on by default. Remove it from Labs when it graduates or is dropped.
+on by default. Remove it from Labs when it graduates or is dropped. Before
+merging a new lab or any new persisted setting, run
+`scripts/check labs control::settings` locally: Compile alone doesn't run the
+check that every persisted setting has a `hex settings` key.
 
 Use `scripts/check [filter]` for the local loop, not raw `cargo test`. It runs
 tests through cargo-nextest (`brew install cargo-nextest`) with

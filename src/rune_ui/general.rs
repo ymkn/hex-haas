@@ -18,7 +18,7 @@ use super::controls::{
     quiet_button, row_switch, value_button, value_font,
 };
 use super::icons::*;
-use super::lists::{PermissionControl, inline_slider, permission_control, slider};
+use super::lists::{PermissionControl, permission_control, slider};
 use super::platform::PlatformRequest;
 use super::settings::{self as s, Capture, Face};
 use super::{Menu, Pane, Request, ShortcutTarget, Ui};
@@ -120,11 +120,24 @@ pub(super) fn basics(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> Option<El> {
         &rune_theme_opencode::icons::CHEVRON_RIGHT,
         super::picker::open,
     );
-    let (description, control) = match missing_model(ui) {
+    // A model whose file is already here is checked, not downloaded: say
+    // that instead of showing a download bar at zero.
+    let checking = ui.view.as_ref().and_then(|view| {
+        (view.transcription.preparing == Some(ui.settings.transcription.model))
+            .then_some(view.transcription.preparation_stage)
+            .flatten()
+    });
+    let checking = match checking {
+        Some(transcription_models::ModelPreparationStage::Verifying) => Some(tr("Verifying model")),
+        Some(transcription_models::ModelPreparationStage::Loading) => Some(tr("Loading model")),
+        _ => None,
+    };
+    let (description, control) = match (missing_model(ui), checking) {
+        (Some(_), Some(label)) => (Some((label.to_string(), p.muted())), picker_button),
         // Hex can't listen without the selected model: say so, with the
         // download's progress, or Download and Add model file… when none
         // runs, as after Continue without a model (#894).
-        Some(progress) => {
+        (Some(progress), _) => {
             let description = match (
                 progress.downloading,
                 super::model_import::download_failure(ui),
@@ -168,7 +181,7 @@ pub(super) fn basics(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> Option<El> {
             };
             (Some(description), controls.child(picker_button))
         }
-        None => (s::transcription_status(ui, p), picker_button),
+        (None, _) => (s::transcription_status(ui, p), picker_button),
     };
 
     rows.push(
@@ -955,61 +968,27 @@ pub(super) fn application(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> Vec<CardRow
             .into(),
         );
     }
-    let volume = ui
-        .sound_volume_drag
-        .unwrap_or_else(|| s::sound_volume(settings));
-    rows.push(
-        icon_row(
-            p,
-            "sound-volume",
-            &VOLUME,
-            tr("Sound volume"),
-            None,
-            inline_slider(
-                p,
-                "sound-volume-slider",
-                tr("Sound volume"),
-                volume,
-                if volume > 0.0 {
-                    format!("{:.0}%", volume * 100.0)
-                } else {
-                    tr("Off").to_owned()
-                },
-                160.0,
-                |ui, value, done| {
-                    let volume = (value * 100.0).round() / 100.0;
-                    ui.sound_volume_drag = if done { None } else { Some(volume) };
-                    if !done {
-                        return;
-                    }
-                    // Zero turns tones off and keeps the last level, as
-                    // `hex settings set sound_effect_volume 0` does.
-                    let saved = ui.update(|settings| {
-                        settings.sound_effects = volume > 0.0;
-                        if volume > 0.0 {
-                            settings.sound_effect_volume = volume;
-                        }
-                    });
-                    if saved && volume > 0.0 && ui.live() {
-                        crate::feedback::play(crate::feedback::Tone::DictationStart);
-                    }
-                },
-            ),
+    let sounds = if settings.sound_effects {
+        format!(
+            "{} · {:.0}%",
+            tr(settings.sound_theme.name()),
+            s::sound_volume(settings) * 100.0
         )
-        .into(),
-    );
+    } else {
+        tr("Off").to_owned()
+    };
     rows.push(
         icon_row(
             p,
             "sound-set",
-            &MUSIC,
+            &VOLUME,
             tr("Sounds"),
             None,
             value_button(
                 p,
                 "sound-set-control",
                 tr("Sounds"),
-                tr(settings.sound_theme.name()),
+                &sounds,
                 &rune_theme_opencode::icons::CHEVRON_RIGHT,
                 super::sound_sets::open,
             ),
@@ -1182,6 +1161,13 @@ fn speech_engine_row(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> CardRow {
                 TranscriptionDevice::Gpu,
                 TranscriptionDevice::Cpu,
             ][index];
+            // Re-picking Auto or GPU is the retry the note offers, even when
+            // the setting already says GPU; the retry decides whether this
+            // launch registered the CPU alone (#662).
+            #[cfg(target_os = "windows")]
+            if device != TranscriptionDevice::Cpu {
+                crate::transcription::local_transcriber::retry_gpu_start();
+            }
             if ui.settings.transcription_device != device {
                 ui.update(|settings| settings.transcription_device = device);
             }
@@ -1204,6 +1190,15 @@ fn speech_engine_row(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> CardRow {
     // Launched on CPU, Hex loaded no GPU driver (#1253).
     let restart_note = (ui.live() && crate::transcription::local_transcriber::gpu_after_restart())
         .then(|| tr("Turns on when Hex restarts").to_owned());
+    // The last two launches crashed starting the GPU. Re-picking Auto or GPU
+    // retries, even though the setting may already say GPU (#662).
+    let crash_note = (ui.live()
+        && device != TranscriptionDevice::Cpu
+        && crate::transcription::gpu_health::crash_fallback())
+    .then(|| {
+        tr("Hex crashed twice starting the GPU, so speech runs on the CPU. Choose Auto or GPU to try it again.")
+            .to_owned()
+    });
     // This process fell back after the GPU ran out of memory (#1984). The
     // record is not saved, so it goes away when a GPU loads again or Hex
     // restarts.
@@ -1216,18 +1211,21 @@ fn speech_engine_row(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> CardRow {
                 &[("device", failure.device.as_str())],
             )
         });
-    let note = vulkan_note.or(restart_note).or(out_of_memory_note).or_else(|| {
-        failed.map(|failure| {
-            tr_named(
-                if failure.slow {
-                    "Auto uses the CPU because it runs speech faster than {device}. Choose GPU to use it anyway."
-                } else {
-                    "Auto uses the CPU because {device} stopped responding. Choose GPU to try it again."
-                },
-                &[("device", failure.device.as_str())],
-            )
-        })
+    let failed_note = failed.map(|failure| {
+        tr_named(
+            if failure.slow {
+                "Auto uses the CPU because it runs speech faster than {device}. Choose GPU to use it anyway."
+            } else {
+                "Auto uses the CPU because {device} stopped responding. Choose GPU to try it again."
+            },
+            &[("device", failure.device.as_str())],
+        )
     });
+    let note = vulkan_note
+        .or(restart_note)
+        .or(crash_note)
+        .or(out_of_memory_note)
+        .or(failed_note);
     icon_row(
         p,
         "speech-engine",

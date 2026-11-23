@@ -54,10 +54,14 @@ final class DictationController {
         let formatLists: Bool
         /// Settings › Dictation › Spoken punctuation, read at start.
         let spokenPunctuation: Bool
+        /// Settings › Dictation › Numbers as digits, read at start.
+        let numbersAsDigits: Bool
         /// Settings › Dictation › End with a period, read at start.
         let endsWithPeriod: Bool
         /// Experiments › Hinglish, read at start.
         let hinglish: Bool
+        /// Experiments › Greeklish, read at start.
+        let greeklish: Bool
         let vocabularyTerms: [String]
         /// Learn how I type's dictation fixes, read at start; empty while it is off.
         let personalCorrections: [DictationCorrection]
@@ -70,22 +74,27 @@ final class DictationController {
         let language: String
     }
 
-    private struct PendingKeyboardHandoff {
+    struct PendingKeyboardHandoff {
         let jobID: String?
         let style: DictationStyle
         let requestedAt: TimeInterval
     }
 
-    private var transcriber: any LocalTranscribing
-    private let transcriberFactory: () async -> any LocalTranscribing
+    var transcriber: any LocalTranscribing
+    let transcriberFactory: () async -> any LocalTranscribing
+    /// Experiments › Multilingual model (Parakeet): its download, beside the engine Hex
+    /// dictates with until it's ready.
+    @ObservationIgnored let multilingualDownload: ParakeetUltraDownload
     private let cleaner: (any TranscriptCleaning)?
     private let cleanupSettings: AppleIntelligenceCleanupSettings
     private let customVocabularySettings: CustomVocabularySettings
     private let lowercaseSettings: DictationLowercaseSettings
     private let listSettings: DictationListSettings
     private let punctuationSettings: DictationPunctuationSettings
+    private let numberSettings: DictationNumberSettings
     private let periodSettings: DictationPeriodSettings
     private let hinglishSettings: HinglishSettings
+    private let greeklishSettings: GreeklishSettings
     private let typingJournalSettings: TypingJournalSettings
     private let learnedDictationCorrections: @MainActor (String?) -> [DictationCorrection]
     private let audio: any AudioManaging
@@ -95,7 +104,9 @@ final class DictationController {
     private let liveActivity = LiveActivityCoordinator()
 
     private var jobGeneration: UInt64 = 0
-    private var modelPrepGeneration: UInt64 = 0
+    var modelPrepGeneration: UInt64 = 0
+    /// The preparation now running, cancelled when a newer one replaces it.
+    @ObservationIgnored var preparationTask: Task<Void, Never>?
     private var activeCapture: ActiveCaptureSession?
     private var meterTask: Task<Void, Never>?
     private var transcriptionTask: Task<Void, Never>?
@@ -115,7 +126,7 @@ final class DictationController {
     private var keyboardMessage: String? {
         didSet { keyboardMessageAt = keyboardMessage == nil ? nil : now() }
     }
-    private var pendingHandoff: PendingKeyboardHandoff?
+    var pendingHandoff: PendingKeyboardHandoff?
     var keyboardSessionExpiresAt: TimeInterval = 0
     private var suspendedWarmSessionOnInterruption = false
     /// The warm session loop's restarts of a keepalive that stopped by itself. Each one
@@ -133,6 +144,8 @@ final class DictationController {
         didSet {
             captureFailed = false
             if case .failed = phase { failedAt = now() }
+            // Speech model in keyboard holds back while a preparation runs; it starts once that ends.
+            if oldValue == .preparingModel, phase != .preparingModel { startKeyboardParakeetDownloadIfWanted() }
             guard phase.keepsScreenAwake != oldValue.keepsScreenAwake else { return }
             // Only applies while Hex is in front; nothing else in Hex sets it, so ending a
             // dictation hands the screen back to Auto-Lock.
@@ -155,7 +168,7 @@ final class DictationController {
             }
         }
     }
-    private(set) var copied = false
+    var copied = false
     var keyboardSessionEnabled = false
     @ObservationIgnored private var rawKeyboardSessionRemaining: TimeInterval = 0
     private(set) var keyboardSessionDisplayRemaining = "0:00"
@@ -193,22 +206,30 @@ final class DictationController {
     /// the new one.
     private var followedKeyboardLanguage: String?
     /// A language change made while busy, applied once the dictation in flight is done.
-    private var pendingLanguagePreparation = false
+    var pendingLanguagePreparation = false
     /// Said once Automatic moved on from a language this iPhone can't dictate yet
     /// ("Russian isn't available on this iPhone yet. Hex switched to English.").
     var languageNotice: String?
     /// The language to offer (BCP 47) when the one chosen can't be dictated here yet.
     var languageOffer: String?
     private let languageSettings: LanguageSettings
-    private(set) var modelPreparation = ModelPreparationProgress(
+    var modelPreparation = ModelPreparationProgress(
         fractionCompleted: 0,
         detail: String(localized: "Checking the speech model")
     )
     /// Whether Hex is in the background, where iOS suspends it and a download's connection
     /// drops.
-    private var isInBackground = false
-    /// A model download that failed while Hex was in the background, tried again on return.
-    private var preparationFailedInBackground = false
+    var isInBackground = false
+    /// A model download or preparation step that failed while Hex was in the background, tried
+    /// again on return.
+    var preparationFailedInBackground = false
+    /// `watchPreparation`: when the preparation last said something new, whether it has said
+    /// anything yet, and how long each may last.
+    @ObservationIgnored var preparationChangedAt = ContinuousClock.now
+    @ObservationIgnored var preparationReported = false
+    @ObservationIgnored var preparationLimits = (firstReport: Duration.seconds(30), stall: Duration.seconds(120))
+    /// Whether the preparation now running picked Parakeet Ultra, for its failure path.
+    @ObservationIgnored var preparingMultilingualParakeet = false
 
     init(
         audio: (any AudioManaging)? = nil,
@@ -224,12 +245,17 @@ final class DictationController {
         lowercaseSettings: DictationLowercaseSettings = DictationLowercaseSettings(),
         listSettings: DictationListSettings = DictationListSettings(),
         punctuationSettings: DictationPunctuationSettings = DictationPunctuationSettings(),
+        numberSettings: DictationNumberSettings = DictationNumberSettings(),
         periodSettings: DictationPeriodSettings = DictationPeriodSettings(),
         hinglishSettings: HinglishSettings = HinglishSettings(),
+        greeklishSettings: GreeklishSettings = GreeklishSettings(),
         typingJournalSettings: TypingJournalSettings = TypingJournalSettings(),
         learnedDictationCorrections: (@MainActor (String?) -> [DictationCorrection])? = nil,
-        languageSettings: LanguageSettings = LanguageSettings()
+        languageSettings: LanguageSettings = LanguageSettings(),
+        multilingualDownload: ParakeetUltraDownload? = nil
     ) {
+        // Before anything reads them: Parakeet's files live in the App Group now.
+        SpeechModelStore.moveLegacyDownloads()
         let resolvedBridge = keyboardBridge ?? KeyboardBridge()
         let resolvedAudio = audio ?? SystemAudioManager()
         let initialTranscriber = transcriber ?? ParakeetTranscriber()
@@ -238,14 +264,17 @@ final class DictationController {
         self.keyboardBridge = resolvedBridge
         self.transcriber = initialTranscriber
         self.transcriberFactory = transcriberFactory ?? Self.defaultTranscriber
+        self.multilingualDownload = multilingualDownload ?? ParakeetUltraDownload()
         self.cleaner = cleaner
         self.cleanupSettings = cleanupSettings
         self.customVocabularySettings = customVocabularySettings
         self.lowercaseSettings = lowercaseSettings
         self.listSettings = listSettings
         self.punctuationSettings = punctuationSettings
+        self.numberSettings = numberSettings
         self.periodSettings = periodSettings
         self.hinglishSettings = hinglishSettings
+        self.greeklishSettings = greeklishSettings
         self.typingJournalSettings = typingJournalSettings
         self.learnedDictationCorrections = learnedDictationCorrections ?? { language in
             TypingJournal.storedDictationCorrections(settings: typingJournalSettings, language: language)
@@ -255,6 +284,7 @@ final class DictationController {
         self.languageSettings = languageSettings
         self.dictationLanguage = languageSettings.dictationLanguage
         self.followedKeyboardLanguage = languageSettings.keyboardDictationLanguage()
+        resolvedBridge.reviewWarmDurationForKeyboardDictation()
         self.warmDuration = resolvedBridge.warmDuration
         self.style = resolvedBridge.style
         self.microphone = resolvedBridge.microphone
@@ -265,6 +295,9 @@ final class DictationController {
 
         wireAudioCallbacks()
         wireSystemIntentBus()
+        self.multilingualDownload.onDownloaded = { [weak self] in
+            self?.syncMultilingualParakeet()
+        }
         if autoPrepareOnInit {
             // At launch no dictation is running, so any Hex Live Activity is left over.
             liveActivity.endImmediately()
@@ -373,17 +406,6 @@ final class DictationController {
         }
     }
 
-    /// Experiments › Multilingual model (Parakeet) turned on or off: prepares the engine Hex
-    /// picks now, or once the dictation in flight is done.
-    func multilingualParakeetChanged() {
-        switch phase {
-        case .recording, .transcribing, .requestingPermission:
-            pendingLanguagePreparation = true
-        case .modelRequired, .preparingModel, .ready, .failed:
-            prepareModel()
-        }
-    }
-
     /// Runs a language change that waited for the dictation in flight.
     private func prepareDeferredLanguageIfNeeded() {
         guard pendingLanguagePreparation else { return }
@@ -406,15 +428,28 @@ final class DictationController {
 
     // MARK: - Standalone & System Actions
 
-    func performPrimaryAction() {
+    /// Home's button sets the model up (Set up) rather than dictating: no model yet, or a
+    /// failure that left none ready. A microphone or transcription failure with the model
+    /// still ready dictates again, as home's Ready says it can.
+    var primaryActionPreparesModel: Bool {
         switch phase {
-        case .modelRequired, .failed:
+        case .modelRequired: true
+        case .failed: !isModelReady
+        default: false
+        }
+    }
+
+    func performPrimaryAction() {
+        if primaryActionPreparesModel {
             prepareModel()
-        case .ready:
+            return
+        }
+        switch phase {
+        case .ready, .failed:
             startRecording(copyToPasteboard: false)
         case .recording:
             finishRecording()
-        case .preparingModel, .requestingPermission, .transcribing:
+        case .modelRequired, .preparingModel, .requestingPermission, .transcribing:
             break
         }
     }
@@ -455,6 +490,7 @@ final class DictationController {
     func copyTranscript() {
         guard !transcript.isEmpty else { return }
         UIPasteboard.general.string = transcript
+        KeyboardClipboardTracker().markOwnedCopy()
         copied = true
     }
 
@@ -521,6 +557,9 @@ final class DictationController {
         if request.opensPage {
             return
         }
+        // Whatever made the keyboard open Hex, it isn't dictating by itself: the warm default is back.
+        keyboardBridge.noteKeyboardOpenedHex()
+        refreshWarmDuration()
         // A language picked in the keyboard: prepare it before the handoff records.
         followDictationLanguageSetting()
         handoffNotice = nil
@@ -538,7 +577,7 @@ final class DictationController {
         }
 
         switch request {
-        case .setup, .translationSettings:
+        case .setup, .translationSettings, .pasteSettings:
             break
 
         case .startSession:
@@ -595,7 +634,7 @@ final class DictationController {
         fulfillPendingHandoffOrPrepare()
     }
 
-    private func activateWarmSessionAndRunHandoff() {
+    func activateWarmSessionAndRunHandoff() {
         guard phase == .ready else { return }
         let handoff = pendingHandoff
         pendingHandoff = nil
@@ -646,7 +685,7 @@ final class DictationController {
             let granted = await audio.requestPermission()
             guard self.jobGeneration == requestGen else { return }
             guard granted else {
-                phase = .failed(String(localized: "Microphone access is off. Allow it in Settings to dictate."))
+                phase = .failed(String(localized: "Allow microphone access in Settings to dictate."))
                 publishKeyboardSnapshot()
                 return
             }
@@ -697,88 +736,6 @@ final class DictationController {
         keyboardSessionRemaining = seconds
     }
 
-    // MARK: - Model Preparation
-
-    /// `fallbacksLeft` bounds how often Automatic moves on to another language after one
-    /// whose model won't install here; each move sets a language aside, so it can't loop.
-    func prepareModel(fallbacksLeft: Int = 2) {
-        modelPrepGeneration &+= 1
-        let prepGen = modelPrepGeneration
-        phase = .preparingModel
-        copied = false
-        modelPreparation = ModelPreparationProgress(
-            fractionCompleted: 0,
-            detail: String(localized: "Checking the speech model")
-        )
-        preparationFailedInBackground = false
-        // A few more seconds from iOS when Hex goes to the background mid-download or mid-compile.
-        let backgroundTime = BackgroundTime("Prepare speech model")
-
-        Task {
-            defer { backgroundTime.end() }
-            do {
-                let candidate = await transcriberFactory()
-                guard self.modelPrepGeneration == prepGen else { return }
-                engineName = candidate.displayName
-                try await candidate.prepare { [weak self] progress in
-                    Task { @MainActor [weak self] in
-                        guard let self, self.modelPrepGeneration == prepGen else { return }
-                        self.modelPreparation = progress
-                    }
-                }
-                guard self.modelPrepGeneration == prepGen else { return }
-                self.languageOffer = nil
-                self.transcriber = candidate
-                self.transcriptionLanguage = await candidate.languageName
-                self.transcriptionLanguageID = await candidate.languageIdentifier
-                self.keyboardBridge.setModelInstalled(true)
-                self.isModelReady = true
-                self.phase = .ready
-                self.publishKeyboardSnapshot()
-                if self.pendingHandoff != nil {
-                    self.activateWarmSessionAndRunHandoff()
-                }
-            } catch {
-                guard self.modelPrepGeneration == prepGen else { return }
-                let unavailable = error as? SpeechModelUnavailable
-                if fallbacksLeft > 0, let notice = Self.switchNotice(for: error) {
-                    // Automatic set the language aside, or Parakeet had no room: prepare what
-                    // Hex picks now.
-                    self.languageNotice = notice
-                    self.prepareModel(fallbacksLeft: fallbacksLeft - 1)
-                    return
-                }
-                self.languageOffer = unavailable.flatMap { $0.automatic ? nil : $0.fallback }
-                self.preparationFailedInBackground = self.isInBackground && Self.isDownloadInterruption(error)
-                self.keyboardBridge.setModelInstalled(ParakeetTranscriber.hasCachedModel)
-                self.pendingHandoff = nil
-                self.phase = .failed(UserFacingError.message(for: error, context: .model))
-                self.publishKeyboardSnapshot()
-            }
-        }
-    }
-
-    func appMovedToBackground() {
-        isInBackground = true
-    }
-
-    /// Picks up a download that iOS cut off while Hex was in the background; FluidAudio
-    /// resumes each file from the bytes it has.
-    func appBecameActive() {
-        isInBackground = false
-        guard preparationFailedInBackground else { return }
-        preparationFailedInBackground = false
-        if case .failed = phase, !isModelReady {
-            prepareModel()
-        }
-    }
-
-    nonisolated static func isDownloadInterruption(_ error: Error) -> Bool {
-        if error is StallWatch.Stalled || error is URLError { return true }
-        if (error as? ParakeetUltraTranscriber.TranscriberError) == .downloadFailed { return true }
-        return (error as? ParakeetTranscriber.TranscriberError) == .downloadFailed
-    }
-
     // MARK: - Capture & Generation-Scoped Transcription
 
     func startRecording(
@@ -806,8 +763,10 @@ final class DictationController {
         let lowercase = lowercaseSettings.isEnabled
         let formatLists = listSettings.isEnabled
         let spokenPunctuation = punctuationSettings.isEnabled
+        let numbersAsDigits = numberSettings.isEnabled
         let endsWithPeriod = periodSettings.isEnabled
         let hinglish = hinglishSettings.isEnabled
+        let greeklish = greeklishSettings.isEnabled
         let language = transcriptionLanguageID
         CleanupTagger.prepareIfEnabled(style: effectiveStyle, language: language)
         let vocabularyTerms = customVocabularySettings.activeTerms
@@ -826,7 +785,7 @@ final class DictationController {
             guard self.jobGeneration == captureGeneration else { return }
             guard granted else {
                 activeKeyboardJobID = nil
-                let message = String(localized: "Microphone access is off. Allow it in Settings.")
+                let message = String(localized: "Allow microphone access in Settings.")
                 keyboardMessage = keyboardJobID == nil ? nil : message
                 phase = .failed(message)
                 publishKeyboardSnapshot()
@@ -860,8 +819,10 @@ final class DictationController {
                     lowercase: lowercase,
                     formatLists: formatLists,
                     spokenPunctuation: spokenPunctuation,
+                    numbersAsDigits: numbersAsDigits,
                     endsWithPeriod: endsWithPeriod,
                     hinglish: hinglish,
+                    greeklish: greeklish,
                     vocabularyTerms: vocabularyTerms,
                     personalCorrections: personalCorrections,
                     recognitionHints: recognitionHints,
@@ -957,7 +918,9 @@ final class DictationController {
                     lowercase: session.lowercase,
                     formatLists: session.formatLists,
                     spokenPunctuation: session.spokenPunctuation,
+                    numbersAsDigits: session.numbersAsDigits,
                     hinglish: session.hinglish,
+                    greeklish: session.greeklish,
                     endsWithPeriod: session.endsWithPeriod
                 )
                 let stages = await pipeline.run(rawText) { tagged in
@@ -972,6 +935,7 @@ final class DictationController {
                 self.transcript = formatted
                 if session.copyToPasteboard && !formatted.isEmpty {
                     UIPasteboard.general.string = formatted
+                    KeyboardClipboardTracker().markOwnedCopy()
                     self.copied = true
                     self.liveActivity.finishCopied()
                 } else {
@@ -1222,7 +1186,7 @@ final class DictationController {
         }
     }
 
-    private func publishKeyboardSnapshot(minInterval: TimeInterval = 0) {
+    func publishKeyboardSnapshot(minInterval: TimeInterval = 0) {
         let currentTime = now()
 
         // Past its time to go in by itself the keyboard can still offer it as Paste dictation.
@@ -1314,7 +1278,7 @@ final class DictationController {
                 self.finishRecording()
             } else {
                 self.cancelCurrentJob()
-                self.phase = .failed(String(localized: "Recording stopped unexpectedly."))
+                self.phase = .failed(String(localized: "Recording stopped."))
                 self.publishKeyboardSnapshot()
             }
         }
@@ -1469,7 +1433,7 @@ final class DictationController {
 /// Background time from iOS while Hex finishes a keyboard's dictation, ended when it's done
 /// or when iOS asks for it back.
 @MainActor
-private final class BackgroundTime {
+final class BackgroundTime {
     private var id = UIBackgroundTaskIdentifier.invalid
 
     init(_ name: String) {

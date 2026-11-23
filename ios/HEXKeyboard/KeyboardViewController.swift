@@ -22,15 +22,40 @@ final class KeyboardViewController: UIInputViewController {
     private var heightConstraint: NSLayoutConstraint?
     /// The dictation bar's top edge, `barTopInset` below the keyboard's.
     private var barTopConstraint: NSLayoutConstraint?
-    /// A thin material under the surface: the colour of iOS's glass panel, with nothing iOS
-    /// leaves behind the keyboard readable through it.
-    private let backdrop = KeyboardBackdropView()
+    /// A thin material under the surface, mounted only when iOS kept an earlier Hex keyboard on
+    /// screen in this field (`KeyboardsOnScreen`): then Apple's keys may be under this one, and
+    /// through the material they have no shapes. Otherwise Hex allocates no blur view and sits
+    /// clear on iOS's glass panel.
+    private var backdrop: KeyboardBackdropView?
+    private var didConfigureView = false
+    /// Hex's keyboards on screen in this process, and this one's name among them.
+    private static var onScreen = KeyboardsOnScreen() {
+        didSet {
+            guard onScreen != oldValue else { return }
+            NotificationCenter.default.post(name: onScreenDidChange, object: nil)
+        }
+    }
+    private static let onScreenDidChange = Notification.Name("anomaly.hex.mobile.keyboard.onScreenDidChange")
+    private final class WeakInputView {
+        weak var view: KeyboardInputView?
+        init(_ view: KeyboardInputView) { self.view = view }
+    }
+    private static var inputViews: [Int: WeakInputView] = [:]
+    private static var lastKeyboardID = 0
+    private let keyboardID: Int = {
+        KeyboardViewController.lastKeyboardID += 1
+        return KeyboardViewController.lastKeyboardID
+    }()
     private var pollInterval: TimeInterval = 0
     private var didHandOffCurrentField = false
+    /// A number pad's hand-off waits for the Duo's posture (`handOffNumericPadIfNeeded`).
+    private var handOffWaitsForPosture = false
     private var didWarmLexicon = false
     /// Learn how I type: what becomes of each dictation Hex inserts.
     private let dictationEdits = DictationEditTracker()
     private lazy var documentTarget = DocumentProxyTextTarget { [weak self] in self?.textDocumentProxy }
+    /// Type as I speak: the live words in the field while recording.
+    private lazy var liveTyping = KeyboardLiveTyping(target: documentTarget)
     /// Record typing logs: the process's logger while the experiment is on.
     private var typingLog: TypingLogger?
     /// The field the current typing log session is for.
@@ -43,6 +68,9 @@ final class KeyboardViewController: UIInputViewController {
     /// How long the note that a dictation went in as spoken stays up.
     static let translationNoteDuration: TimeInterval = 8
     private var isShown = false
+    /// Retired while a newer Hex keyboard sits over this one in the same field (`KeyboardsOnScreen`):
+    /// keeps listening and restores its surface if the newer one goes away.
+    private var isRetired = false
     /// This appearance hasn't yet checked Settings › Keyboard › Auto-start, which waits until
     /// its keys are up (and UIKit has named the field).
     private var autoStartPending = false
@@ -94,6 +122,16 @@ final class KeyboardViewController: UIInputViewController {
         input.translatesAutoresizingMaskIntoConstraints = system?.translatesAutoresizingMaskIntoConstraints ?? true
         inputView = input
         if viewIfLoaded !== input { view = input }
+        Self.inputViews[keyboardID] = WeakInputView(input)
+    }
+
+    deinit {
+        // iOS frees a keyboard it never said disappeared without another word.
+        let id = keyboardID
+        Task { @MainActor in
+            KeyboardViewController.onScreen.disappeared(id)
+            KeyboardViewController.inputViews.removeValue(forKey: id)?.view?.unmountHexViews()
+        }
     }
 
     override func viewDidLoad() {
@@ -110,14 +148,18 @@ final class KeyboardViewController: UIInputViewController {
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         reportFullAccess(force: true)
+        isRetired = false
         autoStartPending = true
         coldStartJobID = UUID().uuidString
         didHandOffCurrentField = false
+        handOffWaitsForPosture = false
         // The keyboard may come back for another field: settle on where the dictation was last seen.
         dictationEdits.finish(nil)
         mountSurface()
         fullKeyboard?.prepareForField()
         isShown = true
+        Self.onScreen.appeared(keyboardID, in: currentDocument)
+        updateBackdrop()
         beginTypingLogSession(trigger: "appear")
         handOffNumericPadIfNeeded()
         syncFromBridge(animated: false)
@@ -131,6 +173,7 @@ final class KeyboardViewController: UIInputViewController {
         // about 80 ms late (Record typing logs), so q, a, p, l, shift and delete lagged and
         // could land after the next key. Apple's own keyboard has no such delay.
         view.window?.gestureRecognizers?.forEach { $0.delaysTouchesBegan = false }
+        fullKeyboard?.offerModelNotice()
         // Onboarding's practice tells Hex's keyboard on screen from another one, or iOS's
         // dictation, by these.
         bridge.recordKeyboardShown(at: Date().timeIntervalSince1970)
@@ -163,6 +206,8 @@ final class KeyboardViewController: UIInputViewController {
         // keyboard does, and iOS gives up on a keyboard slow to draw.
         let autoStart = DispatchWorkItem { [weak self] in
             self?.autoStartDictationIfPending()
+            // Settings › Dictation › Speech model in keyboard: last, and it loads off the main thread.
+            if let self, self.isShown, self.hasFullAccess, !self.memoryWarned { KeyboardParakeet.shared.warmUp() }
         }
         launchWork = [lexicon, optional, autoStart]
         DispatchQueue.main.asyncAfter(deadline: .now() + KeyboardLaunchWork.afterFirstFrame, execute: lexicon)
@@ -202,18 +247,29 @@ final class KeyboardViewController: UIInputViewController {
         bridge.recordKeyboardHidden(at: Date().timeIntervalSince1970)
         switchGuess.keyboardHid(in: currentDocument, at: Date().timeIntervalSince1970)
         autoStartPending = false
+        handOffWaitsForPosture = false
+        isRetired = false
         if dictationEdits.isTracking { dictationEdits.finish(editContext) }
         TypingJournal.sharedIfEnabled()?.save()
         AdaptiveTouch.current?.save()
         isShown = false
+        Self.onScreen.disappeared(keyboardID)
         launchWork.forEach { $0.cancel() }
         launchWork = []
+        fullKeyboard?.engine.commitHangulComposition()
         closeBarEmojiPanel()
         // A dictation under way finishes without the keyboard, and the next one delivers it.
+        liveTyping.keyboardWillHide()
         localDictation.keyboardWillHide()
         endTypingLogSession(reason: "disappear", settleDictation: editContext)
         pollTimer?.invalidate()
         pollTimer = nil
+    }
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        guard !isShown else { return }
+        tearDownSurface()
     }
 
     override func didReceiveMemoryWarning() {
@@ -222,6 +278,8 @@ final class KeyboardViewController: UIInputViewController {
         fullKeyboard?.handleMemoryWarning()
         closeBarEmojiPanel()
         barEmojiLibrary = nil
+        EmojiLibrary.evictCached()
+        localDictation.handleMemoryWarning()
         typingLog?.flush()
     }
 
@@ -232,6 +290,7 @@ final class KeyboardViewController: UIInputViewController {
         } else {
             applyBarInset()
         }
+        if handOffWaitsForPosture { handOffNumericPadIfNeeded() }
     }
 
     /// The dictation bar's own height, under `barTopInset`: 4 pt top padding, the 40 pt
@@ -288,12 +347,21 @@ final class KeyboardViewController: UIInputViewController {
 
     override func textDidChange(_ textInput: UITextInput?) {
         super.textDidChange(textInput)
+        if isShown || isRetired { Self.onScreen.moved(keyboardID, to: currentDocument) }
         updateKeyboardTraits()
         followTypingLogField()
         fullKeyboard?.textDidChange()
+        liveTyping.checkSent()
         observeDictationEdits(fromKeys: false)
         noteHostTextChange()
         handOffNumericPadIfNeeded()
+    }
+
+    /// The cursor moved or a selection changed: a Hangul run that is no longer right before
+    /// the cursor commits, as its text is already in the field.
+    override func selectionDidChange(_ textInput: UITextInput?) {
+        super.selectionDidChange(textInput)
+        fullKeyboard?.engine.commitHangulIfHostMoved()
     }
 
     // MARK: - Record typing logs
@@ -313,7 +381,6 @@ final class KeyboardViewController: UIInputViewController {
         typingLogTraits = traits
         log.beginSession(typingLogSessionInfo(trigger: trigger, traits: traits))
         attachTypingLog()
-        syncLoggingMark()
     }
 
     /// `settleDictation` is the text the last dictation's outcome is judged on (nil: where
@@ -326,15 +393,6 @@ final class KeyboardViewController: UIInputViewController {
         fullKeyboard?.typingLog = nil
         log.endSession(reason: reason)
         typingLogTraits = nil
-        syncLoggingMark()
-    }
-
-    /// Both keyboards show a small mark the whole time typing logs record this field.
-    private func syncLoggingMark() {
-        let logging = typingLog?.isRecording == true
-        if viewModel.isLoggingTyping != logging {
-            viewModel.isLoggingTyping = logging
-        }
     }
 
     private func attachTypingLog() {
@@ -463,6 +521,21 @@ final class KeyboardViewController: UIInputViewController {
         if dictationEdits.isTracking { dictationEdits.observe(context, fromKeys: fromKeys) }
     }
 
+    /// Type as I speak's words went out with the app's Send: a dictation kept as typed (the host
+    /// emptying the field, as `DictationEditTracker` reads a send), out of Undo's reach, and
+    /// the capture goes on as a fresh dictation.
+    private func liveWordsSent(_ sent: KeyboardLiveTyping.Sent?) {
+        guard let sent else { return localDictation.releaseSend(sent: false) }
+        if learnsFromDictation {
+            let before = sent.before ?? ""
+            dictationEdits.willInsert(heard: sent.heard, inserted: sent.typed, context: .init(before: before, after: "", hasText: !before.isEmpty))
+            dictationEdits.observe(.init(before: before + sent.typed, after: "", hasText: true), fromKeys: true)
+            dictationEdits.observe(.init(before: "", after: "", hasText: false), fromKeys: false)
+        }
+        fullKeyboard?.hideUndo()
+        localDictation.releaseSend(sent: true)
+    }
+
     /// A return key labelled Send ends the dictation's edit window: what is there is sent.
     private func returnKeyWillInsert() {
         guard textDocumentProxy.returnKeyType == .send else { return }
@@ -472,11 +545,17 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     private func handOffNumericPadIfNeeded() {
-        guard fullKeyboard != nil else { return }
+        guard let fullKeyboard else { return }
         if KeyboardFieldRouting.route(for: textDocumentProxy.keyboardType) == .handOff {
             guard !didHandOffCurrentField else { return }
+            // The Duo's posture needs the keyboard's window: layout asks again once it has one.
+            guard let posture = fullKeyboard.currentPosture else {
+                handOffWaitsForPosture = true
+                return
+            }
+            handOffWaitsForPosture = false
             didHandOffCurrentField = true
-            if needsInputModeSwitchKey {
+            if KeyboardFieldRouting.handsOffNumberPad(needsInputModeSwitchKey: needsInputModeSwitchKey, posture: posture) {
                 advanceToNextInputMode()
             }
         } else {
@@ -499,17 +578,98 @@ final class KeyboardViewController: UIInputViewController {
         }
     }
 
+    /// The backdrop shows only over an earlier Hex keyboard iOS never took off screen; a keyboard
+    /// superseded under a newer one in the same field retires its views and poll timer, and wakes
+    /// back up if the newer one disappears while iOS still keeps this one on screen.
+    @objc private func updateBackdrop() {
+        if isShown, Self.onScreen.isSuperseded(keyboardID) {
+            retireSupersededKeyboard()
+            return
+        }
+        if isRetired, !Self.onScreen.isSuperseded(keyboardID) {
+            restoreRetiredKeyboard()
+        }
+        guard isShown else { return }
+        if Self.onScreen.isOverAnother(keyboardID) {
+            if backdrop == nil {
+                let created = KeyboardBackdropView()
+                created.translatesAutoresizingMaskIntoConstraints = false
+                (view as? KeyboardInputView)?.noteHexSubview(created)
+                view.insertSubview(created, at: 0)
+                NSLayoutConstraint.activate([
+                    created.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                    created.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                    created.topAnchor.constraint(equalTo: view.topAnchor),
+                    created.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+                ])
+                backdrop = created
+            }
+        } else if let backdrop {
+            backdrop.removeFromSuperview()
+            self.backdrop = nil
+        }
+    }
+
+    private func tearDownSurface() {
+        handOffWaitsForPosture = false
+        closeBarEmojiPanel()
+        barEmojiLibrary = nil
+        children.forEach { child in
+            child.willMove(toParent: nil)
+            child.viewIfLoaded?.removeFromSuperview()
+            child.removeFromParent()
+        }
+        surface?.removeFromSuperview()
+        surface = nil
+        fullKeyboard = nil
+        barTopConstraint = nil
+        didWarmLexicon = false
+        backdrop?.removeFromSuperview()
+        backdrop = nil
+        (viewIfLoaded as? KeyboardInputView)?.unmountHexViews()
+    }
+
+    private func retireSupersededKeyboard() {
+        autoStartPending = false
+        handOffWaitsForPosture = false
+        if dictationEdits.isTracking { dictationEdits.finish(nil) }
+        TypingJournal.sharedIfEnabled()?.save()
+        AdaptiveTouch.current?.save()
+        fullKeyboard?.engine.commitHangulComposition()
+        isShown = false
+        isRetired = true
+        launchWork.forEach { $0.cancel() }
+        launchWork = []
+        liveTyping.keyboardWillHide()
+        localDictation.keyboardWillHide()
+        endTypingLogSession(reason: "superseded", settleDictation: nil)
+        pollTimer?.invalidate()
+        pollTimer = nil
+        tearDownSurface()
+    }
+
+    private func restoreRetiredKeyboard() {
+        isRetired = false
+        autoStartPending = false
+        handOffWaitsForPosture = false
+        if KeyboardFieldRouting.route(for: textDocumentProxy.keyboardType) == .handOff {
+            didHandOffCurrentField = true
+        }
+        mountSurface()
+        fullKeyboard?.prepareForField()
+        isShown = true
+        syncFromBridge(animated: false)
+        schedulePoll(force: true)
+        if viewIfLoaded?.window != nil {
+            scheduleLaunchWork()
+        }
+    }
+
     private func configureView() {
-        guard backdrop.superview == nil else { return }
+        guard !didConfigureView else { return }
+        didConfigureView = true
         view.backgroundColor = .clear
-        backdrop.translatesAutoresizingMaskIntoConstraints = false
-        view.insertSubview(backdrop, at: 0)
-        NSLayoutConstraint.activate([
-            backdrop.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            backdrop.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            backdrop.topAnchor.constraint(equalTo: view.topAnchor),
-            backdrop.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-        ])
+        NotificationCenter.default.addObserver(self, selector: #selector(updateBackdrop), name: Self.onScreenDidChange, object: nil)
 
         viewModel.inputViewController = self
         dictationEdits.onResult = { result in
@@ -524,6 +684,15 @@ final class KeyboardViewController: UIInputViewController {
             return TypingJournal.sharedIfEnabled()?.dictationCorrections(language: language) ?? []
         }
         localDictation.currentDocument = { [weak self] in self?.currentDocument }
+        localDictation.liveText = viewModel.liveText
+        liveTyping.attach(viewModel.liveText)
+        liveTyping.mayType = { [weak self] in self?.fullKeyboard?.engine.hasPendingSelectionDictation != true }
+        liveTyping.didEdit = { [weak self] in
+            self?.fullKeyboard?.engine.forgetTextAroundKeys()
+            self?.fullKeyboard?.engine.textDidChange()
+        }
+        liveTyping.willSend = { [weak self] in self?.localDictation.holdForSend() }
+        liveTyping.didSettleSend = { [weak self] sent in self?.liveWordsSent(sent) }
         viewModel.onPasteDictation = { [weak self] in self?.pasteOfferedDictation() }
         viewModel.onDictateTap = { [weak self] in self?.startWarmDictation() }
         viewModel.onHexKeyPress = { [weak self] at in self?.hexKeyPressed(at: at) }
@@ -641,18 +810,20 @@ final class KeyboardViewController: UIInputViewController {
         }
         viewModel.onOpenURL = { [weak self] url in
             guard let self else { return }
+            if url == self.viewModel.coldStartURL, let reason = self.opensHexFor {
+                KeyboardSelfDictation().recordHandedToHex(reason)
+            }
             ContainingAppOpener.open(url, from: self)
         }
 
         mountSurface()
     }
 
-    /// The full keyboard (iPhone only), or the dictation bar once it was chosen. Without Full
-    /// Access always the full keyboard: the bar types nothing but spaces and line breaks,
-    /// and its Dictate needs Full Access. Only switches while idle.
+    /// The full keyboard, or the dictation bar once it was chosen, on an iPhone and an iPad alike.
+    /// Without Full Access always the full keyboard: the bar types nothing but spaces and line
+    /// breaks, and its Dictate needs Full Access. Only switches while idle.
     private func mountSurface() {
-        let wantsFull = (FullKeyboardSettings().isEnabled || !hasFullAccess)
-            && UIDevice.current.userInterfaceIdiom == .phone
+        let wantsFull = FullKeyboardSettings().isEnabled || !hasFullAccess
         guard surface == nil || wantsFull != (fullKeyboard != nil) else { return }
         guard surface == nil || viewModel.stagePhase == .idle || viewModel.stagePhase == .failed else { return }
         closeBarEmojiPanel()
@@ -665,7 +836,6 @@ final class KeyboardViewController: UIInputViewController {
             child.removeFromParent()
         }
         surface?.removeFromSuperview()
-        view.subviews.filter { $0 is FullKeyboardView }.forEach { $0.removeFromSuperview() }
         fullKeyboard = nil
         barTopConstraint = nil
         didWarmLexicon = false
@@ -706,7 +876,12 @@ final class KeyboardViewController: UIInputViewController {
             applyHeight(Self.barHeight + topInset)
         }
         mounted.translatesAutoresizingMaskIntoConstraints = false
-        view.insertSubview(mounted, aboveSubview: backdrop)
+        (view as? KeyboardInputView)?.noteHexSubview(mounted)
+        if let backdrop {
+            view.insertSubview(mounted, aboveSubview: backdrop)
+        } else {
+            view.addSubview(mounted)
+        }
         let top = mounted.topAnchor.constraint(equalTo: view.topAnchor, constant: topInset)
         NSLayoutConstraint.activate([
             mounted.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -765,7 +940,6 @@ final class KeyboardViewController: UIInputViewController {
         hapticStrength = FullKeyboardSettings().hapticStrength
         fullKeyboard?.syncSettings()
         syncTypingLogEnabled()
-        syncLoggingMark()
         let effectiveFullAccess = dictationAccess(now: now)
         syncLocalDictationAvailability(access: effectiveFullAccess)
 
@@ -797,14 +971,19 @@ final class KeyboardViewController: UIInputViewController {
         var insertedResult = false
 
         // The keyboard's own dictation, and Hex's even while one of the keyboard's is on screen.
-        if let localSnapshot, insertResult(of: localSnapshot, source: "keyboard", now: now) {
-            insertedResult = true
-        }
-        if insertResult(of: appSnapshot, source: "app", now: now) {
-            insertedResult = true
-        }
-        if isShown, insertHeldDictation(now: now) {
-            insertedResult = true
+        // Only while shown: a keyboard iOS starts afresh as you come back from Hex syncs in
+        // viewDidLoad, before its field is connected, and text inserted then never reaches the
+        // field though the proxy takes it (iPad, TestFlight build 115: nothing went in).
+        if isShown {
+            if let localSnapshot, insertResult(of: localSnapshot, source: "keyboard", now: now) {
+                insertedResult = true
+            }
+            if insertResult(of: appSnapshot, source: "app", now: now) {
+                insertedResult = true
+            }
+            if insertHeldDictation(now: now) {
+                insertedResult = true
+            }
         }
         if insertedResult {
             coldStartJobID = UUID().uuidString
@@ -851,7 +1030,10 @@ final class KeyboardViewController: UIInputViewController {
             translationFailure: snap.translationFailure,
             source: source
         )
-        if source == "keyboard" { localDictation.markDelivered(resultID: resultID) }
+        if source == "keyboard" {
+            localDictation.markDelivered(resultID: resultID)
+            KeyboardSelfDictation().clearHandedToHex()
+        }
         return true
     }
 
@@ -917,7 +1099,12 @@ final class KeyboardViewController: UIInputViewController {
         translationFailure: TranslationFailure? = nil,
         source: String
     ) {
-        let context = editContext
+        // A two-thumb Dictate's words replace the range it picked, if the field still shows
+        // it; either way, the context below is read after that, so spacing sees the result.
+        fullKeyboard?.engine.commitHangulComposition()
+        fullKeyboard?.applyPendingSelectionDictation()
+        // Type as I speak's words come out first: the text goes in where and as it would without them.
+        let context = liveTyping.handOver() ?? editContext
         let insertion = TranscriptFormatter.insertionText(
             for: transcript,
             beforeContext: context.before,
@@ -970,14 +1157,14 @@ final class KeyboardViewController: UIInputViewController {
     // MARK: - The dictation bar's emoji panel
 
     /// The full keyboard's emoji panel in place of the dictation bar, at the full keyboard's
-    /// height (the bar's 146 pt can't hold its grid); its ABC key goes back to the bar. No
+    /// height (the bar's 146 pt can't hold its grid); its back key (in place of ABC) goes back to the bar. No
     /// search: its query is typed on letter keys the bar doesn't have.
     private func openBarEmojiPanel() {
         guard barEmojiPanel == nil, fullKeyboard == nil, let surface else { return }
         let language = viewModel.effectiveLanguage
             .flatMap { Locale(identifier: $0).language.languageCode?.identifier } ?? "en"
         guard let library = barEmojiLibrary?.language == language ? barEmojiLibrary
-            : EmojiLibrary.load(language: language, bundle: Bundle(for: FullKeyboardView.self)) else { return }
+            : EmojiLibrary.bundled(language: language, bundle: Bundle(for: FullKeyboardView.self)) else { return }
         barEmojiLibrary = library
         typingLog?.ui("emoji_open")
         let orientation = FullKeyboardView.orientation(for: traitCollection)
@@ -986,6 +1173,7 @@ final class KeyboardViewController: UIInputViewController {
         panel.palette = FullKeyboardPalette(isDark: FullKeyboardPalette.isDark(traits: traitCollection))
         panel.showsKeyPopups = FullKeyboardSettings().keyPopups
         panel.showsSearch = false
+        panel.returnsToBar = true
         panel.onKeyDown = { [weak self] in self?.viewModel.onKeyFeedback?() }
         panel.onSelectionStep = { [weak self] in self?.viewModel.onKeyFeedback?() }
         panel.onInsert = { [weak self, weak panel] text, entry, source in
@@ -1007,6 +1195,7 @@ final class KeyboardViewController: UIInputViewController {
             self?.closeBarEmojiPanel()
         }
         panel.translatesAutoresizingMaskIntoConstraints = false
+        (view as? KeyboardInputView)?.noteHexSubview(panel)
         view.insertSubview(panel, aboveSubview: surface)
         NSLayoutConstraint.activate([
             panel.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -1033,6 +1222,8 @@ final class KeyboardViewController: UIInputViewController {
 
     /// Whether the Dictate and Hex keys dictate in the keyboard; nil until first decided.
     private var localDictationAvailable: Bool?
+    /// Why Dictate opens Hex while it can't dictate here, recorded as it does (`KeyboardSelfDictation`).
+    private var opensHexFor: KeyboardSelfDictation.Reason?
     private var lastAvailabilityNote: TimeInterval = 0
 
     /// In-keyboard dictation (iOS 26) needs memory for its capture web view and recording
@@ -1043,7 +1234,8 @@ final class KeyboardViewController: UIInputViewController {
     /// English."): Hex downloads it, and the keyboard dictates again once it installs.
     /// Without Full Access it is nil too, and the Hex key says dictation needs Full Access.
     /// The same while Experiments › Multilingual model (Parakeet) dictates the language: only
-    /// Hex can load that model, so Dictate and the Hex key open Hex.
+    /// Hex can load that model, so Dictate and the Hex key open Hex, once Hex has it ready.
+    /// Until then the keyboard dictates as it would with the experiment off.
     private func syncLocalDictationAvailability(access: Bool) {
         guard KeyboardLocalDictation.isSupported else { return }
         guard access || localDictation.isActive else {
@@ -1052,9 +1244,11 @@ final class KeyboardViewController: UIInputViewController {
             return
         }
         let multilingual = MultilingualParakeetSettings()
-        let multilingualOpensHex = multilingual.isEnabled && multilingual.language() != nil
+        let multilingualOpensHex = multilingual.keyboardOpensHex(language: multilingual.language())
+            && !KeyboardParakeet.shared.dictatesMultilingualHere
         let needsHex = !localDictation.isActive && (LanguageSettings().keyboardNeedsHex() || multilingualOpensHex)
         let available = localDictation.isActive || (!needsHex && localDictation.hasMemoryToStart)
+        opensHexFor = available ? nil : multilingualOpensHex ? .multilingual : needsHex ? .speechModel : .memory
         guard available != localDictationAvailable else { return }
         // Noted at most every 5 s, as the footprint can hover at the line.
         let now = Date().timeIntervalSince1970
@@ -1128,15 +1322,16 @@ final class KeyboardViewController: UIInputViewController {
         let translationLanguage: String? = if #available(iOS 26.0, *) { translation.targetLanguage } else { nil }
         let translationLanguages = Self.translationLanguages
         let hinglish = HinglishSettings().isEnabled
+        let greeklish = GreeklishSettings().isEnabled
         let signature = [
             explicit ?? "", automatic ?? "", recent.joined(separator: ","), removed.joined(separator: ","),
             "\(supported.count)",
-            target ?? "", "\(hinglish)",
+            target ?? "", "\(hinglish)", "\(greeklish)",
             translationLanguage ?? "", "\(translationLanguages?.count ?? -1)",
         ].joined(separator: "|")
         guard signature != languageSignature else { return }
         languageSignature = signature
-        let choices = settings.keyboardLanguageChoices(hinglish: hinglish)
+        let choices = settings.keyboardLanguageChoices(hinglish: hinglish, greeklish: greeklish)
         let more = DictationLanguageSwitch.more(choices: choices, preferred: Locale.preferredLanguages, supported: supported)
         if viewModel.dictationLanguage != explicit { viewModel.dictationLanguage = explicit }
         if viewModel.automaticLanguage != automatic { viewModel.automaticLanguage = automatic }
@@ -1222,12 +1417,12 @@ final class KeyboardViewController: UIInputViewController {
         if viewModel.returnKeyEnabled != returnOn {
             viewModel.returnKeyEnabled = returnOn
         }
-        // As the full keyboard's emoji key: fields that take any text, on an iPhone.
+        // As the full keyboard's emoji key: fields that take any text.
         let takesEmoji: Bool = {
             guard case .keys(.text, _) = KeyboardFieldRouting.route(for: textDocumentProxy.keyboardType) else { return false }
             return textDocumentProxy.keyboardType != .asciiCapable
         }()
-        let showsEmoji = FullKeyboardSettings().emoji && takesEmoji && UIDevice.current.userInterfaceIdiom == .phone
+        let showsEmoji = FullKeyboardSettings().emoji && takesEmoji
         if viewModel.showsEmojiKey != showsEmoji {
             viewModel.showsEmojiKey = showsEmoji
         }

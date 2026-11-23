@@ -80,7 +80,9 @@ impl Feature {
             | Self::SpeakersOnly
             | Self::Playground
             | Self::StopPhrase
-            | Self::VocabularyFiles => Group::Dictation,
+            | Self::VocabularyFiles
+            | Self::HudHeight
+            | Self::VoiceIsolation => Group::Dictation,
             Self::SmartSpacing
             | Self::SpokenFormatting
             | Self::SpokenSymbols
@@ -100,7 +102,9 @@ impl Feature {
             | Self::YoloMode
             | Self::CursorContext
             | Self::VoicePrompt
-            | Self::ModesEditor => Group::Output,
+            | Self::ModesEditor
+            | Self::Signature
+            | Self::DictationStyle => Group::Output,
             Self::KeepRecordings
             | Self::HistoryStats
             | Self::RecentDictations
@@ -118,7 +122,8 @@ impl Feature {
             | Self::AnnotatePointerScreen
             | Self::CopyCaptureZip
             | Self::AnnotateAgentTools
-            | Self::AnnotateAgentInstall => Group::Annotate,
+            | Self::AnnotateAgentInstall
+            | Self::DictateWhileAnnotating => Group::Annotate,
             Self::MouseShortcuts
             | Self::SecondDictationShortcut
             | Self::MoreDictationShortcuts

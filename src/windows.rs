@@ -488,6 +488,11 @@ fn capture(
                 fail_capture(&events, &device_name, &error)?;
                 bail!(error);
             }
+            AudioInputEvent::StreamReconfigured => {
+                let error = "microphone reconfigured".to_owned();
+                fail_capture(&events, &device_name, &error)?;
+                bail!(error);
+            }
         }
     }
     drop(input);

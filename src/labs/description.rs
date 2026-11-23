@@ -228,6 +228,21 @@ impl Feature {
             Self::AnnotateAgentInstall => {
                 "Adds an Agents section to the Annotate pane: one checked row per coding agent writes the hex-annotate skill into its own skills folder, a row copies the npx skills add command, and on macOS the Command-line tool row links hex onto PATH (/opt/homebrew/bin, /usr/local/bin, else ~/.local/bin) without replacing a hex another program owns"
             }
+            Self::Signature => {
+                "Each normal dictation pastes with your signature on its own line at the end, and Paste Last and History keep the same text; not added to raw, printed, or API output"
+            }
+            Self::DictationStyle => {
+                "Write each dictation as Polished, Casual, Notes, or Verbatim after the corrections and rewrite and before transformations; Dictate without processing, Voice Action, meetings, and the local API are left alone"
+            }
+            Self::HudHeight => {
+                "Choose how high the dictation HUD sits above the Dock or the screen's bottom edge when its position is Bottom (labs.hud_bottom_gap, macOS)"
+            }
+            Self::VoiceIsolation => {
+                "Open dictation's microphone through Apple's voice processing, so Control Center's Mic Mode can offer Voice Isolation and background noise is reduced (macOS; falls back to normal capture when voice processing won't start, and may lower other audio)"
+            }
+            Self::DictateWhileAnnotating => {
+                "While an Annotate capture records, the dictation shortcut dictates as usual: the text pastes into the app in front, History and Paste Last keep it, and the capture goes on recording, hearing the words too"
+            }
         }
     }
 }

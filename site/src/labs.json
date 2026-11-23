@@ -825,6 +825,54 @@
       ],
       "summary": "Import terms from a CSV file in the Vocabulary sheet, or save the whole list as one",
       "title": "Vocabulary files"
+    },
+    {
+      "added": "2026-11-21",
+      "group": "output",
+      "groupTitle": "Output",
+      "id": "signature",
+      "oses": [
+        "macos",
+        "windows",
+        "linux"
+      ],
+      "summary": "Add a line to the end of each dictation, such as \"Sent from Hex\"",
+      "title": "Signature"
+    },
+    {
+      "added": "2026-11-22",
+      "group": "output",
+      "groupTitle": "Output",
+      "id": "dictation-style",
+      "oses": [
+        "macos",
+        "windows",
+        "linux"
+      ],
+      "summary": "Format every dictation as Polished, Casual, Notes, or Verbatim, like the iPhone app, without an AI model",
+      "title": "Dictation style"
+    },
+    {
+      "added": "2026-11-22",
+      "group": "dictation",
+      "groupTitle": "Dictation",
+      "id": "hud-height",
+      "oses": [
+        "macos"
+      ],
+      "summary": "Choose how high the dictation HUD sits above the Dock when it's at the bottom",
+      "title": "HUD height"
+    },
+    {
+      "added": "2026-11-22",
+      "group": "dictation",
+      "groupTitle": "Dictation",
+      "id": "voice-isolation",
+      "oses": [
+        "macos"
+      ],
+      "summary": "Record dictation through Apple's voice processing so Mic Mode can turn on Voice Isolation and cut background noise.",
+      "title": "Voice isolation"
     }
   ]
 }

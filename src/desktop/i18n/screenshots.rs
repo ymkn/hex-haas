@@ -18,12 +18,52 @@ pub(super) fn merged(
     table: &[(&'static str, &'static str)],
     language: Language,
 ) -> HashMap<&'static str, &'static str> {
-    let (extra, agents) = match language {
-        Language::French => (FRENCH, super::agents::FRENCH),
-        Language::Portuguese => (PORTUGUESE, super::agents::PORTUGUESE),
-        Language::Russian => (RUSSIAN, super::agents::RUSSIAN),
-    };
-    table.iter().chain(extra).chain(agents).copied().collect()
+    let (extra, agents, signature, style, hud_height, voice_isolation, annotate, calls) =
+        match language {
+            Language::French => (
+                FRENCH,
+                super::agents::FRENCH,
+                super::signature::FRENCH,
+                super::style::FRENCH,
+                super::hud_height::FRENCH,
+                super::voice_isolation::FRENCH,
+                super::annotate_dictation::FRENCH,
+                super::calls::FRENCH,
+            ),
+            Language::Portuguese => (
+                PORTUGUESE,
+                super::agents::PORTUGUESE,
+                super::signature::PORTUGUESE,
+                super::style::PORTUGUESE,
+                super::hud_height::PORTUGUESE,
+                super::voice_isolation::PORTUGUESE,
+                super::annotate_dictation::PORTUGUESE,
+                super::calls::PORTUGUESE,
+            ),
+            Language::Russian => (
+                RUSSIAN,
+                super::agents::RUSSIAN,
+                super::signature::RUSSIAN,
+                super::style::RUSSIAN,
+                super::hud_height::RUSSIAN,
+                super::voice_isolation::RUSSIAN,
+                super::annotate_dictation::RUSSIAN,
+                super::calls::RUSSIAN,
+            ),
+        };
+
+    table
+        .iter()
+        .chain(extra)
+        .chain(agents)
+        .chain(signature)
+        .chain(style)
+        .chain(hud_height)
+        .chain(voice_isolation)
+        .chain(annotate)
+        .chain(calls)
+        .copied()
+        .collect()
 }
 
 /// Columns: Polish, Chinese (Simplified), Japanese, German, Spanish, Ukrainian.

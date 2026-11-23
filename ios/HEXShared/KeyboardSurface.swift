@@ -39,17 +39,29 @@ private struct GlobeKeyRepresentable: UIViewRepresentable {
             : UIColor(red: 0x14 / 255.0, green: 0x16 / 255.0, blue: 0x1B / 255.0, alpha: 1)
         button.configuration = config
         button.accessibilityLabel = "Next keyboard"
-        if let controller {
-            button.addTarget(
-                controller,
-                action: #selector(UIInputViewController.handleInputModeList(from:with:)),
-                for: .allTouchEvents
-            )
+        if controller != nil {
+            button.addTarget(context.coordinator, action: #selector(Coordinator.touch(_:with:)), for: .allTouchEvents)
         }
         return button
     }
 
+    func makeCoordinator() -> Coordinator { Coordinator(controller: controller) }
+
+    /// Holds back a tap where Apple's keyboard splits, as the full keyboard's globe does.
+    @MainActor final class Coordinator: NSObject {
+        weak var controller: UIInputViewController?
+        private let inputModeListTouch = InputModeListTouch()
+
+        init(controller: UIInputViewController?) { self.controller = controller }
+
+        @objc func touch(_ sender: UIButton, with event: UIEvent) {
+            guard let controller else { return }
+            inputModeListTouch.forward(sender, with: event, to: controller)
+        }
+    }
+
     func updateUIView(_ uiView: UIButton, context: Context) {
+        context.coordinator.controller = controller
         uiView.configuration?.baseForegroundColor = isDark
             ? UIColor(white: 0.92, alpha: 1)
             : UIColor(red: 0x14 / 255.0, green: 0x16 / 255.0, blue: 0x1B / 255.0, alpha: 1)
@@ -388,26 +400,6 @@ extension View {
     }
 }
 
-/// Record typing logs is recording: a dot and "Logging", flat and small, in the dictation
-/// bar's top row (the full keyboard draws `TypingLogMarkView`).
-struct TypingLogMark: View {
-    let textColor: Color
-
-    var body: some View {
-        HStack(spacing: 4) {
-            // Muted, not orange: an orange dot would read as iOS's microphone indicator.
-            Circle()
-                .fill(textColor)
-                .frame(width: 5, height: 5)
-            Text(TypingLogMarkView.text)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(textColor)
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(TypingLogMarkView.accessibilityText)
-    }
-}
-
 /// Beside the dictation bar's Hex mark while dictations paste translated: the target's code
 /// ("EN"), so a dictation never comes out in another language by surprise.
 private struct TranslationBadge: View {
@@ -431,7 +423,7 @@ private struct TranslationBadge: View {
 }
 
 enum KeyboardSetupCopy {
-    static let fullAccessPath = "Allow Full Access: Settings › Apps › Hex › Keyboards"
+    static let fullAccessPath = String(localized: "Allow Full Access: Settings › Apps › Hex › Keyboards")
 }
 
 /// Metal-free stand-in for the resting Dot Scope bar. Mounting it instead of
@@ -621,14 +613,10 @@ struct KeyboardSurfaceView: View {
             .accessibilityLabel("Open Hex")
 
             // The mark's tap area reaches past its pill into this group's slot: the
-            // outdent keeps the badge, the logging mark, and the status where they were.
+            // outdent keeps the badge and the status where they were.
             HStack(spacing: 8) {
                 if let target = model.translatingTo {
                     TranslationBadge(target: target, palette: p)
-                }
-
-                if model.isLoggingTyping {
-                    TypingLogMark(textColor: p.textMuted)
                 }
 
                 leadingAccessory(palette: p)
@@ -636,6 +624,11 @@ struct KeyboardSurfaceView: View {
             .padding(.leading, -TopBarMetrics.hexMarkOverlap)
 
             Spacer(minLength: 4)
+
+            if showsPasteDictation {
+                pasteDictationChip(palette: p)
+                Spacer(minLength: 4)
+            }
 
             // The translation note takes the bar's width for its few seconds.
             if model.showsLanguageSwitch || model.showsTranslationSwitch, model.translationNote == nil {
@@ -646,6 +639,30 @@ struct KeyboardSurfaceView: View {
                 .hexTrayReveal(model.hasFullAccess && model.translationNote == nil, reduceMotion: reduceMotion, offsetY: 0)
         }
         .frame(height: TopBarMetrics.height)
+    }
+
+    /// A dictation that didn't go in by itself, as the full keyboard's strip offers it: the
+    /// bar is the only keyboard on an iPad, and without this a late one was out of reach.
+    private var showsPasteDictation: Bool {
+        model.hasFullAccess && model.offeredDictation != nil && !isStageActive && model.translationNote == nil
+    }
+
+    private func pasteDictationChip(palette p: KeyboardChromePalette) -> some View {
+        Button {
+            model.onKeyFeedback?()
+            model.onPasteDictation?()
+        } label: {
+            Text("Paste dictation")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(p.textBase)
+                .lineLimit(1)
+                .fixedSize()
+                .padding(.horizontal, 11)
+                .frame(height: 26)
+                .background(p.chipActiveFill, in: Capsule())
+        }
+        .buttonStyle(TopBarChipButtonStyle())
+        .layoutPriority(1)
     }
 
     private func styleTrayBar(palette p: KeyboardChromePalette) -> some View {

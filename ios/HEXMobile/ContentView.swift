@@ -46,6 +46,8 @@ struct ContentView: View {
     @State private var onboardingPage = OnboardingProgress.launchPage
     @State private var settingsPath = SettingsSnapshotFixture.initialPath
     @State private var showAcknowledgements = false
+    /// Whether Hex went to the background, so only a real return starts the keyboard's check over.
+    @State private var keyboardCheckWasInBackground = false
 
     private static let stageWellHeight: CGFloat = 48
     private static let stageControlHeight: CGFloat = 36
@@ -85,6 +87,24 @@ struct ContentView: View {
             }
         }
         .task { keyboardSpeech.start { dictation.engineName } }
+        .onChange(of: scenePhase) { _, phase in
+            switch phase {
+            case .background:
+                keyboardCheckWasInBackground = true
+            case .active:
+                // Only after a real background trip: an alert, Face ID or Control Center goes
+                // inactive and back without suspending anything, and launch starts active. The
+                // app's own preparation resumes in HEXMobileApp, which tracks it the same way.
+                if keyboardCheckWasInBackground {
+                    keyboardCheckWasInBackground = false
+                    keyboardSpeech.resumeOnForeground { dictation.engineName }
+                }
+                // Opened from a keyboard handing its dictations to Hex: check again whether it must.
+                keyboardSpeech.recheckKeyboardHandoff { dictation.engineName }
+            default:
+                break
+            }
+        }
         .animation(HexMotion.reducedFade, value: openedFromKeyboard)
         .animation(HexMotion.reducedFade, value: onboardingPage == nil)
     }
@@ -200,6 +220,27 @@ struct ContentView: View {
                         .transition(.opacity.combined(with: .scale(scale: 0.98)))
                 }
 
+                // Experiments › Multilingual model: its download or load, beside dictation.
+                MultilingualModelStatus(
+                    download: dictation.multilingualDownload,
+                    retry: { dictation.retryMultilingualParakeet() },
+                    turnOff: { dictation.turnOffMultilingualParakeet() }
+                )
+
+                SpeechModelHomeCard(download: KeyboardParakeetDownload.shared, open: { settingsPath = [.dictation] })
+
+                if setupMonitor.needsAllowPasteSetting {
+                    AllowPasteBanner(
+                        openSettings: {
+                            if let url = URL(string: UIApplication.openSettingsURLString) {
+                                openURL(url)
+                            }
+                        },
+                        dismiss: { setupMonitor.dismissAllowPasteSetting() }
+                    )
+                    .transition(.opacity.combined(with: .scale(scale: 0.98)))
+                }
+
                 SettingsCard {
                     ForEach(Array(SettingsPage.allCases.enumerated()), id: \.element) { index, page in
                         if index > 0 {
@@ -275,6 +316,7 @@ struct ContentView: View {
             .animation(HexMotion.settleAnimation(reduceMotion: reduceMotion), value: dictation.keyboardSessionEnabled)
             .animation(HexMotion.settleAnimation(reduceMotion: reduceMotion), value: hasTranscript)
             .animation(HexMotion.settleAnimation(reduceMotion: reduceMotion), value: setupStepsLeft)
+            .animation(HexMotion.settleAnimation(reduceMotion: reduceMotion), value: setupMonitor.needsAllowPasteSetting)
         }
         .scrollBounceBehavior(.basedOnSize)
         .scrollDismissesKeyboard(.interactively)
@@ -287,7 +329,11 @@ struct ContentView: View {
         case .dictation:
             DictationSettingsPage(dictation: dictation)
         case .keyboard:
-            KeyboardSettingsPage()
+            KeyboardSettingsPage(
+                fullAccessOn: setupMonitor.fullAccessOn,
+                needsAllowPasteSetting: setupMonitor.needsAllowPasteSetting,
+                onDismissAllowPasteSetting: { setupMonitor.dismissAllowPasteSetting() }
+            )
         case .privacy:
             PrivacySettingsPage()
         case .experiments:
@@ -338,7 +384,7 @@ struct ContentView: View {
                     .background(Color.white.opacity(0.07), in: Capsule())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("End warm microphone session")
+                .accessibilityLabel("Turn off warm mic")
                 .hexTrayReveal(showWarmPill, reduceMotion: reduceMotion, offsetY: 2)
             }
         }
@@ -772,21 +818,11 @@ struct ContentView: View {
     }
 
     private var primaryActionLabel: String {
-        switch dictation.phase {
-        case .modelRequired, .failed:
-            String(localized: "Set up")
-        default:
-            String(localized: "Dictate")
-        }
+        dictation.primaryActionPreparesModel ? String(localized: "Set up") : String(localized: "Dictate")
     }
 
     private var primaryActionIcon: String {
-        switch dictation.phase {
-        case .modelRequired, .failed:
-            "arrow.down"
-        default:
-            "mic.fill"
-        }
+        dictation.primaryActionPreparesModel ? "arrow.down" : "mic.fill"
     }
 
     private var handoffStatusLine: String? {

@@ -84,6 +84,7 @@ final class KeyboardKeyPlaneView: UIView {
     /// this view lies over the strip, so it gets those touches before the suggestions.
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
         engine.layout.touchAreaFrame.contains(point) || engine.takesStripTouch(at: point)
+            || (engine.startsTwoThumbSelection && engine.layout.stripFrame.contains(point))
     }
 
     // MARK: - Drawing
@@ -91,14 +92,16 @@ final class KeyboardKeyPlaneView: UIView {
     override func draw(_ rect: CGRect) {
         guard let context = UIGraphicsGetCurrentContext() else { return }
         let layout = engine.layout
-        let isLandscape = layout.orientation == .landscape
+        // An iPad's keys are as large turned as upright, so they keep the portrait labels.
+        let isLandscape = layout.orientation == .landscape && layout.metrics.pad == nil
+        let labelScale = layout.keyLabelScale
         let radius = layout.metrics.cornerRadius
         var pressed = engine.pressedKinds
         if let lingeringKind { pressed.insert(lingeringKind) }
         pressed.formUnion(lingeringFunctionKinds)
         // Like Apple's spacebar trackpad, key glyphs fade out while sliding the cursor, and the
         // keycaps fade most of the way to blank (`trackpadKeycapAlpha`).
-        let hideGlyphs = engine.isTrackpadActive
+        let hideGlyphs = engine.isTrackpadActive || (engine.isSelectionActive && !engine.selectionActionsShown)
         let glyphAlpha = currentGlyphAlpha()
         let keycapAlpha = 1 - (1 - Self.trackpadKeycapAlpha) * (1 - glyphAlpha)
         let showGlyphs = { () -> Bool in
@@ -121,17 +124,26 @@ final class KeyboardKeyPlaneView: UIView {
             case .character:
                 // The pressed key stays in place, grey, under iOS 27's floating pop-up.
                 let fill = pressed.contains(key.kind) ? palette.keyHeldFill : palette.keyFill
-                context.fillKeycap(frame, fill: fill, radius: radius)
+                context.fillKeycap(frame, fill: fill, shadow: palette.keyShadow, radius: radius)
                 guard showGlyphs() else { continue }
+                if let upper = key.shifted, let lower = key.character, layout.metrics.pad?.isDocked == true {
+                    // The docked iPad's two-symbol keys: the shifted one over the one typed, as Apple's.
+                    let font = UIFont.systemFont(ofSize: 18, weight: .regular)
+                    let half = labelFrame.height / 2
+                    drawText(upper, in: CGRect(x: labelFrame.minX, y: labelFrame.minY + 0.2 * half, width: labelFrame.width, height: half), font: font, color: palette.textBase)
+                    drawText(lower, in: CGRect(x: labelFrame.minX, y: labelFrame.midY - 0.2 * half, width: labelFrame.width, height: half), font: font, color: palette.textBase)
+                    continue
+                }
                 var label = Self.keycapLabel(engine.keycapLabel(for: key))
                 let isUpperLetter = layout.layer == .letters && engine.keycapsUppercase && label.first?.isUppercase == true
-                let style = isLandscape
+                var style = isLandscape
                     ? (isUpperLetter ? Self.landscapeCapital
                         : label.first?.isLetter == true ? Self.landscapeLowercase
                         : Self.landscapeSymbolOverrides[label] ?? Self.landscapeSymbol)
                     : isUpperLetter ? LabelStyle.capital
                     : label.first?.isLetter == true ? LabelStyle.lowercase
                     : LabelStyle.symbolOverrides[label] ?? LabelStyle.symbol
+                style = style.scaled(by: labelScale)
                 if let shown = style.shows { label = shown }
                 if !isLandscape, layout.layer == .letters, label.first?.isLetter == true {
                     drawLetter(label, in: labelFrame, style: style, capital: isUpperLetter)
@@ -141,7 +153,7 @@ final class KeyboardKeyPlaneView: UIView {
             case .space:
                 // Apple's space bar unshades as it becomes the trackpad.
                 let fill = pressed.contains(.space) && !hideGlyphs ? palette.spaceHeldFill : palette.keyFill
-                context.fillKeycap(frame, fill: fill, radius: radius)
+                context.fillKeycap(frame, fill: fill, shadow: palette.keyShadow, radius: radius)
                 guard showGlyphs(), let spaceLabel else { continue }
                 drawText(
                     spaceLabel,
@@ -167,7 +179,7 @@ final class KeyboardKeyPlaneView: UIView {
                 } else {
                     palette.textBase
                 }
-                context.fillKeycap(frame, fill: fill, radius: radius)
+                context.fillKeycap(frame, fill: fill, shadow: palette.keyShadow, radius: radius)
                 guard showGlyphs() else { continue }
                 drawSymbol(
                     returnStyle.symbol,
@@ -180,7 +192,7 @@ final class KeyboardKeyPlaneView: UIView {
             case .shift:
                 let shift = engine.shift
                 let isPressed = pressed.contains(.shift) && !shift.pressShowsOff
-                context.fillKeycap(frame, fill: isPressed ? palette.functionHeldFill : palette.keyFill, radius: radius)
+                context.fillKeycap(frame, fill: isPressed ? palette.functionHeldFill : palette.keyFill, shadow: palette.keyShadow, radius: radius)
                 guard showGlyphs() else { continue }
                 let symbol = if shift.pressShowsOff {
                     "shift"
@@ -194,14 +206,14 @@ final class KeyboardKeyPlaneView: UIView {
                 drawSymbol(symbol, in: labelFrame, color: palette.textBase, pointSize: isLandscape ? 18 : 19, yOffset: isLandscape ? -0.16 : 0.67)
             case .delete:
                 let lit = pressed.contains(.delete)
-                context.fillKeycap(frame, fill: lit ? palette.functionHeldFill : palette.keyFill, radius: radius)
+                context.fillKeycap(frame, fill: lit ? palette.functionHeldFill : palette.keyFill, shadow: palette.keyShadow, radius: radius)
                 guard showGlyphs() else { continue }
                 drawSymbol(lit ? "delete.left.fill" : "delete.left", in: labelFrame, color: palette.textBase, pointSize: isLandscape ? 18.5 : 19, yOffset: isLandscape ? -0.16 : 0.33)
             case .layerSwitch:
                 let lit = pressed.contains(key.kind)
-                context.fillKeycap(frame, fill: lit ? palette.keyHeldFill : palette.keyFill, radius: radius)
+                context.fillKeycap(frame, fill: lit ? palette.keyHeldFill : palette.keyFill, shadow: palette.keyShadow, radius: radius)
                 guard showGlyphs() else { continue }
-                let style = isLandscape
+                var style = isLandscape
                     ? (key.label == "123" && key.row == 3 ? LabelStyle(size: 15.5, weight: UIFont.Weight(rawValue: -0.05), yOffset: 0)
                         : key.row == 3 ? LabelStyle(size: 17.75, weight: UIFont.Weight(rawValue: 0.08), yOffset: -0.83)
                         : key.label == "#+=" ? LabelStyle(size: 12.25, weight: UIFont.Weight(rawValue: 0.2), yOffset: -1.33)
@@ -209,18 +221,24 @@ final class KeyboardKeyPlaneView: UIView {
                     : key.row == 3 ? LabelStyle.pageKey
                     : key.label == "#+=" ? LabelStyle.symbolsPageKey
                     : LabelStyle(size: 15.5, yOffset: 0)
+                style = style.scaled(by: labelScale)
                 drawText(key.label, in: labelFrame, font: style.font, color: palette.textBase, yOffset: style.yOffset)
             case .globe:
                 let lit = pressed.contains(.globe)
-                context.fillKeycap(frame, fill: lit ? palette.functionHeldFill : palette.keyFill, radius: radius)
+                context.fillKeycap(frame, fill: lit ? palette.functionHeldFill : palette.keyFill, shadow: palette.keyShadow, radius: radius)
                 guard showGlyphs() else { continue }
                 drawSymbol("globe", in: labelFrame, color: palette.textBase, pointSize: isLandscape ? 16 : 19, yOffset: isLandscape ? 0 : -1)
             case .emoji:
                 let lit = pressed.contains(.emoji)
                 let fill = lit ? palette.functionHeldFill : palette.keyFill
-                context.fillKeycap(frame, fill: fill, radius: radius)
+                context.fillKeycap(frame, fill: fill, shadow: palette.keyShadow, radius: radius)
                 guard showGlyphs() else { continue }
                 drawEmojiFace(in: labelFrame, diameter: isLandscape ? 18 : 19, context: context, keyFill: fill)
+            case .dismiss:
+                let lit = pressed.contains(.dismiss)
+                context.fillKeycap(frame, fill: lit ? palette.functionHeldFill : palette.keyFill, shadow: palette.keyShadow, radius: radius)
+                guard showGlyphs() else { continue }
+                drawSymbol("keyboard.chevron.compact.down", in: labelFrame, color: palette.textBase, pointSize: 19, yOffset: 0)
             }
         }
     }
@@ -352,6 +370,15 @@ final class KeyboardKeyPlaneView: UIView {
         var caseSensitive = false
         /// A different glyph to draw (the key still types its own character).
         var shows: String?
+
+        /// This label at a share of its size, keeping its weight, nudge and glyph: the Duo
+        /// folded draws Apple's smaller cover labels (KeyboardLayout.keyLabelScale).
+        func scaled(by scale: CGFloat) -> LabelStyle {
+            guard scale != 1 else { return self }
+            var style = self
+            style.size *= scale
+            return style
+        }
 
         @MainActor var font: UIFont {
             let key = FontKey(size: size, weight: weight.rawValue, caseSensitive: caseSensitive)
@@ -485,8 +512,19 @@ final class KeyboardKeyPlaneView: UIView {
     // and after a move, so the line names the key the finger slid onto.
 
     func began(id: Int, sample: TypingLogTouchSample) {
-        // A second finger on the trackpad's blank keys: no click, no key (`touchBegan`).
-        if engine.isTrackpadActive { return }
+        // A second finger on the trackpad: Two-thumb selection takes it, or it's ignored as
+        // before (no click, no key). While its actions show, a touch only dismisses them.
+        if engine.selectionActionsShown {
+            engine.touchBegan(id: id, at: sample.point)
+            return
+        }
+        if engine.isSelectionActive { return }
+        if engine.isTrackpadActive {
+            guard engine.startsTwoThumbSelection else { return }
+            typingLog?.touch(.began, id: id, sample: sample, key: engine.key(at: sample.point), under: engine.layout.hitTest(sample.point))
+            engine.touchBegan(id: id, at: sample.point)
+            return
+        }
         // A swipe still under way types its word before this key's letter.
         swipe?.touchWillBegin()
         // The key's tick and click go first, on touch-down as Apple's do: the press's own work
@@ -556,7 +594,7 @@ final class KeyboardKeyPlaneView: UIView {
         case .delete:
             let repeated = CACurrentMediaTime() - deleteStartedAt >= FullKeyboardEngine.repeatDelay
             return repeated || deleteSwipe?.touchID == id && deleteSwipe?.isActive == true ? nil : .delete
-        case .space, .returnKey, .globe, .emoji:
+        case .space, .returnKey, .globe, .emoji, .dismiss:
             return touch.key.kind
         default:
             return nil
@@ -589,7 +627,7 @@ final class KeyboardKeyPlaneView: UIView {
 
     /// The labels' opacity for this frame, easing toward hidden while the trackpad is on.
     private func currentGlyphAlpha() -> CGFloat {
-        let target: CGFloat = engine.isTrackpadActive ? 0 : 1
+        let target: CGFloat = engine.isTrackpadActive || (engine.isSelectionActive && !engine.selectionActionsShown) ? 0 : 1
         if glyphFade?.to != target, glyphFade != nil || glyphAlpha != target {
             if window == nil || UIAccessibility.isReduceMotionEnabled {
                 endGlyphFade(at: target)
@@ -782,7 +820,9 @@ final class KeyCalloutView: UIView {
         context.setFillColor(palette.bubbleFill.cgColor)
         context.fillPath()
         context.restoreGState()
-        if palette.isDark {
+        // The system cutout's lightening gradient only makes sense on the system look;
+        // a theme paints its own flat bubble.
+        if palette.theme == .automatic, palette.isDark {
             // Apple's dark bubble lightens toward its bottom (63 to 85 grey).
             context.saveGState()
             context.addPath(path)

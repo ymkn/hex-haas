@@ -263,6 +263,12 @@ pub(super) const KEYS: &[Key] = &[
         "Labs: the size the screenshot editor exports a recording at; original (the \
          default) copies it as recorded (macOS)",
     ),
+    optional(
+        "screenshots.export_folder",
+        Kind::Path,
+        "Labs: the folder the screenshot editor's Save panel last saved to; none starts it in \
+         screenshots.folder (macOS)",
+    ),
     key(
         "screenshots.record_kind",
         Kind::Choice(&["area", "window", "screen"]),
@@ -599,9 +605,27 @@ pub(super) const KEYS: &[Key] = &[
         "Labs: on a screen with a notch, the recording indicator grows out of the notch at either visible position; Hidden still hides it, and flat screens keep the Top or Bottom setting (macOS)",
     ),
     key(
+        "labs.hud_height",
+        Kind::Bool,
+        "Labs: with the HUD position Bottom, the plate sits labs.hud_bottom_gap points above the Dock or the screen's bottom edge, clamped so it stays under the menu bar or notch (macOS)",
+    ),
+    key(
+        "labs.hud_bottom_gap",
+        Kind::Integer {
+            min: 0,
+            max: crate::app_settings::HUD_BOTTOM_GAP_MAX as u64,
+        },
+        "Points the dictation HUD sits above the Dock or the screen's bottom edge at the Bottom position while Labs: HUD height is on; 24 by default, and 0 to 400 (macOS)",
+    ),
+    key(
         "labs.skip_pauses",
         Kind::Bool,
         "Labs: a dictation transcribed as a whole clip hears only the start and end of each long pause, so slow computers paste sooner (Linux and Windows)",
+    ),
+    key(
+        "labs.voice_isolation",
+        Kind::Bool,
+        "Labs: dictation's microphone opens through Apple's voice processing, so Control Center's Mic Mode can offer Voice Isolation and background noise is reduced; meetings, captures, and the level meter stay on normal capture (macOS)",
     ),
     key(
         "labs.screenshots",
@@ -647,6 +671,11 @@ pub(super) const KEYS: &[Key] = &[
         "labs.gnome_annotate",
         Kind::Bool,
         "Labs: on Wayland desktops without layer-shell, such as GNOME, Annotate's capsule and ink float over the screen through XWayland while it is already running; Esc can't stop drawing there, so use the capsule's pen button or let go of a held Annotate key (Linux)",
+    ),
+    key(
+        "labs.dictate_while_annotating",
+        Kind::Bool,
+        "Labs: while an Annotate capture records, the dictation shortcut dictates as usual; the text pastes into the app in front and the capture keeps recording",
     ),
     key(
         "labs.annotate_pointer_screen",
@@ -765,6 +794,30 @@ pub(super) const KEYS: &[Key] = &[
          letters; \"stop dictation\" by default",
     ),
     key(
+        "labs.signature",
+        Kind::Bool,
+        "Labs: every normal dictation is signed with labs.signature_text on its own line at \
+         the end, before it is pasted, kept in History, and remembered for Paste Last",
+    ),
+    key(
+        "labs.signature_text",
+        Kind::Text,
+        "Labs: the line added to each normal dictation, one line of at most 200 characters; \
+         \"Sent from Hex\" by default, and empty adds nothing",
+    ),
+    key(
+        "labs.dictation_style",
+        Kind::Bool,
+        "Labs: every normal dictation is written as Polished, Casual, Notes, or Verbatim \
+         (labs.dictation_style_choice), like the iPhone app, without an AI model",
+    ),
+    key(
+        "labs.dictation_style_choice",
+        Kind::Choice(&["polished", "casual", "notes", "verbatim"]),
+        "Labs: the style every normal dictation is written as while Labs › Dictation style \
+         is on; polished by default",
+    ),
+    key(
         "meetings.enabled",
         Kind::Bool,
         "Labs: Meetings (beta), call detection, recording, and transcripts",
@@ -822,7 +875,12 @@ pub(super) const KEYS: &[Key] = &[
     key(
         "meetings.providers",
         Kind::Json,
-        "Per-app call choices, as a JSON array of {key, label, policy: ask|always_record|never_offer}",
+        "Per-app call choices, as a JSON array of {key, label, policy: ask|always_record|never_offer} (Ask each time, Always record, Don't offer)",
+    ),
+    key(
+        "meetings.default_policy",
+        Kind::Choice(&["ask", "always_record", "never_offer"]),
+        "What to do when a call starts in a website or app with no entry in meetings.providers: ask (Ask each time), always_record (Always record), or never_offer (Don't offer)",
     ),
     read_only(
         "meetings.calendar.connected",

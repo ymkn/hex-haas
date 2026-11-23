@@ -124,6 +124,7 @@ fn publish_cloud_api_config(config: &CloudApiConfig) {
         let _ = CLOUD_API_CONFIG.set(RwLock::new(config.clone()));
     }
 }
+static MEETING_DEFAULT_POLICY: AtomicU8 = AtomicU8::new(MeetingPolicy::Ask as u8);
 static CALENDAR_SETTINGS: OnceLock<RwLock<CalendarSettings>> = OnceLock::new();
 static MICROPHONE_POLICY: AtomicU8 = AtomicU8::new(0);
 static CUSTOM_TRANSFORMATIONS_SELECTED: AtomicBool = AtomicBool::new(false);
@@ -980,6 +981,7 @@ impl AppSettings {
             .write()
             .unwrap_or_else(|error| error.into_inner()) = self.meetings.providers.clone();
         publish_cloud_api_config(&self.cloud_api);
+        MEETING_DEFAULT_POLICY.store(self.meetings.default_policy as u8, Ordering::Release);
         *CALENDAR_SETTINGS
             .get_or_init(Default::default)
             .write()

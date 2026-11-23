@@ -5,9 +5,9 @@ import UIKit
 /// `--snap-state full-keyboard-<state>[-dark|-dark-field]` is passed on Simulator.
 /// `-dark` is a dark app; `-dark-field` is a light app whose field asks for a dark keyboard.
 /// The layout follows `--dictation-language` (Automatic, English, without it), or
-/// `--keyboard-layout nb|es|de|it|fr|fr-CA|fr-CH|pt|pl|cs|ro|ru|uk|el|sr-Latn|en` pins it; drafts are in the layout's language.
+/// `--keyboard-layout nb|es|de|it|fr|fr-CA|fr-CH|pt|pl|cs|hu|ro|ru|uk|el|sr-Latn|ko|en` pins it; drafts are in the layout's language.
 /// `--keyboard-letters qwerty|qwertz|azerty|dvorak|own` arranges its letters (its own without it).
-/// `--accent-key ø` (or Cyrillic `е`, `ь`, `ʼ`, Greek `α`, `σ`, or `t` on Romanian) picks the key the `accents` state holds; `--emoji-query kiss` what `emoji-search` types.
+/// `--accent-key ø` (or Cyrillic `е`, `ь`, `ʼ`, Greek `α`, `σ`, `t` on Romanian, or `o` on Hungarian) picks the key the `accents` state holds; `--emoji-query kiss` what `emoji-search` types.
 /// Emoji states (`emoji`, `emoji-search`, `emoji-tones`, `emoji-food`, `emoji-strip`) turn
 /// Settings › Keyboard › Emoji on with a seeded history; `emoji-probe` prints the panel's
 /// footprint and latency (`EMOJI_PROBE` lines) for `simctl launch --console`.
@@ -137,6 +137,15 @@ struct FullKeyboardSnapshotStage: View {
             case "accents": Self.accentKey == "r" ? "P" : "Ka"
             default: "Přijdu o deset minut později, "
             }
+        case .hungarian:
+            return switch state {
+            case "inserted": "Köszönöm szépen, találkozunk holnap!"
+            case "numbers": "Találkozunk 19:3"
+            case "shift": "Köszönöm szépen, találkozunk holnap. "
+            case "typing": "Köszönöm szépen, találkozunk holn"
+            case "accents": Self.accentKey == "e" ? "Káv" : "Köszön"
+            default: "Köszönöm szépen, találkozunk "
+            }
         case .romanian:
             return switch state {
             case "inserted": "Întârzii zece minute, ajung acasă la 19:30. Începeți fără mine."
@@ -182,6 +191,15 @@ struct FullKeyboardSnapshotStage: View {
             case "accents": Self.accentKey == "s" ? "Po" : "Laku no"
             default: "Kasnim deset minuta, "
             }
+        case .korean:
+            return switch state {
+            case "inserted": "10분 늦어요. 7시 30분까지 집에 갈게요. 먼저 시작하세요."
+            case "numbers": "10분 늦어요. 7시 3"
+            case "shift": "10분 늦어요. "
+            case "typing": "10분 늦어"
+            case "accents": "한"
+            default: "10분 늦어요. "
+            }
         case .english:
             break
         }
@@ -219,8 +237,10 @@ struct FullKeyboardSnapshotStage: View {
                 .padding(.horizontal, 14)
                 .padding(.bottom, 10)
             FullKeyboardFixture(state: state, draft: draft, darkKeyboard: darkApp || darkField)
-                .frame(height: KeyboardLayout.height(for: .portrait)
-                    + (state == "emoji-search" ? KeyboardMetrics.portrait.stripHeight : 0))
+                .frame(height: KeyboardLayout.height(for: .portrait, numberRow: FullKeyboardSettings().numberRow)
+                    + (state == "emoji-search" ? KeyboardMetrics.for(.portrait).stripHeight : 0)
+                    // `--short-by 20`: a view shorter than the keyboard asks for, as iOS gives in Spotlight.
+                    - (Self.argument(after: "--short-by").flatMap(Double.init).map { CGFloat($0) } ?? 0))
                 .background(Color(uiColor: backdrop).ignoresSafeArea(edges: .bottom))
         }
         .background(canvas.ignoresSafeArea())
@@ -292,8 +312,6 @@ private struct FullKeyboardFixture: UIViewRepresentable {
         }
 
         DictationLanguageFixture.apply(to: model)
-        // `--typing-log-mark`: Record typing logs is recording this field.
-        model.isLoggingTyping = ProcessInfo.processInfo.arguments.contains("--typing-log-mark")
         let view = FullKeyboardView(model: model, target: context.coordinator.target)
         if state.hasPrefix("emoji") {
             view.emojiOverride = true
@@ -315,6 +333,8 @@ private struct FullKeyboardFixture: UIViewRepresentable {
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
             switch state {
+            case "paste-notice":
+                view.showAllowPasteHint()
             case "pressed":
                 view.debugPress("g")
             case "accents":
@@ -324,6 +344,7 @@ private struct FullKeyboardFixture: UIViewRepresentable {
                 case .polish: ["e": "ę", "a": "ą", "c": "ć", "l": "ł", "n": "ń", "o": "ó", "s": "ś", "z": "ż"]
                 case .romanian: ["a": "ă", "i": "î", "s": "ș", "t": "ț"]
                 case .czech: ["e": "ě", "r": "ř", "u": "ů", "a": "á", "c": "č", "s": "š", "z": "ž", "y": "ý", "n": "ň"]
+                case .hungarian: ["a": "á", "e": "é", "i": "í", "o": "ő", "u": "ű"]
                 case .greek: ["ε": "έ", "α": "ά", "ο": "ό", "η": "ή", "ι": "ί", "υ": "ύ", "ω": "ώ", "σ": "ς", "κ": "ϗ"]
                 default: [:]
                 }
@@ -348,6 +369,28 @@ private struct FullKeyboardFixture: UIViewRepresentable {
                 view.engine.touchEnded(id: 903, at: center(of: .shift, in: view))
             case "inserted":
                 view.didInsertDictation("should be home by 7:30. Start without me.")
+            // The bar's other states, set on the strip directly: a revert, Paste, Paste dictation,
+            // Code from Messages (with and without a copied code) and the two-thumb selection.
+            case "strip-revert":
+                view.stripView.update(suggestions: [
+                    KeyboardSuggestion(displayText: "teh", replacement: "teh", kind: .revert),
+                    KeyboardSuggestion(displayText: "then", replacement: "then", kind: .secondary),
+                    KeyboardSuggestion(displayText: "tech", replacement: "tech", kind: .secondary),
+                ], showsUndo: false, statusText: nil)
+            case "strip-two":
+                view.stripView.update(suggestions: [
+                    KeyboardSuggestion(displayText: "\u{201C}lol\u{201D}", replacement: "lol", kind: .keepLiteral),
+                    KeyboardSuggestion(displayText: "lot", replacement: "lot", kind: .secondary),
+                ], showsUndo: false, statusText: nil)
+            case "strip-paste":
+                view.stripView.update(suggestions: [], showsUndo: false, statusText: nil, clipboard: .paste)
+            case "strip-paste-dictation":
+                view.stripView.update(suggestions: [], showsUndo: false, statusText: nil, clipboard: .dictation)
+            case "strip-code":
+                view.stripView.update(suggestions: [], showsUndo: false, statusText: nil, clipboard: .code(canPaste: true))
+            case "strip-selection":
+                view.stripView.isHidden = true
+                view.selectionStrip.update(TrackpadSelectionSession.Presentation(phase: .actions, before: "Running 10 ", selected: "min late", after: ", home by"), canUseClipboard: true)
             case "emoji":
                 view.debugOpenEmoji()
             case "emoji-search":
@@ -575,7 +618,7 @@ private func center(of kind: KeyKind, in view: FullKeyboardView) -> CGPoint {
 }
 
 @MainActor
-final class FixtureTextTarget: KeyboardTextTarget {
+class FixtureTextTarget: KeyboardTextTarget {
     private(set) var text: String
     private(set) var cursorIndex: Int
     let keyboardAppearance: UIKeyboardAppearance?
@@ -586,6 +629,12 @@ final class FixtureTextTarget: KeyboardTextTarget {
     var enablesReturnKeyAutomatically: Bool? = false
     var smartQuotesType: UITextSmartQuotesType?
     var smartDashesType: UITextSmartDashesType?
+    var isSecureTextEntry: Bool?
+    var textContentType: UITextContentType?
+    var selectedText: String?
+    var documentIdentifier: UUID?
+    /// Simulates a host whose window reports no text after the cursor.
+    var hidesAfterText = false
 
     init(text: String = "", appearance: UIKeyboardAppearance? = nil) {
         self.text = text
@@ -600,7 +649,7 @@ final class FixtureTextTarget: KeyboardTextTarget {
     }
 
     var documentContextAfterInput: String? {
-        String(text.dropFirst(max(0, min(text.count, cursorIndex))))
+        hidesAfterText ? nil : String(text.dropFirst(max(0, min(text.count, cursorIndex))))
     }
 
     var hasText: Bool { !text.isEmpty }

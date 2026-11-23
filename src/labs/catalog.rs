@@ -88,7 +88,12 @@ impl Feature {
             | Self::ModesEditor
             | Self::VocabularyFiles
             | Self::AnnotateAgentTools
-            | Self::AnnotateAgentInstall => Audience::Everyone,
+            | Self::AnnotateAgentInstall
+            | Self::Signature
+            | Self::DictationStyle
+            | Self::HudHeight
+            | Self::VoiceIsolation
+            | Self::DictateWhileAnnotating => Audience::Everyone,
         }
     }
 
@@ -156,9 +161,14 @@ impl Feature {
             | Self::AnnotatePointerScreen
             | Self::FasterLiveText
             | Self::VocabularyFiles => 20261120,
-            Self::LearnFromCorrections | Self::AnnotateAgentTools | Self::AnnotateAgentInstall => {
-                20261121
-            }
+            Self::LearnFromCorrections
+            | Self::AnnotateAgentTools
+            | Self::AnnotateAgentInstall
+            | Self::Signature => 20261121,
+            Self::DictationStyle => 20261122,
+            Self::HudHeight => 20261122,
+            Self::VoiceIsolation => 20261122,
+            Self::DictateWhileAnnotating => 20261122,
         }
     }
 
@@ -190,6 +200,15 @@ impl Feature {
         }
         if key == "labs.stop_phrase_text" {
             return Some(Self::StopPhrase);
+        }
+        if key == "labs.signature_text" {
+            return Some(Self::Signature);
+        }
+        if key == "labs.dictation_style_choice" {
+            return Some(Self::DictationStyle);
+        }
+        if key == "labs.hud_bottom_gap" {
+            return Some(Self::HudHeight);
         }
         if key == "labs.caps_lock_light" {
             return Some(Self::CapsLockDictation);
@@ -256,6 +275,7 @@ impl Feature {
             | Self::RecentDictations
             | Self::HideMenuBarIcon
             | Self::NotchIndicator
+            | Self::HudHeight
             | Self::Screenshots
             | Self::CapsLockDictation
             | Self::DoubleTapModifiers
@@ -266,7 +286,8 @@ impl Feature {
             | Self::MoreDictationShortcuts
             | Self::CalendarMenu
             | Self::CalendarSelectAll
-            | Self::PasteLastPicker => MACOS,
+            | Self::PasteLastPicker
+            | Self::VoiceIsolation => MACOS,
             Self::CleanUpWithAppleIntelligence => MACOS,
             Self::NeutralVoice => MACOS,
             Self::CopyOnly => MACOS_WINDOWS,
@@ -308,7 +329,10 @@ impl Feature {
             | Self::ModesEditor
             | Self::VocabularyFiles
             | Self::AnnotateAgentTools
-            | Self::AnnotateAgentInstall => EVERY,
+            | Self::AnnotateAgentInstall
+            | Self::Signature
+            | Self::DictationStyle
+            | Self::DictateWhileAnnotating => EVERY,
         }
     }
 
@@ -393,6 +417,11 @@ impl Feature {
             Self::VocabularyFiles => "vocabulary-files",
             Self::AnnotateAgentTools => "annotate-agent-tools",
             Self::AnnotateAgentInstall => "annotate-agent-install",
+            Self::Signature => "signature",
+            Self::DictationStyle => "dictation-style",
+            Self::HudHeight => "hud-height",
+            Self::VoiceIsolation => "voice-isolation",
+            Self::DictateWhileAnnotating => "dictate-while-annotating",
         }
     }
 
@@ -477,6 +506,11 @@ impl Feature {
             Self::VocabularyFiles => "labs.vocabulary_files",
             Self::AnnotateAgentTools => "labs.annotate_agent_tools",
             Self::AnnotateAgentInstall => "labs.annotate_agent_install",
+            Self::Signature => "labs.signature",
+            Self::DictationStyle => "labs.dictation_style",
+            Self::HudHeight => "labs.hud_height",
+            Self::VoiceIsolation => "labs.voice_isolation",
+            Self::DictateWhileAnnotating => "labs.dictate_while_annotating",
         }
     }
 

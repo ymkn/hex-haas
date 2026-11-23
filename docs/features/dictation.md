@@ -292,26 +292,49 @@ key is visible before release. `hex settings` takes
 `left-option+right-option`. Settings store `{"keys": [...]}`; files with the
 old `modifiers`/`key` shape load as the same chord and are written back once.
 Windows matches sides through its low-level hook and accepts one modifier
-alone (Right Alt or Right Ctrl, [#508](https://github.com/anomalyco/hex/issues/508))
+alone (left Alt by default, [#2278](https://github.com/anomalyco/hex/issues/2278);
+Right Alt or Right Ctrl too, [#508](https://github.com/anomalyco/hex/issues/508))
 as well as both Alts:
 
 ```ts
 Windows modifier-only shortcut                           // dictate.windows-lone-modifier
+  ├── Default: left Alt alone (the Mac's Option under the thumb)
   ├── Press alone -> Down; release -> Up (hold, lock, Toggle as above)
   ├── Any key or click joins while held -> Chord: Cancel if recording, else nothing
   │   (Escape never: it reaches the app and the capture goes on, #786)
   │   (the key reaches the app; locked and toggle captures keep recording)
+  ├── A modifier the chord doesn't name joins -> Its chord too: Cancel at once,
+  │   a Toggle press locks nothing, and Alt's release is the app's (no mask,
+  │   no 0xE8 tap), so Ctrl+Alt+V still fires Paste Last; if Hex swallows a key
+  │   of that chord (Paste Last's V), the mask comes back (#2278)
+  │   (a modifier the chord names, like Ctrl of Ctrl+Alt, is part of it, in either order)
   ├── Alt or Windows released -> Swallowed, VK 0xE8 tapped, release replayed
   │   -> No menu bar or Start menu; Share shortcut skips the mask
+  ├── AltGr -> A synthesized Left Ctrl and the Right Alt: the left Alt's
+  │   default ignores both, so it types and starts nothing
   └── Hex's own injected keys (paste, mask) -> Skipped by the hook (HEX_INJECTED)
 ```
+
+A modifier the chord does not name is a chord like any key: it cancels the
+hold (`names_modifier`), Toggle's press then locks nothing, and the shortcut's
+Alt release is the app's, with no mask key — unless Hex swallowed a key of
+that chord, as Paste Last's V is, which re-arms the mask so the app never
+reads a lone Alt tap. So Left Alt on the way to Ctrl+Alt+V cancels a
+dictation and Paste Last still fires, and Alt+Shift switches the keyboard
+language. A modifier the chord names is part of it,
+whichever order the keys go down in. Labs › Hold through other keys keeps a
+hold a second or more old, as it does for keys.
 
 On layouts where Right Alt is AltGr, Windows sends a synthesized Left Ctrl
 (scan code 0x21D, not 0x1D), and `GetAsyncKeyState` reports it as a real Ctrl.
 The listener's hook and the recorder's own both leave it out, so Right Alt
 alone fires there and recording it stores `right-option`; it still reaches the
-app, so AltGr keeps typing. A modifier-only binding an AltGr-layout recording
-made before this (`control+option`) still fires on AltGr, while a real Left
+app, so AltGr keeps typing. That is also why the default names the left Alt:
+an either-side Alt matches the masked read (Right Alt with its Ctrl dropped),
+so every AltGr character would press it, start a capture, and cancel it when
+the character joined — a HUD flash and a Started/Cancelled pair per character.
+A modifier-only binding an AltGr-layout recording made before this
+(`control+option`) still fires on AltGr, while a real Left
 Ctrl with Right Alt is a chord and matches only a binding that names Ctrl. On
 AltGr layouts, AltGr plus a typing key (a letter, a digit, or a punctuation
 key) types its character instead of pressing a Ctrl+Alt shortcut, so the key
@@ -319,12 +342,15 @@ reaches the app (#1964): use Left Ctrl+Alt for those shortcuts. A key that
 types nothing keeps its chord, so AltGr+F9 still presses Ctrl+Alt+F9, and
 AltGr never presses an Alt+<key> chord. Any key joining the hold still
 discards it. Checks:
+`default_binding_is_left_alt_alone`,
 `one_modifier_alone_is_a_shortcut_and_alt_or_windows_mask_their_release`,
 `altgr_left_ctrl_is_no_ctrl_for_a_right_alt_shortcut`,
 `an_altgr_recorded_control_option_still_fires`,
 `a_key_chord_on_altgr_is_not_alt_with_that_key`,
 `a_key_joining_a_held_modifier_ends_it_quietly_unless_it_records` in
 [windows/input.rs](../../src/windows/input.rs),
+`ctrl_after_alt_leaves_paste_last_to_fire` in
+[windows/input/tests/chords.rs](../../src/windows/input/tests/chords.rs),
 `left_control_bits_follow_the_hooks_and_heal_a_missed_release`,
 `a_typing_key_is_a_letter_a_digit_or_punctuation` in
 [windows/input/modifiers.rs](../../src/windows/input/modifiers.rs), and
@@ -999,6 +1025,40 @@ Whole-clip run starts -> labs::skip_pauses()        // dictate.skip-pauses
 
 Details and checks in [labs.md](labs.md).
 
+### Voice Isolation (Labs, macOS)
+
+With Labs › Voice isolation on (`labs.voice_isolation`, off by default),
+dictation's microphone opens through Apple's voice processing instead of
+cpal's raw input stream, so macOS Control Center's Mic Mode can offer Voice
+Isolation for Hex. The voice-processed microphone stays open while idle, as
+the raw warm one does (unless Release microphone while idle is on), so
+ducking applies while Hex is listening, not only during a dictation. An
+engine configuration change reopens it through voice processing again; a
+real voice-processing failure (an exception or refused graph, the wrong
+device, a stream that stalls or fails, or more than three reconfigurations
+in 30 s) switches that resolved microphone to normal capture until the lab
+is toggled or the microphone changes:
+
+```ts
+Dictation stream opens -> labs::voice_isolation()
+├── Off -> cpal's raw input stream, exactly as before
+├── On -> AVAudioEngine's input node with setVoiceProcessingEnabled(true)
+│   ├── Voice processing starts -> channel-0 float tap carries CaptureInstant::from_mach_ticks
+│   └── It fails -> log, then the same cpal open as Off, remembered for
+│       this resolved microphone until the lab is toggled or it changes
+├── Engine configuration change (after start, engine stopped) -> reopens
+│   through voice processing again; more than three in 30 s -> normal capture
+└── Gate changes while idle -> the stream reopens on the other path;
+    during a capture -> waits until nothing records
+Never: meetings, Annotate captures, the level meter, the local API's host
+audio, open_named_input, or another OS
+```
+
+Not verified on hardware: Control Center's Mic Mode offering Voice Isolation
+for Hex, the tap's latency against the 200 ms release tail, and a meeting
+sharing the microphone while the voice-processed stream is open. Details and
+checks in [labs.md](labs.md).
+
 **Fixed November 3, 2026 (issue 1194):** a clip longer than the model's
 window (Cohere's 35 s) is transcribed in chunks, and a chunk that was only
 silence (a locked dictation left waiting before the words) went to the model
@@ -1014,11 +1074,24 @@ overridden; not run with Cohere on real audio).
 its own long-form loop also decoded a near-silent remainder (a 70 ms tail
 zero-padded to 30 s) and invented text: the Turkish
 "İzlediğiniz için teşekkür ederim.", "Altyazı M.K." (once truncated to
-"Altyazı M."), or "abone ol" repeated. A Whisper clip now chunks at Whisper's
-own 30-second window, each window passes the same detector gate as Cohere's,
-and a Whisper clip drops the audio outside its detected speech plus 500 ms
-before transcription (`whisper_audio` in
-[gguf_session.rs](../../src/transcription/gguf_session.rs)). Long Whisper
+"Altyazı M."), or "abone ol" repeated.
+
+Whisper large-v3 and large-v3-turbo do the same in Russian, appending
+"Продолжение следует..." ("to be continued") or a subtitle community's credit:
+"Субтитры сделал DimaTorzok", "Субтитры делал DimaTorzok",
+"Субтитры создавались сообществом Amara.org", "Редактор субтитров А.Семкин
+Корректор А.Егорова", or "Редактор субтитров А.Синецкая
+Корректор А.Егорова". Those join the trailing-credit list
+([subtitle_credits.rs](../../src/transcription/subtitle_credits.rs), checks
+`a_russian_continues_credit_is_removed`,
+`a_russian_subtitle_credit_is_removed`, and
+`russian_credits_later_in_the_speech_are_kept`). Not run with Whisper on real
+Russian audio.
+
+A Whisper clip now chunks at Whisper's own 30-second window, each window
+passes the same detector gate as Cohere's, and a Whisper clip drops the audio
+outside its detected speech plus 500 ms before transcription (`whisper_audio`
+in [gguf_session.rs](../../src/transcription/gguf_session.rs)). Long Whisper
 dictations in every language now go through Hex's own 30 s chunking — each
 window cut at the quietest 100 ms of its last 5 s and decoded independently —
 instead of Whisper's long-form loop; not measured on long continuous speech.
@@ -1799,9 +1872,11 @@ Model advertises streaming, GPU device             // dictate.streaming
     -> Finalize -> Final text
        ├── Stream failed, produced no text, or was fed > 250 ms past the clip
        │   -> Transcribe the whole clip offline (source=fallback)
-       ├── ≥ 300 ms of speech it heard before the text, outside the pre-roll and
-       │   start tone   -> Transcribe the whole clip offline (source=fallback)
-       │                                                  // likely lost opening
+       ├── ≥ 300 ms of speech it heard > 400 ms before the text (1.2 s for a
+       │   buffered Parakeet stream, which also refuses speech starting 1.5 s
+       │   or more before the text once 100 ms is detected more than 400 ms
+       │   before it), outside the pre-roll and start tone
+       │   -> Transcribe the whole clip offline (source=fallback)  // lost opening
        ├── ≥ 300 ms of speech the stream heard lies > 400 ms past its text's end
        │   -> Transcribe the whole clip offline (source=fallback)   // #1101
        ├── The raw decode carries two different <ll-RR> language tags
@@ -2107,8 +2182,11 @@ check, which summed them, likely rejected streams that had lost nothing — see
 `hexs_own_sounds_at_the_captures_head_are_not_a_lost_opening`), but that is
 not measured on a device, and the false-positive rate of this check on real
 speech (fillers, coughs, clicks outside the press window) is still unmeasured.
+An offline CPU measurement on November 22 did find a false positive: Unified
+English's late first-word timestamps refused streams whose opening words
+matched the whole-clip text (below).
 Because it counts every counted frame, a lost opening is caught however it is
-broken up, including one followed by a pause longer than the 400 ms slack
+broken up, including one followed by a pause longer than the opening slack
 (`a_lost_opening_after_a_long_pause_still_falls_back_to_the_whole_clip`).
 This check
 cannot see an opening that was garbled rather than dropped: a garbled opening
@@ -2145,6 +2223,54 @@ latency was not measured. Checks:
 `text_with_nothing_before_the_closers_fails_the_mark_check`, and
 `only_unified_english_streams_require_a_closing_mark` (synthetic text). Not
 measured on a real model or microphone.
+
+**Fixed November 22, 2026 (opening slack, Unified English):** the opening
+check used the trailing check's 400 ms slack, but Unified English's first-word
+timestamp lags its audio: the first word's `t0` landed about 100–1,000 ms after
+its detected speech onset (most 440–1,000 ms), and the whole-clip run reported
+the same value within one 80 ms frame. Production refusals from the same
+period report 820–1,420 ms from the first detected speech to the text, mostly
+beyond that CPU measurement. A capture with no pre-roll head, as
+duck/mute/pause behaviors and "Release microphone while idle" cold opens
+leave, therefore produced refusals consistent with a stream that lost nothing,
+such as "text starts at 1280 ms but 560 ms of speech precedes it, from 220 to
+860 ms"; the production logs record the refusal and the speech positions, not
+the stream's text. A stream whose model runs Parakeet's buffered chunk menus
+(Unified English, and an import with the same menus) now gets 1.2 s of opening
+slack, which refused none of the 20 measured runs where 400 ms refused 6.
+Every other streaming model, including Nemotron 3.5's cache-aware stream,
+keeps 400 ms. The trailing check is unchanged. Measured offline on the real
+Unified English Q8_0 model through transcribe.cpp on the CPU, over clean
+16 kHz WAVs, in 20 runs with speech starting at 0, 450 ms, and 1 s: the
+stream's opening words matched the whole-clip text in every run, including
+speech starting at sample 0. The stream's chunk and lookahead geometry was not
+varied. What the slack excuses: mostly detected speech within 1.2 s before the
+text's start. A buffered stream also gets a span rule with both conditions: at
+least 100 ms of speech detected more than 400 ms before the text, and detected
+speech that starts 1.5 s or more before the text. When both hold the stream is
+refused, however sparse the earlier frames are and however much dense speech
+sits inside the 1.2 s window. That makes the waited-first refusals fall back
+to the whole clip too (`parakeets_sparse_opening_spanning_1800_ms_is_refused`,
+`parakeets_sparse_opening_spanning_3080_ms_is_refused`, and
+`parakeets_sparse_frames_cannot_hide_a_dense_lost_opening`); whether those
+streams actually lost their opening is unknown, as the production logs do not
+record the stream's text and the lag was measured only on the CPU. The cost is
+more fallbacks: an early click or breath more than ~1.5 s before the text,
+with normal speech after it, now transcribes the whole clip, which costs
+latency only. The residual risk: a stream that lost up to about 1 s of
+opening, with nothing detected earlier than 1.5 s before its text, is now
+pasted; without the stream's text, that cannot be told apart from the normal
+timestamp lag. Checks:
+`parakeets_late_first_word_time_is_not_a_lost_opening`,
+`parakeets_measured_lags_are_not_lost_openings`,
+`parakeets_sparse_opening_spanning_1800_ms_is_refused`,
+`parakeets_sparse_opening_spanning_3080_ms_is_refused`,
+`parakeets_sparse_frames_cannot_hide_a_dense_lost_opening`,
+`parakeets_span_rule_needs_100_ms_before_the_old_edge`,
+`parakeets_span_rule_edge_is_one_frame`,
+`parakeets_opening_slack_still_refuses_a_lost_opening`, and
+`parakeets_opening_slack_edge_is_one_frame` (synthetic tones, a fake stream).
+Not measured on a microphone or a device.
 
 ### Ongoing Jobs And Output
 
@@ -2369,7 +2495,7 @@ load, a quiet relative-path clip is discarded as before, so only captures at or
 above the fixed threshold reach the model without one.
 Output that only repeats the vocabulary prompt (Whisper, Qwen3-ASR) is dropped as well
 ([models](README.md#get-ready)), and so is a known subtitle credit at the very
-end of the text, Turkish included (#1141, #1770). A Whisper clip also loses the
+end of the text, Turkish and Russian included (#1141, #1770). A Whisper clip also loses the
 audio outside its detected speech plus 500 ms before a whole-clip transcription
 run, and a chunk of a longer one the detector hears no speech in is skipped (see
 [ongoing jobs and output](#ongoing-jobs-and-output)). Other hallucinations
@@ -2519,6 +2645,44 @@ paste without joining, as before. Sources:
 simulated clock). `the_compositor_reports_input` is a manual probe of the real
 compositor; no automated check reads one, and none dictates twice into an app.
 
+**Signature (Labs, every OS):** while `labs.signature` is on, a normal
+dictation's final text carries `labs.signature_text` (default "Sent from Hex")
+on its own new line at the end, added once before the text feeds the paste,
+History, and Paste last dictation. Each platform reads the same
+`dictation::signature::append` rule at its output stage: macOS's
+`parakeet::finish_output` only a `TranscriptionTarget::Paste` or
+`CopyOnlyPaste`, Windows's `process_dictation_job` only when the job is not
+printed and not a raw flavour, and Linux's `DictationOutput::deliver` behind
+the same gate. It never touches raw (Dictate without processing), printed, or
+API output, meetings, typed text, Annotate, or `Paster::paste` itself. Nothing
+is appended when the text is empty after trimming, the signature is empty after
+trimming, or the text already carries it on a line of its own (it is only the
+signature, or the signature follows a line break with nothing but spaces or
+tabs in between; a signature that merely ends a line of prose, like "Hex" in
+"I love Hex", is appended). A saved signature must be one line of at most 200
+characters with no control characters. A signed paste is standalone on every
+OS, so it does not join the previous dictation and records no continuation: the
+next dictation is never glued onto the signature line. Paste last dictation
+remembers with its kept text whether that text was signed
+(`dictation::paste_last::LastDictation`) and reinserts a signed one standalone
+too, even after the lab is turned off or its line changes. On Linux Live
+typing, the signed text is committed in the input method's own final step, so
+nothing is typed twice. Source:
+[dictation/signature.rs](../../src/dictation/signature.rs) and
+[dictation/paste_last.rs](../../src/dictation/paste_last.rs); checks:
+`the_signature_is_appended_once_on_its_own_line`, `off_appends_nothing`,
+`empty_text_appends_nothing`,
+`a_signature_that_ends_a_line_of_prose_is_still_appended`,
+`a_signature_after_a_line_break_is_left_alone`, and
+`a_signature_refuses_line_and_control_characters` there,
+`a_signed_dictation_reinserts_standalone` and
+`an_unsigned_dictation_reinserts_as_a_continuation` in
+`paste_last.rs`, `paste_last_reinserts_a_signed_dictation_standalone` in
+[parakeet.rs](../../src/parakeet.rs) (macOS), plus
+`a_signature_is_trimmed_and_must_be_one_line` in
+[control/settings.rs](../../src/control/settings.rs). No automated check pastes
+into a real app.
+
 ### Toggle Cancel
 
 ```ts
@@ -2647,11 +2811,30 @@ plate; the overlay itself is not natively verified on macOS or Windows. See
 
 **Fixed November 1, 2026 (issue 873):** on macOS the HUD remembered its last
 placement and skipped sending it to Rune again when it matched, so a HUD Rune
-had put in the wrong spot on a second display (offset by the display's origin,
-with a different backing scale) stayed there on every later dictation. Each
-capture's start and each hide now forget the placement, so the next show sends
-the display and rectangle again, as Linux and Windows already do. Not run on a
-two-display Mac; the misplacement inside Rune itself is not addressed here.
+had put in the wrong spot on a second display stayed there on every later
+dictation. Each capture's start and each hide now forget the placement, so the
+next show sends the display and rectangle again, as Linux and Windows already
+do. The misplacement inside Rune itself is not addressed here.
+
+**Fixed November 21, 2026 (issue 1175):** the bottom HUD's 320 x 128 pt window
+used to hang its 27 pt transparent shadow padding below `visibleFrame`. With no
+Dock on that display and another display below it, the window crossed onto the
+display below. The reports have the external 1x display above the laptop; it
+was the primary in one report and not the other. The suspected trigger is that
+crossing a backing-scale boundary in that arrangement could leave the plate at
+the top of the display. The bottom placement now puts the window's bottom on
+`visibleFrame.y` and moves the plate down inside the window with
+`Layout.center`, so its visible 24 pt gap above the Dock or screen edge is
+unchanged and the window stays on its display. macOS also pins the HUD to the
+pointer screen's `NSScreenNumber` (`DisplayTarget::Native`) and sends a rect in
+that screen's own top-down points; in Rune's AppKit path this resolves to the
+same frame as the global `Primary` rect, so the pin is a consistency change, not
+the fix for the jump. The global `Primary` rect remains the fallback when the
+screen number cannot be read. Checks:
+`hud_placement::tests::the_bottom_window_stays_on_its_own_screen` and
+`hud_placement::tests::the_bottom_window_clears_a_dock` cover the geometry. The
+panel is not run on a two-display Mac here, so the native trigger is suspected,
+not observed.
 
 **Fixed November 10, 2026 (issue 1663):** on Linux Wayland the HUD stopped
 appearing after its monitor was removed and added back (a KVM switch, for
@@ -2663,45 +2846,33 @@ that exists. Not verified on real Wayland hardware with a monitor
 unplugged and re-plugged.
 
 ```ts
-Settings > Sounds (next to Sound volume)                    // dictate.sound-set
-├── Default / older settings -> Classic
-├── Row shows the saved set -> Opens the Sounds sheet
-│   ├── Stage -> Hex's own HUD, where this OS puts it, does what it does
-│   │   │          at each sound of a short dictation
-│   │   ├── Where -> Indicator position: top / bottom; Off shows none
-│   │   ├── Start (0 s) -> Recording, with a demo voice's level
-│   │   ├── Stop (1.4 s) -> Transcribing
-│   │   └── Done (2.1 s) -> Done look, then it leaves
-│   ├── Lone Error (macOS) -> Failed look 0.6 s (Dot scope coral), then leaves
-│   ├── Chips -> Start / Stop / Done / Error (macOS) play one sound
-│   │   └── Set has no such sound (Classic's or Thock's done) -> Chip faint and inert
-│   ├── Each set -> Name, what it sounds like, play button
-│   │   ├── Play -> Plays its dictation without choosing it; again stops it
+Settings > Sounds                                           // dictate.sound-set
+├── Default / older settings -> Classic at 50%
+├── Row shows the saved set and volume ("Classic · 50%"), or Off -> Opens the Sounds sheet
+│   ├── Sound volume -> slider in 5% steps; the value reads as a percent
+│   │   ├── Release above 0 -> Save; play the start sound at the new level
+│   │   └── Left end -> Sounds off; the last volume is kept
+│   ├── Each set -> Check on the chosen one, name, what it sounds like, play button
+│   │   ├── Play -> Plays its dictation (start, stop, done) without choosing it; again stops it
 │   │   └── Press the set -> Save and apply live; play its dictation
 │   ├── Any playback -> Stops the one before it (20 ms fade)
-│   ├── Sound volume -> Previews use the chosen level, or 50% while Off;
-│   │   the slider stays Off, ordinary cues stay silent, and OS mute still applies
-│   └── Close / Escape / scrim / leaving the pane -> Stops playback
+│   ├── While Off -> Previews play at 50%; ordinary cues stay silent, and OS mute still applies
+│   └── Done / Escape / scrim / leaving the pane -> Stops playback
 ├── hex settings set sound_theme <signature|classic|click|soft|wood|analog|thock>
+├── hex settings set sound_effect_volume <0-1> (0 turns sounds off)
 └── Every set -> Same loudness per sound at a given volume
 ```
 
 The sheet is a modal like the shortcut explainer, opened from a
-`sheet_button` because its choices need room to be heard, not a menu. Checks:
+`value_button` because its choices need room to be heard, not a menu. Linux
+and Windows show the same sheet. Checks:
 `auditions_play_each_sound_at_its_moment`,
 `picker_previews_render_at_the_default_only_while_off` (in-memory PCM, not speakers),
 `stopping_an_audition_fades_all_of_it`,
-`each_moment_shows_from_its_sound_to_the_next`,
-`the_hud_shows_a_dictation_and_then_leaves`,
-`a_lone_sound_shows_its_moment_and_leaves`,
-`dot_scope_turns_coral_on_failure`,
-`the_sound_sets_sheet_plays_and_chooses_sets` (Linux), and the `sound-sets`,
-and `sound-sets-playing` goldens. The stage
-replays Hex's HUD on the sheet's clock: `dictation/indicator`'s model, drawn
-by the window's compositor with `rune_hud`'s painter and `rune_hud.wgsl`, as
-the real overlay draws it. It is a preview, not the overlay: Dot scope's
-in-bar and notch placements show below the menu bar, the voice is HUD Lab's
-demo, not the microphone, and it ignores Reduce Motion.
+`the_sound_sets_sheet_plays_and_chooses_sets` (Linux),
+`sound_volume_slider_sets_the_level_and_zero_turns_tones_off` (Linux),
+`the_sounds_sheet_names_its_slider_and_play_buttons`, and the `sound-sets`
+and `sound-sets-playing` goldens.
 
 Hex signature (2026-10-27) is one kalimba-like FM voice playing one motif,
 D-B-A-D (a sixth, since "hex" is six): start D5 to B5 (116 ms), stop B5 to A5
@@ -2886,6 +3057,32 @@ and `visibleFrame` reaches the top of a notched screen. Screens without a notch
 and normal Spaces keep their position. Check: `scripts/check
 dictation::indicator::tests::top_capsule` covers the math only; placement over a
 fullscreen app on a notched Mac is not yet observed.
+
+At the bottom position the plate keeps its 24 pt gap above
+`visibleFrame.y` (`rune_hud::hud_placement::BOTTOM_OFFSET`), or the
+`labs.hud_bottom_gap` points (0–400, 24 by default) that Labs › HUD height
+chooses. A gap of 24 pt or less keeps the window's bottom on the visible
+bottom and moves `Layout.center` (24 pt is exactly the old placement), so the
+window's transparent shadow padding never hangs onto a display below; a larger
+gap raises the window by gap − 24 with the plate at its usual offset inside it,
+keeping its shadow padding. The plate only moves up inside the window once the
+raised window would reach the visible top (a gap above the visible height
+minus 104 pt), which within 0–400 only happens on a very short visible frame,
+and placement clamps it under the menu bar or notch.
+The HUD is
+also pinned to the pointer screen's `NSScreenNumber` with a display-local rect;
+that resolves to the same frame as the global `Primary` rect, so the pin is
+consistency only, and `Primary` remains the fallback when the number is
+unavailable. Checks: `hud_placement::tests::the_bottom_window_stays_on_its_own_screen`,
+`hud_placement::tests::the_bottom_window_clears_a_dock`,
+`hud_placement::tests::the_default_bottom_gap_places_exactly_as_before`,
+`hud_placement::tests::a_small_bottom_gap_sits_inside_the_window`,
+`hud_placement::tests::a_tall_bottom_gap_raises_the_window_and_keeps_the_gap_exact`,
+`hud_placement::tests::a_gap_that_reaches_the_visible_top_keeps_the_plate_inside`,
+`hud_placement::tests::a_raised_bottom_gap_works_on_a_display_below_the_primary`,
+and `hud_placement::tests::a_huge_bottom_gap_keeps_the_plate_inside_the_visible_frame`
+cover the pure geometry; the two-display panel and a raised gap on a Mac are
+not yet observed.
 
 ### Dot scope
 
@@ -3106,7 +3303,9 @@ pointer:
 
 ```ts
 Placement                                     // rune_hud::hud_placement::place
-├── Below the menu bar (default) -> 6 pt under the menu bar, or above the Dock
+├── Below the menu bar (default) -> 6 pt under the menu bar; at the bottom,
+│   24 pt above the Dock or the screen's edge, with the 320×128 pt window's
+│   bottom on the visible bottom and the plate moved down inside it
 ├── In the menu bar -> A plate fitted to the bar's height, centred on a flat
 │   screen, just right of the notch on a notched one
 ├── From the notch -> A black island grows out of the notch, 28 pt wider
@@ -3120,7 +3319,9 @@ Placement                                     // rune_hud::hud_placement::place
 ```
 
 The window is 320×128 pt so the widest plate, its shadow, and the widest
-island fit. Notch metrics come from `safeAreaInsets.top` and
+island fit. At the bottom, the window's bottom edge sits on `visibleFrame.y`
+and `Layout.center` moves the plate down inside it by the shadow padding, so
+the window never crosses onto a display below. Notch metrics come from `safeAreaInsets.top` and
 `auxiliaryTopLeftArea`/`auxiliaryTopRightArea`; the bar's height from
 `NSStatusBar.systemStatusBar.thickness`. HUD Lab tunes it live in debug
 builds, and in release builds while the `playground` experiment is on

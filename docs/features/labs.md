@@ -25,7 +25,8 @@ window, and its OSes `labs::Feature::oses`.
 
 **On the web.** Every `Everyone` lab (not Dev ones, nor the labs that only
 matter once Annotate is on: Screenshots, Annotate last 15 seconds, Record the
-screen under the pointer, Copy a capture as one file, Agent tools for captures)
+screen under the pointer, Copy a capture as one file, Agent tools for captures,
+Dictate while annotating)
 has a page at `anoma.ly/hex/labs/<id>` (`dev.anoma.ly` for
 the dev site), listed newest first at `/hex/labs`, with a 1200 × 630 social
 card. The pages come from `site/src/labs.json`, which only the registry
@@ -84,7 +85,21 @@ Feature             Pane  Toggle (settings.json, hex settings)   On: what it doe
 ├── Keep mic open after dictating no labs.keep_microphone_open + labs.keep_microphone_open_seconds (30/60/180/300/1800, default 60)
 │                                        with Turn off the mic when not dictating on, the microphone stays open for that
 │                                        long after a capture, so the next dictation starts at once
+├── Voice isolation no    labs.voice_isolation            (macOS) dictation's microphone opens through Apple's voice
+│                                        processing, so Control Center's Mic Mode can offer Voice Isolation and background
+│                                        noise is reduced; meetings, captures, the level meter, the local API's host
+│                                        audio, and named opens stay on the raw cpal path; an open stream is replaced only while capture is
+│                                        idle; an actual voice-processing failure (an open, a wrong device, a stall, or
+│                                        more than three engine reconfigurations in 30 s) falls back to normal capture
+│                                        until the lab is toggled or the resolved microphone changes
+│                                        // checks: voice_isolation_is_its_own_bit_and_off_by_default (labs.rs);
+│                                        // a_voice_isolation_change_reopens_only_while_capture_is_idle (audio/recovering/tests.rs);
+│                                        // not run on a Mac, and no hardware confirmed Control Center offers the mode for Hex
 ├── Keep dictation on clipboard no labs.keep_on_clipboard (every OS) a pasted dictation stays on the clipboard; the previous one is not restored (#200)
+├── Signature       no    labs.signature + labs.signature_text ("Sent from Hex", every OS)
+│                                        every normal dictation pastes with the signature on its own line at the end, and
+│                                        History and Paste Last keep that same text; not added to an empty transcript, one
+│                                        that already ends with it as its own line, raw, printed, or API output
 ├── Copy dictation only no labs.copy_only (macOS, Windows)    a dictation goes to the clipboard and is never pasted; Paste last dictation still pastes (#629)
 ├── YOLO mode no labs.yolo_mode (every OS) press Return after pasting a shortcut dictation in a chosen app (none chosen = everywhere); Escape after release skips Return on macOS
 ├── Return to app   no    labs.return_to_app           (macOS)   a dictation pastes into the app it started in, switching back to it first when another app came forward
@@ -104,6 +119,9 @@ Feature             Pane  Toggle (settings.json, hex settings)   On: what it doe
 ├── Spoken formatting no labs.spoken_formatting      spoken "new line"/"line break", "new paragraph", "open/close quote", "quote … unquote" become line breaks and quotation marks; Spanish "nuevo párrafo", "nueva línea", "abre/cierra comillas", … too (#630, #1040)
 ├── Spoken symbols  no    labs.spoken_symbols          spoken "hashtag", "underscore", "comma", … become symbols joined to their words: "#release", "my_variable", "done, thanks"; Spanish "arroba", "guion bajo", "coma", … too (#678, #1040)
 ├── Remove filler words no labs.filler_words          English dictations lose um, umm, uh, uhh, erm, er, ah, with no model (#631)
+├── Dictation style no    labs.dictation_style + labs.dictation_style_choice (polished/casual/notes/verbatim, polished by default, every OS)
+│                                        each dictation is written as Polished, Casual, Notes, or Verbatim like the iPhone app,
+│                                        without an AI model
 ├── Clean up with Apple Intelligence no labs.clean_up_with_apple_intelligence (macOS)
 │                                        one short on-device pass after the corrections fixes clearly misheard words and
 │                                        resolves spoken self-corrections ("tuesday, no wait, wednesday" → "wednesday");
@@ -239,6 +257,20 @@ Feature             Pane  Toggle (settings.json, hex settings)   On: what it doe
 │                                        // checks: calendar_select_all_is_its_own_switch_and_macos_only (labs.rs);
 │                                        // the_select_all_calendars_lab_saves_every_calendar_at_once (rune_ui/tests/panes.rs)
 ├── Notch indicator no    labs.notch_indicator         (macOS) on a screen with a notch, the HUD widens the notch sideways in the Dynamic Island's compact style at either visible position: an orange mic and level bars, the macOS spinner, a green checkmark; Hidden still hides it, and flat screens keep the Top/Bottom setting
+├── HUD height      no    labs.hud_height              (macOS) with the HUD position Bottom, the plate keeps labs.hud_bottom_gap points (0–400, 24 by
+│                                        default) above the Dock or the screen's bottom edge; a gap of 24 pt or less keeps the
+│                                        window's bottom on the visible bottom, and a larger gap raises the window by gap − 24;
+│                                        the plate only moves up inside it once the raised window would reach the visible top
+│                                        (a gap above the visible height minus 104 pt), which within 0–400 only happens on
+│                                        a very short visible frame; placement clamps the plate under the menu bar or notch;
+│                                        off, the fixed 24 pt is exactly as before
+│                                        // checks: hud_height_is_its_own_bit_and_off_by_default (labs.rs);
+│                                        // the_default_bottom_gap_places_exactly_as_before, a_small_bottom_gap_sits_inside_the_window,
+│                                        // a_tall_bottom_gap_raises_the_window_and_keeps_the_gap_exact,
+│                                        // a_gap_that_reaches_the_visible_top_keeps_the_plate_inside,
+│                                        // a_raised_bottom_gap_works_on_a_display_below_the_primary,
+│                                        // a_huge_bottom_gap_keeps_the_plate_inside_the_visible_frame,
+│                                        // a_bottom_gap_never_drops_the_window_below_the_visible_bottom (rune_hud/hud_placement.rs)
 ├── Import audio    no    labs.meeting_import           (macOS)   Meetings offers Import audio…: a WAV, M4A, MP3, AIFF, or CAF
 │                                        file is decoded locally, transcribed with the selected model, saved as a normal
 │                                        meeting (Speaker turns), exported as Markdown, and given notes as a finished recording
@@ -319,6 +351,15 @@ Feature             Pane  Toggle (settings.json, hex settings)   On: what it doe
 │                                        // lines, every refusal), control::cli::annotate_read's clap conflicts, and
 │                                        // agent_tools_for_captures_is_its_own_switch_and_everywhere (labs.rs); the video decode
 │                                        // path is unverified on a real bundle, and no capture was recorded for this change
+├── Dictate while annotating no labs.dictate_while_annotating (every OS)
+│                                        while an Annotate capture records, the dictation shortcut dictates as usual: hold,
+│                                        toggle, or lock it and the text pastes into the app in front, History and Paste Last keep
+│                                        it, and the capture goes on recording and keeps the dictated words in its own track
+│                                        (both copies of the same microphone timeline). Off, a press during a capture starts
+│                                        nothing, as before
+│                                        // checks: dictate_while_annotating_is_its_own_switch_and_everywhere (labs.rs);
+│                                        // a_dictation_during_a_capture_shows_at_the_bottom_clear_of_the_capsule (rune_hud);
+│                                        // not observed with a real Mac, Linux session, or Windows PC recording while dictating
 ├── Install agent skill from Annotate no labs.annotate_agent_install (every OS)
 │                                        Annotate gains an Agents section: one row per coding agent writes the
 │                                        hex-annotate skill into its own skills folder (Claude Code, OpenCode; Codex and
@@ -403,7 +444,8 @@ Settings › Labs                          // labs.page, a store (labs/store.rs)
 │   // appearances, typed and linked searches, restored cards, retained focus and typing;
 │   // observed failing without the clear callback and passing with it; no AppKit window
 │   // every_group_has_a_feature_and_round_trips_its_id (labs/group.rs);
-│   // goldens mac-labs (light, dark), windows-labs, linux-labs, mac-labs-link
+│   // goldens mac-labs (light, dark), windows-labs, linux-labs, mac-labs-link,
+│   // rune-whats-new and rune-whats-new-newest (light, dark)
 ├── Card -> neutral icon tile, name with New / Dev tags on one line, up to two lines of description, a switch;
 │   pressing the card itself does nothing (there is no drawer)
 │   ├── The switch (key lab-<id>) -> flips the lab, saved at once
@@ -445,7 +487,9 @@ hex settings set labs.live_text true     // macOS: through the running Hex
 Checks: `rune_ui::deep_link` tests (parser, query, every feature's link reads
 back); the labs store tests in tests/panes.rs (links, card toggles, a lab's own settings on its card, the stable build's missing Dev labs,
 filters, ⌘F, a lone card's width, group folds and each OS's groups) and the
-`mac-labs`, `mac-labs-link`, `windows-labs`, and `linux-labs` goldens (Linux).
+`mac-labs`, `mac-labs-link`, `windows-labs`, and `linux-labs` goldens (Linux);
+`rune-whats-new` and `rune-whats-new-newest` (light and dark) move too, since
+the feed lists every new lab.
 Scenes: `mac-labs`, `mac-labs-on`, `mac-labs-category`, `mac-labs-search`,
 `mac-labs-settings`, `mac-labs-screenshots`, `mac-labs-link`, `windows-labs`, `linux-labs`. Not yet observed: the store in a running
 Hex.
@@ -720,6 +764,61 @@ last free bit and the window lives in its own atomic, both written by
 page goldens were regenerated for the new card. Not yet observed on a real
 Mac, Windows PC, or Linux desktop: no capture has been run with the lab on.
 
+Voice isolation (`voice-isolation`, macOS only): while on, dictation's warm
+microphone opens through Apple's voice processing instead of cpal's raw
+input stream, so Control Center's Mic Mode can offer Voice Isolation for Hex
+and background noise is reduced. The voice-processed microphone stays open
+while dictation is idle, exactly like the raw warm microphone, so macOS's
+ducking applies whenever Hex is listening and not only while a dictation
+records; with General's Release microphone while idle on, it closes after a
+capture and the ducking ends with it. `OpenRequest` gains
+`voice_processing` (true only from `RecoveringAudioInput` while
+`labs::voice_isolation()` is on) and a remembered
+`voice_processing_fallback`; meetings, Annotate captures, the microphone
+level meter (`open_dictation_input`), `open_named_input`,
+`open_meeting_input`, the local API's host-audio and stream transcription
+(which never opens a microphone), and every other OS stay on the cpal path.
+The Swift bridge (`src/voice_processing.swift`) resolves the cpal device's
+UID to a CoreAudio device
+(`kAudioHardwarePropertyTranslateUIDToDevice`), sets
+`kAudioOutputUnitProperty_CurrentDevice` on the input node's audio unit,
+enables `setVoiceProcessingEnabled(true)`, connects the input through a
+silent main mixer to the output (voice processing is duplex), and taps
+channel 0 at the bus rate in a standard Float32 non-interleaved format with
+`AVAudioTime.hostTime`; Rust converts the Mach ticks with
+`CaptureInstant::from_mach_ticks` and feeds the same chunk and Hex
+Microphone channels a cpal stream does. The bridge reads
+`kAudioOutputUnitProperty_CurrentDevice` back after start. It observes
+`AVAudioEngineConfigurationChange` only once start has returned, and reports
+it through a separate error callback only while the engine has stopped; that
+is a plain reopen, so the next open tries voice processing again. More than
+three such reopens within 30 s count as a failure. An actual voice-processing
+failure falls back to normal capture: an exception from the graph (the
+Objective-C `@try/@catch` guard in `native/voice_processing_guard.m`), a
+refused format, device, or start, a device that isn't the requested one after
+start, or a stream that stalls or fails. `RecoveringAudioInput` remembers that
+failure for the resolved microphone, so every later open uses the raw cpal
+stream without reopening the engine, until Labs › Voice isolation is toggled
+or the resolved microphone changes (the saved selection, the OS default, or a
+stand-in). A configuration change reopens through voice processing again, so
+it never disables the lab. A silence recovery's renegotiating open is raw too.
+A gate change is applied by `DictationAudio::reconcile_input` only while
+nothing records and no capture sink holds the microphone; the same device
+is then reopened on the other path rather than kept as unchanged, and a
+change during a capture waits for it to end. Off, every open is
+byte-for-byte the existing cpal path. macOS may lower other audio while the
+duplex unit runs: advanced ducking lowers it only while speech is heard,
+and `.min` is the least ducking macOS offers. A Bluetooth headset may
+switch to its call profile. Not verified on hardware: no Mac has run this
+path; Control Center's Mic Mode offering Voice Isolation for Hex; the tap's
+latency against the 200 ms release tail; and a meeting sharing the
+microphone while dictation's voice-processed stream is open. Checks:
+`voice_isolation_is_its_own_bit_and_off_by_default` in
+[labs.rs](../../src/labs.rs) and
+`a_voice_isolation_change_reopens_only_while_capture_is_idle` in
+[audio/recovering/tests.rs](../../src/audio/recovering/tests.rs). The macOS
+Labs goldens were regenerated for the new card.
+
 Restore shortcut default (`restore-shortcut-default`, issue 613) graduated:
 Paste last dictation's row always offers Reset when its shortcut isn't the
 default (see [dictation.md](dictation.md)). `labs.restore_shortcut_default`
@@ -733,13 +832,19 @@ immediate write; the unused key drops on a subsequent save. General’s ⌘F
 opens Find. Labs’ own ⌘F, tabs, chips and local filter still work normally.
 
 The sidebar footer's **What's new** opens a short feed of shipped features,
-newest first. Each entry has a decorative feature icon. Entries shipped on the
-same date share a heading: Today, Yesterday, or 2–6 days ago by local calendar
-day; older entries show the month and day, and the year outside the current
-year. YOLO mode opens and highlights its Labs card without changing
-the switch; Sounds opens General's sound picker without selecting or playing
-a set. `whats_new_opens_controls_without_changing_them` follows both links
-with a fixture and compares the settings before and after.
+newest first. The feed follows the Labs registry: it lists the newest eight
+labs this build offers (audience Everyone, on this OS, not locked), each with
+its Labs card's date, title, description, and icon, so a lab that ships
+appears here without another edit, plus the hand-written Sounds entry
+(20261029) with the volume icon. Entries shipped on the same date share a
+heading: Today, Yesterday, or 2–6 days ago by local calendar day; older
+entries show the month and day, and the year outside the current year. A lab
+entry opens and highlights its Labs card without changing the switch; Sounds
+opens General's sound picker without selecting or playing a set.
+`whats_new_opens_controls_without_changing_them` follows both kinds of link
+with a fixture and compares the settings before and after, and
+`whats_new_lists_the_newest_offered_labs` checks the newest offered lab is
+listed first and no more than eight labs show.
 
 Appearance (`appearance`, every OS): while on, its card shows "Theme"
 (System, Light mode, Dark mode; default System). `labs::window_dark` resolves
@@ -1127,6 +1232,83 @@ in [control/settings.rs](../../src/control/settings.rs);
 dictation with the lab on, and the Mac and Windows builds, which the Linux host
 cannot compile.
 
+Signature (`signature`, every OS): while on, every normal dictation is pasted
+with `labs.signature_text` on its own line at the end. The line is added once,
+at the one point each output stage's final text feeds the paste, History, and
+Paste last dictation, so History shows exactly what was inserted and Paste
+last reinserts it unchanged. macOS signs in `parakeet::finish_output` only a
+`TranscriptionTarget::Paste` or `CopyOnlyPaste` (never raw, printed, or the
+local API), Windows in `windows::dictation::output::process_dictation_job`
+only when the job is neither printed nor a raw flavour, and Linux in
+`linux::dictation::output::DictationOutput::deliver` behind the same gate.
+Nothing signs meetings, typed text, Annotate, or `Paster::paste` itself.
+
+The pure rule is `dictation::signature::append`: it appends only when the lab
+is on, the text is not empty after trimming, the saved signature is not empty
+after trimming, and the text does not already carry it on a line of its own.
+That means the text is the signature, or the signature follows a line break
+with nothing but spaces or tabs in between; a signature that merely ends a line
+of prose, like "Hex" in "I love Hex", is appended. The saved signature is
+trimmed, so its own edges add no blank line. A saved value must be one line of
+at most 200 characters with no control characters; another value is an
+`invalid-value` error, and settings load falls back to the default without
+changing the saved file and keeps the switch. While the lab is on, its card
+shows Text: a draft that fails validation stays in the field with the reason
+under it in danger color, and the saved line keeps working; a valid draft saves
+once typing pauses. A line saved elsewhere updates the field without resetting
+its focus, and an invalid draft leaves when the lab is turned off.
+
+A signed paste is standalone on every OS: it neither joins the dictation
+before it nor records a continuation, so the next dictation is never glued onto
+the signature line. macOS passes `PasteMode::Standalone`; Windows and Linux
+pass `standalone` through their paster. Paste last dictation remembers with
+its kept text whether that text was signed (`dictation::paste_last::LastDictation`)
+and reinserts a signed one standalone as well, so it neither joins nor leaves a
+continuation even after the lab is turned off or its line changes; an unsigned
+one reinserts as a continuation. On Linux, Live typing commits the
+signed text in its own final input-method step, so the provisional preedit never
+shows the line and the text is typed exactly once; if that commit fails, the
+ordinary paste path carries the same signed text.
+
+```ts
+Dictate "we ship friday"                  // labs.signature + labs.signature_text
+├── Off -> pasted and kept exactly as before
+├── On, "Sent from Hex" -> pasted "we ship friday\nSent from Hex"
+│   -> History and Paste Last hold the same two lines
+├── Text already ends with the line
+│   └── it is the signature, or follows a line break -> left alone
+├── Empty text, empty signature -> nothing appended
+├── Raw (Dictate without processing), printed, API, meeting, typed text, Annotate -> unaffected
+├── Paste Last of a signed text -> standalone too, even after the lab is off
+└── The next dictation -> standalone: never continues the signature line
+```
+
+Checks: `the_signature_is_appended_once_on_its_own_line`,
+`off_appends_nothing`, `empty_text_appends_nothing`,
+`an_empty_or_whitespace_signature_appends_nothing`,
+`text_that_already_ends_with_the_signature_is_left_alone`,
+`a_signature_that_ends_a_line_of_prose_is_still_appended`,
+`a_signature_after_a_line_break_is_left_alone`,
+`a_saved_signature_is_trimmed_before_it_is_appended`,
+`a_signature_must_be_one_line_of_at_most_the_limit`, and
+`a_signature_refuses_line_and_control_characters` in
+[dictation/signature.rs](../../src/dictation/signature.rs);
+`a_signed_dictation_reinserts_standalone` and
+`an_unsigned_dictation_reinserts_as_a_continuation` in
+[dictation/paste_last.rs](../../src/dictation/paste_last.rs);
+`paste_last_reinserts_a_signed_dictation_standalone` in
+[parakeet.rs](../../src/parakeet.rs), macOS; and
+`signature_is_its_own_atomic_and_carries_its_text` in
+[labs.rs](../../src/labs.rs); `a_signature_is_trimmed_and_must_be_one_line` in
+[control/settings.rs](../../src/control/settings.rs);
+`an_invalid_signature_loads_the_default_and_keeps_its_switch` and
+`an_empty_signature_stays_empty_and_appends_nothing` in
+[persistence/tests.rs](../../src/app_settings/persistence/tests.rs). Nothing
+pastes into a real app here; the three call sites are gated by the same pure
+rule and their platform tests, and CI's clippy builds compile macOS and
+Windows. Not yet observed: a real dictation with the lab on, and the next
+dictation's continuation after a signed paste.
+
 Spoken formatting (`spoken-formatting`, issue 630, every OS): while on,
 `Profiles::process_cancellable` in
 [dictation/processor.rs](../../src/dictation/processor.rs) reads
@@ -1222,6 +1404,71 @@ exactly as before. Checks: `only_english_dictations_apply_the_filter`,
 [panes.rs](../../src/rune_ui/tests/panes.rs). Not yet observed: a real
 dictation with the toggle on; the Labs page goldens need regenerating on
 Linux with the new row.
+
+Dictation style (`dictation-style`, every OS, off by default): while on,
+`Profiles::process_cancellable_with` in
+[dictation/processor.rs](../../src/dictation/processor.rs) reads
+`labs::dictation_style()` (the switch and `labs.dictation_style_choice`,
+one of `polished`, `casual`, `notes`, or `verbatim`, Polished by
+default) as each dictation's processing starts, and
+[dictation/style.rs](../../src/dictation/style.rs) writes the text after the
+Global and mode corrections and after any Apple Intelligence cleanup,
+OpenCode rewrite, or voice-prompt rewrite, and before the selected
+transformations. The styled text is therefore `Processed.text` when the
+transformations run, and transformations still have the last word. Only a
+heard dictation (`Source::Dictation`) is styled: Labs › Transform typed
+text, the local API's `process=global` (which promises Global's
+replacement, correction, rewrite, and transformation steps, not a dictation
+style), meetings, and live text keep their text exactly. Dictate without
+processing skips the processor entirely. With the toggle off, processing is
+byte-for-byte as before.
+
+The rules are the iPhone app's `TranscriptFormatter` (`ios/HEXShared/`),
+ported without its spoken lists, spoken punctuation, insertion spacing, or
+"End with a period" handling, which desktop already has as its own Labs or
+does not have. Verbatim only collapses runs of spaces and tabs and trims the
+ends. Polished trims fillers, writes the English informal contractions
+("gonna", "wanna", "gotta", "kinda", "lemme") out except inside quotes or on
+a name mid-sentence, capitalizes each sentence, writes the English pronoun
+"I", and ends every line with "." or, after Chinese or Japanese, "。" (never
+a second mark, and never after a lone address or a line that already ends a
+sentence). Casual trims fillers, drops an opening English interjection's
+comma ("Yeah, sounds good" becomes "yeah sounds good"), lowercases sentence
+starts except acronyms, words with inner capitals, and addresses ("OK"
+becomes "ok"), writes English "I" as "i", and drops the final full stop on a
+short message (one line, up to three sentences). Notes trims fillers, turns
+spoken "new line", "new paragraph", and "bullet"/"bullet point"/"next bullet"
+into lines, makes several sentences a list, splits a short "Intro: a, b,
+and c" into a colon line and bullets (English also splits the last "and" or
+"or"), drops an opening English connective ("so", "yeah", "and then", and
+the rest), removes a final full stop, and capitalizes the first letter.
+
+Filler trimming follows the dictation's language as the iPhone app's
+patterns do: English, Spanish, German, and Norwegian/Danish/Swedish have
+their own hesitations, and any other language trims nothing ("er" is "is" in
+Norwegian, "um" is "a" in Portuguese, and "eh" is "anyway" in German). The
+English-only rules apply when that dictation's language is `en` or starts
+with `en-`/`en_`; `auto` and an empty language say nothing about the
+language, so they get only the language-neutral rules and trim no fillers
+(the iPhone app treats an unknown language as English, which desktop does
+not). Checks: `styles_differ_on_ordinary_short_dictation`,
+`polished_writes_full_sentences`, `casual_texts`,
+`notes_list_several_items_concisely`, `styles_keep_an_address_whole`,
+`styles_trim_spanish_and_german_hesitations`,
+`filler_trimming_follows_the_dictation_language`, and
+`verbatim_collapses_horizontal_spaces_only` in
+[dictation/style/tests.rs](../../src/dictation/style/tests.rs);
+`the_dictation_style_writes_a_dictation_and_leaves_typed_text_and_the_api_alone`
+in [dictation/processor.rs](../../src/dictation/processor.rs);
+`dictation_style_is_its_own_atomic_and_carries_its_choice` in
+[labs.rs](../../src/labs.rs);
+`dictation_style_shows_its_choices_on_its_card_while_on` and
+`output_shows_the_style_row_while_its_lab_is_on` in
+[panes.rs](../../src/rune_ui/tests/panes.rs);
+`every_dictation_style_string_has_every_language` in
+[i18n.rs](../../src/desktop/i18n.rs). Not yet observed with a real
+dictation; the Labs-page goldens were regenerated on Linux, and no Output
+golden moved because its scene leaves the lab off.
 
 Clean up with Apple Intelligence (`clean-up-apple-intelligence`, macOS, off
 by default): while on, each macOS dictation that its mode does not rewrite
@@ -1884,7 +2131,8 @@ at 500 ms, 1 s, and 5 s, the release while the key is down, and off);
 `hold_through_keys_is_its_own_bit_and_macos_and_windows_only` in
 [labs.rs](../../src/labs.rs). The regenerated goldens that changed against
 `origin/dev` are `mac-labs` and `mac-labs-link` (light and dark),
-`windows-labs` (light), and `whats-new-yolo` (light and dark). Not yet
+`windows-labs` (light), and `whats-new-yolo` (light and dark; since replaced
+by `whats-new-newest`). Not yet
 observed: a real keyboard on either OS.
 
 Sort and filter models (`picker-sort-filter`, issue 645, every OS): while
@@ -2750,6 +2998,40 @@ dictation through the ears on a Mac with the lab on (`hex dev hud` drives
 them in a debug build), and the failure glyph, which no render covers yet; the
 row renders only in macOS builds, so no golden changes.
 
+HUD height (`hud-height`, macOS only): at the Bottom position, how far
+above `visibleFrame.y` (the Dock's top or the screen's edge) the plate
+sits. `labs.hud_bottom_gap` is 0–400 points with 24 by default, so
+`hex settings set labs.hud_bottom_gap 40` raises it and 0 puts it on the
+edge; the card's slider, `{} pt` readout, and one-point Lower and Raise
+buttons set the same value. The gate, `labs::hud_bottom_gap()`, is read
+each time the HUD is placed (`Hud::place_on_pointer_screen` in
+[rune_hud/macos.rs](../../src/rune_hud/macos.rs)), so a change applies
+from the next dictation. A gap of 24 pt or less keeps the window's bottom
+on the visible bottom and moves `Layout.center` (24 pt is exactly the old
+placement); a larger gap raises the window by gap − 24 with the plate at
+its usual offset inside it, keeping its shadow padding, so the visible gap
+stays exact. The plate only moves up inside the window once the raised
+window would reach the visible top (a gap above the visible height minus
+104 pt), which within 0–400 only happens on a very short visible frame.
+Placement clamps the gap so the plate's top never passes the visible
+frame's top, below the menu bar or notch, and the window never crosses
+below the visible bottom. Top, Off, HUD Lab's menu bar and
+notch placements, and Linux and Windows are unchanged. Linux and Windows
+have no row, `hex labs on hud-height` doesn't know it there, and
+`hex settings set labs.hud_height` answers `unsupported` (as any
+`labs.` switch for another OS now does). Checks:
+`the_default_bottom_gap_places_exactly_as_before`,
+`a_small_bottom_gap_sits_inside_the_window`,
+`a_tall_bottom_gap_raises_the_window_and_keeps_the_gap_exact`,
+`a_gap_that_reaches_the_visible_top_keeps_the_plate_inside`,
+`a_raised_bottom_gap_works_on_a_display_below_the_primary`,
+`a_huge_bottom_gap_keeps_the_plate_inside_the_visible_frame`, and
+`a_bottom_gap_never_drops_the_window_below_the_visible_bottom` in
+[rune_hud/hud_placement.rs](../../src/rune_hud/hud_placement.rs);
+`hud_height_is_its_own_bit_and_off_by_default` in
+[labs.rs](../../src/labs.rs). Not yet observed: a real dictation at a
+raised gap on a Mac, and the card's controls with every language.
+
 Screenshots (`screenshots`, macOS only, group Annotate): for people who
 miss CleanShot's ⌘⇧4. While on, the shortcut (`screenshots.hotkey`,
 default ⌘⇧4; the card's recorder changes it and refuses one another Hex
@@ -2941,7 +3223,12 @@ editor
 │                                   Crop: a drag shades what's left out, a click clears it
 ├── ⌘Z            -> the text being typed, else the last mark, else the crop
 ├── Copy (⌘C)     -> the edited PNG on the clipboard
-├── Save (⌘S)     -> a new file in screenshots.folder; the first shot is never changed
+├── Save (⌘S)     -> the native save panel, above the editor, in the folder Save or Export
+│                    last saved to (screenshots.export_folder; screenshots.folder at first),
+│                    offering the shot's own name (PNG only); Cancel saves nothing and
+│                    changes nothing; a chosen path is written whole or not at all
+│                    (.partial-<name>, then renamed); choosing the shot's own file
+│                    replaces it and closes the editor, else the note says "Saved"
 ├── Send to…      -> a list of open OpenCode sessions (typing searches title, folder, id,
 │                    as Annotate's; ↑↓ Enter); the PNG goes to the session as an image,
 │                    with the words said over it as its text ("Screenshot" without any);
@@ -3076,6 +3363,11 @@ saves the plain movie.
 ```ts
 record shortcut  -> the toolbar (above); Area and Window use the same picker as a shot
 ├── recording    -> Annotate's capsule shows it recording, as any capture; talk to narrate
+│   └── Area or Window -> every display dims but what's recorded, outlined as the picker
+│                         outlined it (untinted), fading in once the screen records and out
+│                         at stop or cancel; a Window's hole follows the window as it moves,
+│                         as the movie does; click-through, never focused, left out of the
+│                         movie unless capture.show_overlays_in_recordings; Screen dims nothing
 ├── record shortcut again (or the capsule's stop) -> stops; the capsule folds unless it failed
 │                   ├── the movie saves itself: "Hex Recording 2026-11-04 at 14.03.22.mp4" in
 │                   │   screenshots.folder (the Desktop when unset), " (2)" on a clash, as a shot's
@@ -3097,7 +3389,11 @@ record shortcut  -> the toolbar (above); Area and Window use the same picker as 
                     ├── Copy (⌘C) -> the movie FILE on the clipboard (pastes as an attachment in
                     │               Slack, Messages, Finder): the saved movie itself when nothing was
                     │               cut at Original, else a copy in the temp folder's hex-screenshots
-                    ├── Export   -> another "Hex Recording … .mp4" in screenshots.folder
+                    ├── Export   -> the native save panel, above the editor, in the folder Export
+                    │               last saved to (screenshots.export_folder; screenshots.folder at
+                    │               first), offering the movie's own name, MPEG-4 only; Cancel
+                    │               exports nothing and changes nothing; the size and span go to
+                    │               the path chosen, and only then does the button show progress
                     └── Send to… -> a contact sheet of up to 4 frames in the span as the image,
                                     the span's words and "Screen recording (m:ss): <movie>" as text,
                                     the saved movie itself when nothing was cut at Original
@@ -3146,6 +3442,12 @@ an Annotate capture's movie  -> 1280 px long edge (2560 for a display), system H
 // check: a_full_quality_movie_records_hevc_at_the_size_asked, one_x_and_a_long_edge_take_the_smaller (crates/capture/src/capture/macos.rs)
 // check: an_export_estimate_follows_the_span_kept_and_the_size, a_recording_has_no_marks_and_copies_its_movie (editor/tests.rs)
 // check: playing_moves_the_playhead_through_the_span_and_stops_at_its_end (editor/tests.rs)
+// check: save_offers_the_recordings_own_name_and_a_cancel_changes_nothing, the_path_chosen_gets_the_recording (editor/tests.rs)
+// check: a_save_replaces_the_file_chosen_and_leaves_nothing_beside_it (screenshots/save.rs)
+// check: the_dim_waits_for_the_screen_and_ends_with_its_recording, only_an_area_or_a_window_is_dimmed (screenshots/dim.rs)
+// stills: HEX_CAPSULE_SNAPS writes recording-dim-{area,window}-{light,dark}.png (capture_capsule/tests/motion.rs);
+//         HEX_SCREENSHOT_SNAPS writes editor-recording-{saving,saved}-*.png (editor/tests.rs).
+//         Not observed on a real Mac: the save panel itself, and the dim over a real window being dragged
 // check: hevc_records_native_pixels_up_to_the_hardware_limit (crates/capture-core/src/plan.rs)
 // check: writes_a_tagged_hevc_movie_from_frames (crates/capture-core/src/video_writer.rs)
 ```
@@ -3409,7 +3711,7 @@ export, and Movable meeting capsules graduated: they always work now
 ([meetings.md](meetings.md)), and a panel capsule thrown on release glides
 into the corner it heads for. Stop when the call ends, Expire meeting audio
 separately, Descriptive meeting file names, and Separate notes file became
-Meetings › Settings rows: Detected calls › Stop when the call ends
+Meetings › Settings rows: Calls › Stop when the call ends
 (`meetings.stop_when_call_ends`), After a meeting › Keep audio
 (`meetings.audio_retention`), and Export › Descriptive meeting file names and
 Separate notes file (`meetings.export.descriptive_filenames`,

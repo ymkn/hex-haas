@@ -38,6 +38,27 @@ nonisolated enum AccentCatalog {
         return uppercase ? list.map(upper) : list
     }
 
+    /// Settings › Experiments › Quick accents: the accent a held letter picks first, the
+    /// language's most-used one where it has a table for it (`quickAccentPrimaries`, Spanish
+    /// "o" → "ó"), else the first variant after the key's own in its list (German "a" → "à").
+    /// Capitals use the callout's own mapping, and a preferred accent the key doesn't hold falls
+    /// back the same way. Nil when the key holds nothing else.
+    static func primaryVariant(
+        for base: String,
+        uppercase: Bool,
+        language: KeyboardLanguage = .english,
+        letters: KeyboardLetterLayout? = nil
+    ) -> String? {
+        guard let options = options(for: base, uppercase: uppercase, language: language, letters: letters) else {
+            return nil
+        }
+        if let preferred = language.quickAccentPrimaries[base.lowercased()] {
+            let shown = uppercase ? upper(preferred) : preferred
+            if options.contains(shown) { return shown }
+        }
+        return options.dropFirst().first
+    }
+
     /// Greek capitals: ς is Σ itself and ΐ ΰ have no capital of their own, so the system
     /// keyboard's held Σ offers nothing, and Ι and Υ only Ί Ϊ and Ύ Ϋ.
     private static let greekWithoutCapitals: Set<String> = ["ς", "ΐ", "ΰ"]
@@ -216,17 +237,20 @@ nonisolated struct AccentMenu: Equatable, Sendable {
         )
     }
 
+    /// `cellWidth` and `cellHeight` replace the held key's width and 47 pt (an iPad's, docked).
     static func build(
         for keyFrame: CGRect,
         arrangement: AccentArrangement,
         in layoutWidth: CGFloat,
-        horizontalInset: CGFloat = 0
+        horizontalInset: CGFloat = 0,
+        cellWidth: CGFloat? = nil,
+        cellHeight: CGFloat = AccentMenu.cellHeight
     ) -> AccentMenu {
         let minX = horizontalInset + min(sideInset, max(1, keyFrame.minX - horizontalInset))
         let maxX = max(minX + 60, layoutWidth - horizontalInset - min(sideInset, max(1, layoutWidth - horizontalInset - keyFrame.maxX)))
         let columns = CGFloat(max(1, arrangement.rows.map(\.count).max() ?? 1))
         let rowCount = CGFloat(max(1, arrangement.rows.count))
-        let fullCell = keyFrame.width + cellGrowth
+        let fullCell = cellWidth ?? keyFrame.width + cellGrowth
         let cellW = min(fullCell, (maxX - minX - 2 * padding) / columns)
         let bubbleW = columns * cellW + 2 * padding
         let bubbleH = rowCount * cellHeight + 2 * verticalPadding
@@ -253,6 +277,23 @@ nonisolated struct AccentMenu: Equatable, Sendable {
             }
         }
         return AccentMenu(keyFrame: keyFrame, bubbleFrame: bubbleFrame, options: options, cellFrames: cells, selectedIndex: selected)
+    }
+
+    /// Apple's docked iPad keyboard shows a held key's accents in cells about half a key wide
+    /// (30 to 46.5 pt, `KeyboardMetrics.accentCellWidth`), 53 pt tall, and in two rows once there
+    /// are more than five (e's nine: four over five, iPadOS 27.2). Here the row with the key's own
+    /// option, nearest the key, is the bottom one and takes the larger half.
+    static let padCellHeight: CGFloat = 53
+
+    static func padArrangement(_ options: [String], opensLeft: Bool) -> AccentArrangement {
+        let ordered = opensLeft ? Array(options.reversed()) : options
+        guard options.count > 5 else {
+            return AccentArrangement(rows: [ordered], baseRow: 0, baseColumn: opensLeft ? ordered.count - 1 : 0)
+        }
+        let near = (options.count + 1) / 2
+        let bottom = opensLeft ? Array(ordered.suffix(near)) : Array(ordered.prefix(near))
+        let top = opensLeft ? Array(ordered.prefix(options.count - near)) : Array(ordered.suffix(options.count - near))
+        return AccentArrangement(rows: [top, bottom], baseRow: 1, baseColumn: opensLeft ? bottom.count - 1 : 0)
     }
 
     /// The emoji panel's skin-tone picker, cells of its own width: its layout as it was.
@@ -366,7 +407,9 @@ final class AccentCalloutView: UIView {
         context.setFillColor(palette.bubbleFill.cgColor)
         context.fillPath()
         context.restoreGState()
-        if palette.isDark {
+        // The system cutout's lightening gradient only makes sense on the system look;
+        // a theme paints its own flat bubble.
+        if palette.theme == .automatic, palette.isDark {
             // Apple's dark callout lightens toward its bottom, as its key pop-up does.
             context.saveGState()
             context.addPath(pill.cgPath)

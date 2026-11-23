@@ -20,6 +20,10 @@ nonisolated struct LanguageSettings {
         static let speechModuleFailed = "settings.dictationLanguage.speechModuleFailed"
         static let unavailable = "settings.dictationLanguage.unavailable"
         static let keyboardNeedsHex = "settings.dictationLanguage.keyboardNeedsHex"
+        /// First failures, which set nothing aside until a second in a row.
+        static let speechModuleStrikes = "settings.dictationLanguage.speechModuleStrikes"
+        static let unavailableStrikes = "settings.dictationLanguage.unavailableStrikes"
+        static let keyboardModelStrike = "settings.dictationLanguage.keyboardModelStrike"
     }
 
     static let maxRecent = 5
@@ -70,6 +74,7 @@ nonisolated struct LanguageSettings {
     func keyboardLanguageChoices(
         preferred: [String] = Locale.preferredLanguages,
         hinglish: Bool = HinglishSettings().isEnabled,
+        greeklish: Bool = GreeklishSettings().isEnabled,
         region: String? = Locale.current.region?.identifier
     ) -> [String] {
         DictationLanguageSwitch.choices(
@@ -78,6 +83,7 @@ nonisolated struct LanguageSettings {
             preferred: preferred,
             supported: supportedDictationLanguages,
             hinglish: hinglish,
+            greeklish: greeklish,
             removed: removedDictationLanguages,
             region: region
         )
@@ -115,7 +121,11 @@ nonisolated struct LanguageSettings {
                 ?? defaults?.string(forKey: Key.keyboardLayout).map { [$0] }
                 ?? []
             var seen = Set<KeyboardLanguage>()
-            return stored.compactMap(KeyboardLanguage.init(rawValue:)).filter { seen.insert($0).inserted }
+            let koreanEnabled = KoreanKeyboardExperiment.isEnabled(in: defaults)
+            return stored.compactMap(KeyboardLanguage.init(rawValue:))
+                .filter { seen.insert($0).inserted }
+                // 한국어 is ignored while its experiment is off, even if it was stored before.
+                .filter { $0 != .korean || koreanEnabled }
         }
         nonmutating set {
             var seen = Set<KeyboardLanguage>()
@@ -146,7 +156,12 @@ nonisolated struct LanguageSettings {
 
     /// The language the space bar last switched to, so the keyboard comes back in it.
     var currentKeyboardLanguage: KeyboardLanguage? {
-        get { defaults?.string(forKey: Key.currentKeyboardLanguage).flatMap(KeyboardLanguage.init(rawValue:)) }
+        get {
+            guard let language = defaults?.string(forKey: Key.currentKeyboardLanguage)
+                .flatMap(KeyboardLanguage.init(rawValue:)) else { return nil }
+            let koreanEnabled = KoreanKeyboardExperiment.isEnabled(in: defaults)
+            return language == .korean && !koreanEnabled ? nil : language
+        }
         nonmutating set { defaults?.set(newValue?.rawValue, forKey: Key.currentKeyboardLanguage) }
     }
 
@@ -173,9 +188,10 @@ nonisolated struct LanguageSettings {
         guard dictationLanguage == nil else { return nil }
         let chosen = keyboardLanguages
         guard chosen.count > 1 else { return nil }
+        let koreanEnabled = KoreanKeyboardExperiment.isEnabled(in: defaults)
         if !dictationFollowsKeyboard,
            let own = automaticDictationLanguage ?? preferred.first,
-           KeyboardLanguage.matching(own) == nil {
+           KeyboardLanguage.matching(own, koreanEnabled: koreanEnabled) == nil {
             return nil
         }
         let list = KeyboardLanguageList.resolve(chosen: chosen, stored: currentKeyboardLanguage, automatic: .english)
@@ -191,8 +207,9 @@ nonisolated struct LanguageSettings {
         region: String? = Locale.current.region?.identifier
     ) -> String? {
         var preferred = preferred
+        let koreanEnabled = KoreanKeyboardExperiment.isEnabled(in: defaults)
         if let picked = recentDictationLanguages.first(where: {
-            KeyboardLanguage.matching($0)?.baseLanguage == language.baseLanguage
+            KeyboardLanguage.matching($0, koreanEnabled: koreanEnabled)?.baseLanguage == language.baseLanguage
         }) {
             preferred.insert(picked, at: 0)
         }
@@ -236,8 +253,64 @@ nonisolated struct LanguageSettings {
     }
 
     func clearKeyboardNeedsHex() {
+        if defaults?.object(forKey: Key.keyboardModelStrike) != nil {
+            defaults?.removeObject(forKey: Key.keyboardModelStrike)
+        }
         guard defaults?.object(forKey: Key.keyboardNeedsHex) != nil else { return }
         defaults?.removeObject(forKey: Key.keyboardNeedsHex)
+    }
+
+    /// How long a first failure waits for a second before it no longer counts.
+    static let keyboardStrikeWindow: TimeInterval = 6 * 60 * 60
+
+    /// The keyboard couldn't get its speech model ready. True the second time in a row (no
+    /// model in place since, within `keyboardStrikeWindow`): then it hands dictation to Hex.
+    func noteKeyboardModelFailure(at now: Date = Date()) -> Bool {
+        if let first = defaults?.object(forKey: Key.keyboardModelStrike) as? Double,
+           now.timeIntervalSince1970 - first < Self.keyboardStrikeWindow {
+            defaults?.removeObject(forKey: Key.keyboardModelStrike)
+            return true
+        }
+        defaults?.set(now.timeIntervalSince1970, forKey: Key.keyboardModelStrike)
+        return false
+    }
+
+    /// `SpeechTranscriber`'s model for this language failed to install: set aside
+    /// (`markSpeechModuleFailed`) the second time in a row, within `setAsideDuration`.
+    func noteSpeechModuleFailure(_ identifier: String, at now: Date = Date()) {
+        if strike(identifier, key: Key.speechModuleStrikes, at: now) {
+            markSpeechModuleFailed(identifier, at: now)
+        }
+    }
+
+    /// Neither module's model installed while online: set aside (`markUnavailable`) the
+    /// second time in a row, within `setAsideDuration`.
+    func noteUnavailable(_ identifier: String, at now: Date = Date()) {
+        if strike(identifier, key: Key.unavailableStrikes, at: now) {
+            markUnavailable(identifier, at: now)
+        }
+    }
+
+    /// A model installed for this language: its failures so far no longer count.
+    func clearFailureStrikes(_ identifier: String, speechModule: Bool) {
+        let key = Locale(identifier: identifier).identifier(.bcp47)
+        for strikes in speechModule ? [Key.speechModuleStrikes, Key.unavailableStrikes] : [Key.unavailableStrikes] {
+            guard var marks = defaults?.dictionary(forKey: strikes) as? [String: Double],
+                  marks.removeValue(forKey: key) != nil else { continue }
+            defaults?.set(marks, forKey: strikes)
+        }
+    }
+
+    /// Records a first failure and returns false, or clears it and returns true for a second.
+    private func strike(_ identifier: String, key: String, at now: Date) -> Bool {
+        if isMarked(identifier, key: key, now: now) {
+            var marks = (defaults?.dictionary(forKey: key) as? [String: Double]) ?? [:]
+            marks.removeValue(forKey: Locale(identifier: identifier).identifier(.bcp47))
+            defaults?.set(marks, forKey: key)
+            return true
+        }
+        mark(identifier, key: key, at: now)
+        return false
     }
 
     /// Neither module's model for this language (BCP 47) would install while online, so

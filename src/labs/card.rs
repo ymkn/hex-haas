@@ -86,6 +86,11 @@ impl Feature {
             Self::VocabularyFiles => "Vocabulary files",
             Self::AnnotateAgentTools => "Agent tools for captures",
             Self::AnnotateAgentInstall => "Install agent skill from Annotate",
+            Self::Signature => "Signature",
+            Self::DictationStyle => "Dictation style",
+            Self::HudHeight => "HUD height",
+            Self::VoiceIsolation => "Voice isolation",
+            Self::DictateWhileAnnotating => "Dictate while annotating",
         }
     }
 
@@ -313,6 +318,19 @@ impl Feature {
             }
             Self::AnnotateAgentInstall => {
                 "Adds an Agents section to the Annotate pane that writes the hex-annotate skill into Claude Code, Codex, OpenCode, or Pi, and on macOS links hex onto PATH"
+            }
+            Self::Signature => "Add a line to the end of each dictation, such as \"Sent from Hex\"",
+            Self::DictationStyle => {
+                "Format every dictation as Polished, Casual, Notes, or Verbatim, like the iPhone app, without an AI model"
+            }
+            Self::HudHeight => {
+                "Choose how high the dictation HUD sits above the Dock when it's at the bottom"
+            }
+            Self::VoiceIsolation => {
+                "Record dictation through Apple's voice processing so Mic Mode can turn on Voice Isolation and cut background noise."
+            }
+            Self::DictateWhileAnnotating => {
+                "Dictate while a capture records: the text pastes as usual, and the capture keeps going"
             }
         }
     }

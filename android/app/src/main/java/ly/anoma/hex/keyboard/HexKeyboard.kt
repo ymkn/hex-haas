@@ -1,6 +1,7 @@
 package ly.anoma.hex.keyboard
 
 import android.Manifest
+import android.content.Context
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.database.ContentObserver
@@ -25,13 +26,23 @@ import ly.anoma.hex.typing.TypingModel
 import ly.anoma.hex.typing.TypingPreferences
 
 /** The input method: the editor's lifecycle, the views and dictation. Typing lives in [KeyboardEngine]. */
+/** Dictation's notes arrive from MicCapture as English sentences: the ones a person sees, in the phone's
+ * language (one not listed here shows as it is). */
+internal fun Context.speechNote(note: String?) = when (note) {
+    "Allow the microphone in Hex" -> getString(R.string.keyboard_hint_microphone)
+    "Microphone unavailable. Try again." -> getString(R.string.keyboard_note_microphone)
+    "Couldn’t transcribe. Try again." -> getString(R.string.keyboard_note_transcribe)
+    "No speech heard" -> getString(R.string.keyboard_note_no_speech)
+    "Speech model unavailable" -> getString(R.string.keyboard_note_model)
+    else -> note
+}
+
 class HexKeyboard : InputMethodService() {
     private var view: KeyboardView? = null
     private lateinit var capture: MicCapture
     internal val preferences by lazy { SpeechPreferences(this) }
     internal var nextEnglish: Boolean? = null
     /** The options the dictation in flight started with: its language decides mid-sentence case. */
-    private var dictating: SpeechOptions? = null
     internal val feedback by lazy { TypingPreferences(this) }
     internal val layoutLanguage get() = feedback.layout ?: preferences.spoken.layout ?: Spoken.English
     // Android's personal dictionary is read off the main thread, and again whenever it changes.
@@ -54,14 +65,19 @@ class HexKeyboard : InputMethodService() {
         getSharedPreferences("typing", MODE_PRIVATE).registerOnSharedPreferenceChangeListener(typingChanged)
         contentResolver.registerContentObserver(UserDictionary.Words.CONTENT_URI, true, dictionaryChanged)
         capture = MicCapture(LocalSpeech(applicationContext),
-            update = { phase, note -> view?.status(phase, note ?: idleHint()) },
+            update = { phase, note -> view?.status(phase, speechNote(note) ?: idleHint()) },
             meter = { view?.setLevel(it) }, insert = ::commitSpeech)
     }
     override fun onEvaluateFullscreenMode() = false
     override fun onCreateInputView(): View = KeyboardView(this, this).also { view = it; engine.surface = it }
 
+    /** The field's type as Hex last started in it: an app can change it in place (restarting the same box). */
+    private var fieldType = 0 to 0
+    private var typeChanged = false
     override fun onStartInput(attribute: EditorInfo, restarting: Boolean) {
         super.onStartInput(attribute, restarting)
+        typeChanged = restarting && fieldType != attribute.inputType to attribute.imeOptions
+        fieldType = attribute.inputType to attribute.imeOptions
         nextEnglish = null
         capture.cancel() // Even a different field in the same app must not receive an old result.
         engine.startInput(attribute)
@@ -69,6 +85,8 @@ class HexKeyboard : InputMethodService() {
     override fun onStartInputView(info: EditorInfo, restarting: Boolean) {
         super.onStartInputView(info, restarting)
         view?.cancelGestures()
+        // Another type in the same box: back to its keys, as a new field opens (configureTyping draws them).
+        if (typeChanged) view?.closeMenu(configure = false)
         engine.configureTyping()
         view?.status(capture.phase, idleHint())
     }
@@ -88,29 +106,28 @@ class HexKeyboard : InputMethodService() {
         else -> R.string.keyboard_hint_hold
     })
     internal fun beginSpeech(): Boolean {
-        if (engine.secure || currentInputConnection == null || capture.phase != SpeechPhase.Idle ||
+        if (engine.secure || currentInputConnection == null || !capture.canStart ||
             checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             view?.status(capture.phase, idleHint())
             return false
         }
         engine.clearForDictation()
-        dictating = preferences.options(nextEnglish).also(capture::start)
+        capture.start(preferences.options(nextEnglish))
         nextEnglish = null
         return true
     }
     internal fun toggleSpeech() = when (capture.phase) {
-        SpeechPhase.Idle -> { beginSpeech(); Unit }
+        // A dictation may start while the one before still transcribes; texts go in in order.
+        SpeechPhase.Idle, SpeechPhase.Transcribing -> { beginSpeech(); Unit }
         SpeechPhase.Opening, SpeechPhase.Listening -> finishSpeech()
-        SpeechPhase.Transcribing -> Unit
     }
     internal fun finishSpeech() {
         if (capture.phase == SpeechPhase.Listening || capture.phase == SpeechPhase.Opening) capture.finish()
     }
-    internal fun cancelSpeech() = capture.cancel()
-    private fun commitSpeech(text: String) {
+    internal fun cancelSpeech() = capture.cancelLatest()
+    private fun commitSpeech(text: String, options: SpeechOptions) {
         if (currentInputConnection == null || engine.secure || !isInputViewShown) return
-        val options = dictating
-        engine.insertDictation(text, if (options?.translate == true) "en" else options?.spoken?.code)
+        engine.insertDictation(text, if (options.translate) "en" else options.spoken.code)
     }
     private fun leaveEditor() { view?.reset(); view?.cancelGestures(); engine.leave(); nextEnglish = null; capture.cancel() }
     override fun onFinishInputView(finishingInput: Boolean) { leaveEditor(); super.onFinishInputView(finishingInput) }

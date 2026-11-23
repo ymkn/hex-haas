@@ -304,6 +304,15 @@ final class KeyboardBridgeTests: XCTestCase {
         XCTAssertEqual(decoded.transcript, "hi")
     }
 
+    func testPasteSettingsLaunchOpensAPageWithoutAHandoff() {
+        let request = KeyboardLaunchRequest.pasteSettings
+        XCTAssertEqual(request.url.absoluteString, "hex-dictation://keyboard/paste-settings")
+        XCTAssertEqual(KeyboardLaunchRequest(url: request.url), request)
+        XCTAssertTrue(request.opensPage)
+        XCTAssertNil(request.requestedAt)
+        XCTAssertFalse(request.isHandoffExpired(at: 1_000_000))
+    }
+
     func testTranslationSettingsLaunchOpensAPageWithoutAHandoff() {
         let request = KeyboardLaunchRequest.translationSettings
         XCTAssertEqual(request.url.absoluteString, "hex-dictation://keyboard/translation")
@@ -593,6 +602,46 @@ final class KeyboardBridgeTests: XCTestCase {
         XCTAssertEqual(TranscriptFormatter.insertionText(for: ", right", beforeContext: "Okay", afterContext: nil), ", right")
     }
 
+    /// TestFlight build 121 (zh): "a dictation inserted mid-sentence gets a space before and
+    /// after; Chinese between Chinese needs none". Chinese, Japanese and full-width marks take
+    /// no space on either side; Korean and Latin text are spaced as before.
+    func testDictationIntoChineseTextTakesNoSpaces() {
+        func insert(_ text: String, _ before: String?, _ after: String?) -> String {
+            TranscriptFormatter.insertionText(for: text, beforeContext: before, afterContext: after, isWord: { _ in true })
+        }
+        // Between two Han characters.
+        XCTAssertEqual(insert("天气", "今天", "很好"), "天气")
+        XCTAssertEqual(insert("我们明天去公园", "我觉得", "你说呢"), "我们明天去公园")
+        // After a full-width comma, before a full-width period.
+        XCTAssertEqual(insert("然后回家做饭", "我想去超市，", "。"), "然后回家做饭")
+        XCTAssertEqual(insert("买点水果", "我想去超市", "。"), "买点水果")
+        XCTAssertEqual(insert("你好", "他说：「", "」"), "你好")
+        // Han beside a Latin word or a number: none, as Apple's Chinese keyboard and dictation write it.
+        XCTAssertEqual(insert("iPhone", "我用", "拍照"), "iPhone")
+        XCTAssertEqual(insert("拍照", "我用iPhone", "了"), "拍照")
+        XCTAssertEqual(insert("三点", "会议改到 3", "开"), "三点")
+        // At the start and the end of the field.
+        XCTAssertEqual(insert("你好。", nil, nil), "你好。")
+        XCTAssertEqual(insert("你好。", "", "我是小王"), "你好。")
+        XCTAssertEqual(insert("我是小王。", "你好。", nil), "我是小王。")
+        // A selection replaced: the text on either side of it.
+        XCTAssertEqual(insert("后天", "我们", "见"), "后天")
+        // Japanese.
+        XCTAssertEqual(insert("ありがとう", "本当に", "ございます"), "ありがとう")
+        // A sentence that goes on after the cursor never gets the dictation's "。" inside it.
+        XCTAssertEqual(insert("如果天气好。", "我想", "去超市"), "如果天气好")
+        XCTAssertEqual(insert("买点水果。", "我想去超市", "，然后回家"), "买点水果")
+        XCTAssertEqual(insert("买点水果。", "我想去超市", "。"), "买点水果")
+        XCTAssertEqual(insert("等一下。", "我到了。", "你在哪里"), "等一下。", "a sentence between two keeps its 。")
+        XCTAssertEqual(insert("等一下。", "我到了。", nil), "等一下。")
+        XCTAssertEqual(insert("等一下？", "我想", "去超市"), "等一下？", "a question keeps its mark")
+        XCTAssertEqual(insert("black.", "the quick", "fox"), " black. ", "Latin text as before")
+        // Korean spaces its words; Latin text is spaced as before.
+        XCTAssertEqual(insert("감사합니다", "정말", "여러분"), " 감사합니다 ")
+        XCTAssertEqual(insert("brown", "the quick", "fox"), " brown ")
+        XCTAssertEqual(insert("Café", "Vamos al", "ahora"), " café ")
+    }
+
     func testDictationDictionaryFollowsTheDictationLanguage() {
         let available = ["en_US", "nb", "de_DE", "fr_FR", "es"]
         XCTAssertEqual(KeyboardLanguage.spellCheckLanguage(forDictation: "nb-NO", available: available), "nb")
@@ -729,6 +778,248 @@ final class KeyboardBridgeTests: XCTestCase {
             transcript: "hello",
             message: nil
         )
+    }
+
+    /// Keep mic warm defaults to Off where the keyboard dictates by itself, else to 15 minutes:
+    /// before iOS 26, and while the keyboard hands its dictations to Hex. A choice stays.
+    func testKeepMicWarmDefaultFollowsWhetherTheKeyboardDictatesItself() {
+        let suiteName = "hex.tests.warmDefault.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let bridge = KeyboardBridge(defaults: defaults)
+        let record = KeyboardSelfDictation(defaults: defaults)
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+
+        XCTAssertEqual(bridge.defaultWarmDuration(osMajorVersion: 26, now: now), .off)
+        XCTAssertEqual(bridge.defaultWarmDuration(osMajorVersion: 27, now: now), .off)
+        for version in [18, 25] {
+            XCTAssertEqual(bridge.defaultWarmDuration(osMajorVersion: version, now: now), .fifteenMinutes, "iOS \(version)")
+        }
+
+        record.recordHandedToHex(.memory, at: now.addingTimeInterval(-3_600))
+        XCTAssertEqual(record.handedToHex?.reason, .memory)
+        XCTAssertEqual(bridge.defaultWarmDuration(osMajorVersion: 26, now: now), .fifteenMinutes, "short of memory an hour ago")
+        XCTAssertEqual(
+            bridge.defaultWarmDuration(osMajorVersion: 26, now: now.addingTimeInterval(KeyboardSelfDictation.recentWindow)),
+            .off,
+            "a week on"
+        )
+        record.clearHandedToHex()
+        XCTAssertNil(record.handedToHex)
+        record.recordOpenedHex(at: now)
+        XCTAssertEqual(record.handedToHex?.reason, .openedHex)
+        XCTAssertEqual(bridge.defaultWarmDuration(osMajorVersion: 26, now: now), .fifteenMinutes, "Hex was opened for a dictation")
+        record.recordHandedToHex(.memory, at: now)
+        record.recordOpenedHex(at: now.addingTimeInterval(60))
+        XCTAssertEqual(record.handedToHex?.reason, .memory, "Hex keeps the keyboard's reason")
+        record.clearHandedToHex()
+        XCTAssertEqual(bridge.defaultWarmDuration(osMajorVersion: 26, now: now), .off, "the keyboard dictated by itself again")
+
+        let languages = LanguageSettings(defaults: defaults)
+        languages.markKeyboardNeedsHex(at: now)
+        XCTAssertEqual(bridge.defaultWarmDuration(osMajorVersion: 26, now: now), .fifteenMinutes, "no speech model in the keyboard")
+        languages.clearKeyboardNeedsHex()
+
+        languages.chooseDictationLanguage("nl-NL")
+        let multilingual = MultilingualParakeetSettings(defaults: defaults)
+        multilingual.isEnabled = true
+        multilingual.isModelReady = true
+        let keyboardParakeet = KeyboardParakeetSettings(defaults: defaults)
+        XCTAssertTrue(keyboardParakeet.isEnabled, "Speech model in keyboard is on by default")
+        if MultilingualParakeetSettings.fits() {
+            XCTAssertEqual(
+                bridge.defaultWarmDuration(osMajorVersion: 26, now: now),
+                .fifteenMinutes,
+                "on by default, but only Hex has the multilingual model loaded"
+            )
+            keyboardParakeet.setKeyboardState(.ready)
+            XCTAssertEqual(bridge.defaultWarmDuration(osMajorVersion: 26, now: now), .fifteenMinutes, "the keyboard has V2, not it")
+            keyboardParakeet.setKeyboardState(.preparing, multilingual: true)
+            XCTAssertEqual(bridge.defaultWarmDuration(osMajorVersion: 26, now: now), .fifteenMinutes, "still loading it")
+        }
+        keyboardParakeet.setKeyboardState(.ready, multilingual: true)
+        XCTAssertEqual(bridge.defaultWarmDuration(osMajorVersion: 26, now: now), .off, "the keyboard has it loaded and dictates it")
+        keyboardParakeet.isEnabled = false
+        if MultilingualParakeetSettings.fits() {
+            XCTAssertEqual(bridge.defaultWarmDuration(osMajorVersion: 26, now: now), .fifteenMinutes, "Speech model in keyboard off")
+        }
+        multilingual.isEnabled = false
+
+        bridge.warmDuration = .oneHour
+        XCTAssertEqual(bridge.warmDuration, .oneHour)
+        bridge.warmDuration = .off
+        record.recordHandedToHex(.memory)
+        XCTAssertEqual(bridge.warmDuration, .off, "Off chosen stays Off")
+    }
+
+    /// An install from before the default followed the keyboard: a stored 15 minutes (tapping
+    /// the default to warm the mic stored it) reads as not chosen, once, on iOS 26 where the
+    /// keyboard dictates by itself. 5 minutes, 1 hour and Off stay.
+    func testAStoredFifteenMinutesIsReviewedOnceWhereTheKeyboardDictatesItself() {
+        let suiteName = "hex.tests.warmReview.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let bridge = KeyboardBridge(defaults: defaults)
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+
+        bridge.warmDuration = .fifteenMinutes
+        bridge.reviewWarmDurationForKeyboardDictation(osMajorVersion: 25, now: now)
+        XCTAssertEqual(bridge.warmDuration, .fifteenMinutes, "iOS 25 needs it, and isn't reviewed")
+        bridge.reviewWarmDurationForKeyboardDictation(osMajorVersion: 26, now: now)
+        XCTAssertNil(defaults.string(forKey: "settings.warmDuration"))
+        XCTAssertEqual(bridge.defaultWarmDuration(osMajorVersion: 26, now: now), .off)
+
+        bridge.warmDuration = .fifteenMinutes
+        bridge.reviewWarmDurationForKeyboardDictation(osMajorVersion: 26, now: now)
+        XCTAssertEqual(bridge.warmDuration, .fifteenMinutes, "once: a 15 minutes picked since stays")
+
+        for kept in [WarmSessionDuration.off, .fiveMinutes, .oneHour] {
+            let suite = "hex.tests.warmReview.\(UUID().uuidString)"
+            let other = UserDefaults(suiteName: suite)!
+            defer { other.removePersistentDomain(forName: suite) }
+            let otherBridge = KeyboardBridge(defaults: other)
+            otherBridge.warmDuration = kept
+            otherBridge.reviewWarmDurationForKeyboardDictation(osMajorVersion: 26, now: now)
+            XCTAssertEqual(otherBridge.warmDuration, kept)
+        }
+
+        let suite = "hex.tests.warmReview.\(UUID().uuidString)"
+        let short = UserDefaults(suiteName: suite)!
+        defer { short.removePersistentDomain(forName: suite) }
+        let shortBridge = KeyboardBridge(defaults: short)
+        shortBridge.warmDuration = .fifteenMinutes
+        KeyboardSelfDictation(defaults: short).recordHandedToHex(.memory, at: now)
+        shortBridge.reviewWarmDurationForKeyboardDictation(osMajorVersion: 26, now: now)
+        XCTAssertEqual(shortBridge.warmDuration, .fifteenMinutes, "the keyboard needs Hex here")
+    }
+
+    /// The keyboard's New speech model notice: only where the keyboard would dictate with Hex's
+    /// model and it isn't downloaded, at most once a day and three times, never after Open Hex.
+    func testTheNewSpeechModelNoticeShowsOnlyWhereItHelpsAndNotOften() throws {
+        let suite = "anomaly.hex.tests.model-notice"
+        for name in [suite, suite + ".unmeasured", suite + ".small", suite + ".opened"] {
+            UserDefaults(suiteName: name)?.removePersistentDomain(forName: name)
+        }
+        let settings = KeyboardParakeetSettings(defaults: UserDefaults(suiteName: suite))
+        settings.recordKeyboardLimit(177 * KeyboardParakeetBudget.megabyte)
+        func awaits(_ settings: KeyboardParakeetSettings, english: Bool = true, other: Bool = false, downloaded: Bool = false) -> Bool {
+            KeyboardParakeetNotice.modelAwaitsDownload(settings: settings, english: english, otherEngine: other, downloaded: downloaded)
+        }
+        XCTAssertTrue(awaits(settings), "English, the switch on, an iPhone and a keyboard with the memory, not downloaded")
+        XCTAssertFalse(awaits(settings, downloaded: true), "downloaded")
+        XCTAssertFalse(awaits(settings, english: false), "not English")
+        XCTAssertFalse(awaits(settings, other: true), "Two-language dictation or the multilingual model")
+        let small = KeyboardParakeetSettings(defaults: UserDefaults(suiteName: suite + ".small"))
+        small.recordKeyboardLimit(100 * KeyboardParakeetBudget.megabyte)
+        XCTAssertFalse(awaits(small), "a phone whose keyboard can't use it")
+        XCTAssertFalse(awaits(KeyboardParakeetSettings(defaults: UserDefaults(suiteName: suite + ".unmeasured"))), "a keyboard not measured yet")
+        settings.isEnabled = false
+        XCTAssertFalse(awaits(settings), "switched off")
+
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = TimeZone(identifier: "UTC")!
+        let day = Date(timeIntervalSince1970: 1_795_000_000)
+        let notice = KeyboardParakeetNotice(defaults: UserDefaults(suiteName: suite))
+        XCTAssertTrue(notice.mayShow(now: day, calendar: utc))
+        notice.recordShown(now: day, calendar: utc)
+        XCTAssertFalse(notice.mayShow(now: day.addingTimeInterval(3_600), calendar: utc), "the same day twice")
+        XCTAssertTrue(notice.mayShow(now: day.addingTimeInterval(86_400), calendar: utc))
+        notice.recordShown(now: day.addingTimeInterval(86_400), calendar: utc)
+        notice.recordShown(now: day.addingTimeInterval(3 * 86_400), calendar: utc)
+        XCTAssertFalse(notice.mayShow(now: day.addingTimeInterval(9 * 86_400), calendar: utc), "three showings in all")
+        let opened = KeyboardParakeetNotice(defaults: UserDefaults(suiteName: suite + ".opened"))
+        opened.recordOpened()
+        XCTAssertFalse(opened.mayShow(now: day, calendar: utc), "never again once Hex was opened from it")
+    }
+
+    /// The notice opens Hex, starting nothing, and never shows in a password or one-time-code
+    /// field.
+    @MainActor
+    func testTheModelNoticeOpensHexAndNeverShowsInAPasswordField() throws {
+        let group = try XCTUnwrap(UserDefaults(suiteName: KeyboardBridge.appGroup))
+        let keys = [KeyboardParakeetNotice.shownKey, KeyboardParakeetNotice.dayKey, KeyboardParakeetNotice.openedKey, KeyboardParakeetNotice.dismissedKey]
+        keys.forEach { group.removeObject(forKey: $0) }
+        defer { keys.forEach { group.removeObject(forKey: $0) } }
+        let model = KeyboardViewModel()
+        model.configureFixture(snapshot: .offline, now: 10_000)
+        var opened: [URL] = []
+        model.onOpenURL = { opened.append($0) }
+        func keyboard(_ target: FixtureTextTarget) -> FullKeyboardView {
+            let view = FullKeyboardView(model: model, target: target)
+            view.frame = CGRect(x: 0, y: 0, width: 402, height: 262)
+            view.layoutIfNeeded()
+            view.offerModelNotice(awaitsDownload: true)
+            return view
+        }
+        let password = FixtureTextTarget(text: "")
+        password.isSecureTextEntry = true
+        XCTAssertNil(keyboard(password).modelNotice)
+        let code = FixtureTextTarget(text: "")
+        code.textContentType = .oneTimeCode
+        XCTAssertNil(keyboard(code).modelNotice)
+        XCTAssertEqual(group.integer(forKey: KeyboardParakeetNotice.shownKey), 0, "not counted where it didn't show")
+
+        let view = keyboard(FixtureTextTarget(text: ""))
+        XCTAssertEqual(view.modelNotice, KeyboardStripNotice(title: "New speech model", detail: "Downloads in Hex on Wi-Fi", button: "Open Hex", dismissible: true))
+        view.stripView.onOpenNotice?()
+        XCTAssertEqual(opened, [KeyboardParakeetNotice.opensHex])
+        XCTAssertNil(KeyboardLaunchRequest(url: KeyboardParakeetNotice.opensHex), "Hex opens as it is: no page, no session")
+        XCTAssertNil(view.modelNotice, "gone once tapped")
+        XCTAssertFalse(KeyboardParakeetNotice().mayShow(now: Date().addingTimeInterval(7 * 86_400)), "and never again")
+    }
+
+    /// Ryan: "make sure that ... the notice bar is able to be turned off." Its ✕ puts it away at
+    /// once and for good on this iPhone, whatever the counts; it opens nothing and isn't Open Hex.
+    @MainActor
+    func testTheModelNoticesDismissPutsItAwayForGood() throws {
+        let group = try XCTUnwrap(UserDefaults(suiteName: KeyboardBridge.appGroup))
+        let keys = [KeyboardParakeetNotice.shownKey, KeyboardParakeetNotice.dayKey, KeyboardParakeetNotice.openedKey, KeyboardParakeetNotice.dismissedKey]
+        keys.forEach { group.removeObject(forKey: $0) }
+        defer { keys.forEach { group.removeObject(forKey: $0) } }
+        let model = KeyboardViewModel()
+        model.configureFixture(snapshot: .offline, now: 10_000)
+        var opened: [URL] = []
+        model.onOpenURL = { opened.append($0) }
+        let view = FullKeyboardView(model: model, target: FixtureTextTarget(text: ""))
+        view.frame = CGRect(x: 0, y: 0, width: 402, height: 262)
+        view.layoutIfNeeded()
+        view.offerModelNotice(awaitsDownload: true)
+        XCTAssertEqual(view.modelNotice?.dismissible, true)
+        view.layoutIfNeeded()
+        let dismiss = try XCTUnwrap(dismissControl(in: view.stripView), "the notice's ✕")
+        XCTAssertGreaterThanOrEqual(dismiss.bounds.width, 34)
+        XCTAssertGreaterThanOrEqual(dismiss.bounds.height, 28, "a real touch target")
+        let open = try XCTUnwrap(control(in: view.stripView, titled: "Open Hex"))
+        XCTAssertFalse(dismiss.convert(dismiss.bounds, to: view).intersects(open.convert(open.bounds, to: view)), "a miss on ✕ never hits Open Hex")
+        dismiss.sendActions(for: .touchUpInside)
+        XCTAssertNil(view.modelNotice, "gone at once")
+        XCTAssertEqual(opened, [], "opens nothing")
+        XCTAssertFalse(group.bool(forKey: KeyboardParakeetNotice.openedKey), "not Open Hex")
+        XCTAssertEqual(group.integer(forKey: KeyboardParakeetNotice.shownKey), 1, "under three showings")
+        let notice = KeyboardParakeetNotice()
+        XCTAssertFalse(notice.mayShow(now: Date().addingTimeInterval(86_400)), "not the next day")
+        XCTAssertFalse(notice.mayShow(now: Date().addingTimeInterval(30 * 86_400)), "nor ever")
+        view.offerModelNotice(awaitsDownload: true)
+        XCTAssertNil(view.modelNotice, "nor when the keyboard appears again")
+        let again = FullKeyboardView(model: model, target: FixtureTextTarget(text: ""))
+        again.offerModelNotice(now: Date().addingTimeInterval(2 * 86_400), awaitsDownload: true)
+        XCTAssertNil(again.modelNotice, "nor in a new keyboard on a new day")
+    }
+
+    private func dismissControl(in view: UIView) -> UIButton? {
+        for sub in view.subviews {
+            if let button = sub as? UIButton, !button.isHidden, button.accessibilityLabel == "Dismiss" { return button }
+            if let found = dismissControl(in: sub) { return found }
+        }
+        return nil
+    }
+
+    private func control(in view: UIView, titled title: String) -> UIButton? {
+        for sub in view.subviews {
+            if let button = sub as? UIButton, !button.isHidden, button.configuration?.title == title { return button }
+            if let found = control(in: sub, titled: title) { return found }
+        }
+        return nil
     }
 }
 
@@ -929,6 +1220,38 @@ final class DictationLanguageSwitchTests: XCTestCase {
             DictationLanguageSwitch.choices(current: nil, recent: [], preferred: ["en-US"], supported: ["en-US"], hinglish: true),
             ["en-US"],
             "not offered where Apple has no Hindi"
+        )
+    }
+
+    /// Experiments › Greeklish offers Greek in the Hex key's language menu, named Greeklish,
+    /// the way Hinglish offers Hindi.
+    func testGreeklishOffersGreekByThatName() throws {
+        let suite = "hex.tests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let greeklish = GreeklishSettings(defaults: defaults)
+        let supported = self.supported + ["el-GR"]
+        XCTAssertEqual(DictationLanguageSwitch.nativeName(for: "el-GR", greeklish: greeklish), "Ελληνικά")
+        XCTAssertEqual(
+            DictationLanguageSwitch.choices(current: "de-DE", recent: ["he-IL"], preferred: ["en-US"], supported: supported),
+            ["de-DE", "he-IL", "en-US"]
+        )
+        greeklish.isEnabled = true
+        XCTAssertEqual(DictationLanguageSwitch.nativeName(for: "el-GR", greeklish: greeklish), "Greeklish")
+        XCTAssertEqual(
+            DictationLanguageSwitch.nativeNames(for: ["el-GR", "en-US"], greeklish: greeklish),
+            ["el-GR": "Greeklish", "en-US": "English"]
+        )
+        XCTAssertEqual(
+            DictationLanguageSwitch.choices(
+                current: "de-DE", recent: ["he-IL"], preferred: ["en-US"], supported: supported, greeklish: true
+            ),
+            ["de-DE", "he-IL", "el-GR", "en-US"]
+        )
+        XCTAssertEqual(
+            DictationLanguageSwitch.choices(current: nil, recent: [], preferred: ["en-US"], supported: ["en-US"], greeklish: true),
+            ["en-US"],
+            "not offered where Apple has no Greek"
         )
     }
 

@@ -25,6 +25,26 @@ public final class Replay {
         }
         return new KeyGrid(points, pitch, 56, new KeyRect(64.76, 212, 303.1, 257));
     }
+    // A keyboard's own geometry, as the end-to-end check measures it on the emulator: key centres,
+    // pitches and the space bar, in the key plane's pixels.
+    static KeyGrid geometry(String path) throws Exception {
+        JSONObject g=new JSONObject(new String(java.nio.file.Files.readAllBytes(java.nio.file.Paths.get(path)),"UTF-8"));
+        Map<Character,KeyPoint> points=new LinkedHashMap<>(); JSONObject keys=g.getJSONObject("keys");
+        for(Iterator<String> it=keys.keys(); it.hasNext();) {
+            String k=it.next(); if(k.equals("'")) continue;
+            points.put(k.charAt(0),new KeyPoint(keys.getJSONArray(k).getDouble(0),keys.getJSONArray(k).getDouble(1)));
+        }
+        JSONObject cj=g.optJSONObject("cells");
+        if(cj!=null) {
+            cells=new HashMap<>(); density=g.getDouble("density");
+            for(Iterator<String> it=cj.keys(); it.hasNext();) {
+                String k=it.next(); JSONArray a=cj.getJSONArray(k);
+                cells.put(k.charAt(0),new double[]{a.getDouble(0),a.getDouble(1),a.getDouble(2),a.getDouble(3)});
+            }
+        }
+        JSONArray s=g.getJSONArray("space");
+        return new KeyGrid(points,g.getDouble("pitchX"),g.getDouble("pitchY"),new KeyRect(s.getDouble(0),s.getDouble(1),s.getDouble(2),s.getDouble(3)));
+    }
     static String[] words(String s) {
         return Arrays.stream(s.toLowerCase(Locale.ROOT).trim().split("\\s+"))
                 .map(w -> w.replaceAll("[.,!?;:]+$", "")).filter(w -> !w.isEmpty()).toArray(String[]::new);
@@ -73,14 +93,34 @@ public final class Replay {
     }
     // The replay geometry's touch areas tile each row: a key's centre ± half its pitch. A neighbouring
     // letter within reach of the touch, by its distance to that area, in points (iOS's dp).
+    // A measured keyboard's touch cells (left, top, right, bottom) and pixels per dp; null and 1 for the
+    // benchmark's own layout, whose cells tile the rows around the centres and whose units are points.
+    static Map<Character,double[]> cells; static double density=1;
+    // French AZERTY's apostrophe key on the letter rows, which the keyboard reads as it reads the letters.
+    static KeyPoint apostropheKey;
     static Map<Character,Double> near(KeyGrid grid, char hit, double x, double y) {
+        // KeyPlaneView.likelier: a shifted label uses the same cell, with shifted neighbours.
+        boolean shifted=Character.isUpperCase(hit); hit=Character.toLowerCase(hit);
         Map<Character,Double> out = new HashMap<>();
-        for (Map.Entry<Character,KeyPoint> e : grid.getCentres().entrySet()) {
+        if (cells != null) {
+            // As KeyPlaneView.likelier: the distance from the touch to each other letter's cell, in dp.
+            for (Map.Entry<Character,double[]> e : cells.entrySet()) {
+                if (e.getKey() == hit) continue;
+                double[] c = e.getValue();
+                double dx = Math.max(Math.max(c[0] - x, 0), x - c[2]), dy = Math.max(Math.max(c[1] - y, 0), y - c[3]);
+                double d = Math.hypot(dx, dy) / density;
+                if (d < TypingWord.REACH) out.put(shifted ? Character.toUpperCase(e.getKey()) : e.getKey(), d);
+            }
+            return out;
+        }
+        Map<Character,KeyPoint> keys = new HashMap<>(grid.getCentres());
+        if (apostropheKey != null) keys.put('\'', apostropheKey);
+        for (Map.Entry<Character,KeyPoint> e : keys.entrySet()) {
             if (e.getKey() == hit) continue;
             KeyPoint c = e.getValue();
             double dx = Math.max(0, Math.abs(x - c.getX()) - grid.getPitchX() / 2), dy = Math.max(0, Math.abs(y - c.getY()) - grid.getPitchY() / 2);
             double d = Math.sqrt(dx * dx + dy * dy);
-            if (d < TypingWord.REACH) out.put(e.getKey(), d);
+            if (d < TypingWord.REACH) out.put(shifted ? Character.toUpperCase(e.getKey()) : e.getKey(), d);
         }
         return out;
     }
@@ -123,10 +163,14 @@ public final class Replay {
     }
     static void replay(String[] args) throws Exception {
         String lang=args[2], group=lang.equals("en") ? "test-" : lang+"-test-";
-        PrintWriter outputs=args.length>3 ? new PrintWriter(new FileWriter(args[3])) : null;
+        boolean gate=args.length==4 && args[3].equals("--gate");
+        PrintWriter outputs=!gate && args.length>3 ? new PrintWriter(new FileWriter(args[3])) : null;
         boolean hasIos=false;
         TypingModel model=TypingModel.Companion.file(new File(args[0]),lang);
-        KeyGrid grid=originalGeometry(lang); TypingWord state=new TypingWord(new SpatialDecoder(model), true);
+        // `MODEL SET LANG OUT [GEOMETRY]`: with a measured geometry, any number of sentences.
+        KeyGrid grid=args.length>4 ? geometry(args[4]) : originalGeometry(lang); TypingWord state=new TypingWord(new SpatialDecoder(model), true);
+        apostropheKey=lang.equals("fr")&&cells==null ? new KeyPoint(201+3*39.5,66.5+56*2) : null;
+        boolean apostropheOnLetters=lang.equals("fr");
         kept.add(state);
         List<Long> letters=new ArrayList<>(), spaces=new ArrayList<>();
         int count=0, total=0, matches=0; int[] errors=new int[3], exact=new int[3];
@@ -137,15 +181,19 @@ public final class Replay {
         try (BufferedReader reader=new BufferedReader(new FileReader(args[1]))) {
             String line;
             while((line=reader.readLine())!=null) {
-                JSONObject r=new JSONObject(line);
-                if(!r.getString("id").equals(group+count)) throw new IllegalArgumentException("Unexpected row "+count);
-                String typed=r.getString("typed"); JSONArray taps=r.getJSONArray("taps");
-                if(typed.length()!=taps.length()) throw new IllegalArgumentException("Unaligned taps");
+                // Gate input is TSV so the host JVM needs no Android JSON implementation.
+                // No coordinates means exact centre taps, including explicit long-press letters.
+                String[] fields=gate ? line.split("\\t", -1) : null;
+                JSONObject r=gate ? null : new JSONObject(line);
+                if(!gate && !r.getString("id").equals(group+count)) throw new IllegalArgumentException("Unexpected row "+count);
+                String typed=gate ? fields[0] : r.getString("typed"); JSONArray taps=gate ? null : r.getJSONArray("taps");
+                String[] points=gate && fields.length==2 ? fields[1].split(" ") : null;
+                if((!gate && typed.length()!=taps.length()) || (points!=null && typed.length()!=points.length)) throw new IllegalArgumentException("Unaligned taps");
                 StringBuilder out=new StringBuilder(); state.reset("");
-                String[] planned=r.getString("intended").toLowerCase(Locale.ROOT).split(" ");
+                String[] planned=gate ? null : r.getString("intended").toLowerCase(Locale.ROOT).split(" ");
                 Map<Integer,Integer> ends=new HashMap<>(), early=new HashMap<>();
-                String want=r.optString("want","");
-                JSONArray endList=r.optJSONArray("ends");
+                String want=gate ? "" : r.optString("want","");
+                JSONArray endList=gate ? null : r.optJSONArray("ends");
                 if(endList!=null) for(int j=0, from=0;j<endList.length();j++) {
                     int end=endList.getInt(j); ends.put(end,j);
                     if(end-from>=3) early.put(from+2,j);
@@ -157,12 +205,26 @@ public final class Replay {
                 // space. An apostrophe ends the word as typed.
                 boolean tracked=true;
                 for(int i=0;i<typed.length();i++) {
-                    char key=typed.charAt(i); double x=taps.getJSONArray(i).getDouble(0), y=taps.getJSONArray(i).getDouble(1);
+                    char key=typed.charAt(i); double x, y;
+                    boolean explicit=false;
+                    if(!gate) { x=taps.getJSONArray(i).getDouble(0); y=taps.getJSONArray(i).getDouble(1); }
+                    else if(points!=null) {
+                        String[] xy=points[i].split(","); x=Double.parseDouble(xy[0]); y=Double.parseDouble(xy[1]);
+                    } else {
+                        KeyPoint p=grid.getCentres().get(Character.toLowerCase(key));
+                        if(key==' ') { KeyRect space=grid.getSpace(); p=new KeyPoint((space.getLeft()+space.getRight())/2,space.getCentreY()); }
+                        if(key=='\'') p=apostropheKey;
+                        explicit=p==null && Character.isLetter(key); // IME long-press choice: w.explicit, no spatial evidence
+                        x=p==null ? 0 : p.getX(); y=p==null ? 0 : p.getY();
+                    }
                     long start=System.nanoTime();
+                    // As the keyboard: a touch on a letter key, or on French's apostrophe key among them, types
+                    // the likelier neighbour when it is near enough (the engine leaves a word it isn't reading alone).
+                    if(!explicit && (Character.isLetter(key)||(key=='\''&&apostropheOnLetters))) key=likelierKey(state,out.toString(),key,x,y,grid);
                     if(key!=' '&&!Character.isLetter(key)) {
                         out.append(key); state.reset(out.toString()); tracked=false; shown=Collections.emptyList();
                     } else if(key==' '&&!tracked) {
-                        out.append(' '); String before=out.toString(); state.reset(before); shown=predictions(state,before); tracked=true;
+                        out.append(' '); String before=out.toString(); state.reset(before); if(!gate) shown=predictions(state,before); tracked=true;
                     } else if(key!=' '&&state.getToken().isEmpty()&&!startsWord(state,out.toString())&&!(tracked&&out.length()==0)) {
                         out.append(key); tracked=false; shown=Collections.emptyList();
                     } else if(key==' ') {
@@ -171,12 +233,13 @@ public final class Replay {
                             if(!out.toString().endsWith(fix.getOriginal())) throw new IllegalStateException("Correction off the text");
                             out.replace(out.length()-fix.getOriginal().length(),out.length(),fix.getReplacement());
                         }
-                        out.append(' '); String before=out.toString(); state.reset(before); shown=predictions(state,before);
+                        out.append(' '); String before=out.toString(); state.reset(before); if(!gate) shown=predictions(state,before);
                     } else {
                         tracked=true;
-                        key=likelierKey(state,out.toString(),key,x,y,grid);
-                        state.letter(String.valueOf(key),x,y,grid); out.append(key); shown=strip(state);
+                        if(explicit) state.explicit(String.valueOf(key)); else state.letter(String.valueOf(key),x,y,grid);
+                        out.append(key); if(!gate) shown=strip(state);
                     }
+                    if(gate) continue;
                     (key==' '?spaces:letters).add(System.nanoTime()-start);
                     Integer j;
                     if((j=early.get(i+1))!=null) { hits[4]+=hit(shown,planned[j])?1:0; hits[5]++; }
@@ -185,6 +248,7 @@ public final class Replay {
                         hits[2]+=hit(shown,planned[j+1])?1:0; hits[3]++;
                     }
                 }
+                if(gate) { System.out.println(out.toString().trim()); continue; }
                 String[] ref=words(r.getString("intended")); total+=ref.length; count++;
                 String ios=r.getString("ios_shared"); hasIos|=!ios.isEmpty();
                 if(outputs!=null) outputs.println(r.getString("id")+"\t"+out.toString().trim());
@@ -193,7 +257,8 @@ public final class Replay {
                 for(int i=0;i<3;i++) { int err=edits(ref,words(results[i])); errors[i]+=err; if(err==0) exact[i]++; }
             }
         }
-        if(count!=2000) throw new IllegalArgumentException("Incomplete synthetic set: "+count);
+        if(gate) return;
+        if(count!=2000&&args.length<=4) throw new IllegalArgumentException("Incomplete synthetic set: "+count);
         if(outputs!=null) outputs.close();
         String[] names={"raw","ios_shared","android_spatial"};
         for(int i=0;i<3;i++) if(i!=1||hasIos)
