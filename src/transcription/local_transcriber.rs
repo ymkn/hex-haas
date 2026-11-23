@@ -49,6 +49,17 @@ impl LocalSession {
         }
     }
 
+    /// Whether the session streams with the buffered Parakeet chunk menus;
+    /// the speech.cpp and Cloud API backends never stream.
+    fn streams_buffered_parakeet(&mut self) -> bool {
+        match self {
+            LocalSession::Gguf(session) => session.streams_buffered_parakeet(),
+            #[cfg(target_os = "windows")]
+            LocalSession::SpeechCpp(_) => false,
+            LocalSession::CloudApi(_) => false,
+        }
+    }
+
     /// [`OfflineGgufSession::transcribe_chunked_timed`] for a GGUF session.
     /// Haas (speech.cpp) gives text only, so its chunks mirror
     /// [`LocalTranscriber::timed_here`]: one segment spans each chunk.
@@ -496,6 +507,11 @@ impl LocalTranscriber {
                 preference: device(),
                 warm_ms: 0,
                 // The worker holds its own backend; transcribe.cpp never runs.
+                backend: crate::transcription::SpeechBackend {
+                    kind: "speech.cpp".into(),
+                    device: "automatic Vulkan / CPU".into(),
+                    crash_fallback: false,
+                },
                 gpu_full: false,
                 out_of_memory: None,
             });
@@ -518,6 +534,11 @@ impl LocalTranscriber {
                 selection: selection.clone(),
                 options: RunOptions::default(),
                 device_label: "Cloud API".into(),
+                backend: crate::transcription::SpeechBackend {
+                    kind: "cloud".into(),
+                    device: String::new(),
+                    crash_fallback: false,
+                },
                 max_audio_samples: None,
                 finest_timestamps: TimestampKind::None,
                 gpu: None,
