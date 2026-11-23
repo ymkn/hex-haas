@@ -15,6 +15,9 @@
 //! follows the rolling `haas-daily` prerelease. Packages published before
 //! the marker existed have no `haas-build.json`; one run with `--variant`
 //! installs a current package and writes the marker.
+//! Installation requires `--yes`: the command never reads stdin. hex.exe
+//! is a GUI-subsystem binary, so a launching shell does not wait for it
+//! and an interactive prompt would race the shell for console input.
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -108,6 +111,15 @@ fn execute(
     if channel != "stable" && channel != "daily" {
         bail!("channel must be 'stable' or 'daily', not '{channel}'");
     }
+    // The exact re-run command the report-only paths point at, keeping any
+    // --channel / --variant overrides this invocation was given.
+    let mut rerun = String::from("hex haas-upgrade --yes");
+    if channel_arg.is_some() {
+        rerun.push_str(&format!(" --channel {channel}"));
+    }
+    if let Some(variant) = &variant_arg {
+        rerun.push_str(&format!(" --variant {variant}"));
+    }
 
     println!(
         "Installed: Hex Haas {} ({} channel, {} build)",
@@ -150,18 +162,16 @@ fn execute(
         asset.size as f64 / 1_048_576.0
     );
     if check_only {
-        println!("Run `hex haas-upgrade` to install it.");
+        println!("Run `{rerun}` to install it.");
         return Ok(());
     }
     if !yes {
-        print!("Download and install? [y/N] ");
-        std::io::stdout().flush()?;
-        let mut answer = String::new();
-        std::io::stdin().read_line(&mut answer)?;
-        if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
-            println!("Aborted; nothing was changed.");
-            return Ok(());
-        }
+        // Deliberately no interactive prompt: hex.exe is a GUI-subsystem
+        // binary, so the launching shell does not wait for it and its own
+        // prompt races this process for console input; a [y/N] read_line
+        // here starves. --yes is the confirmation.
+        println!("Nothing was installed. Run `{rerun}` to download and install it.");
+        return Ok(());
     }
 
     let scratch = std::env::temp_dir().join(format!("hex-haas-upgrade-{}", std::process::id()));

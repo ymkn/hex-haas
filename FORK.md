@@ -127,9 +127,9 @@ Releases に `Hex-Haas-<version>-windows-x64.zip`（GPU版）、
 
 - Actions の「Haas daily sync and build」が毎日03:30（JST）に上流 `anomalyco/hex` の `dev` を `haas` にマージします。きれいにマージできればそのまま push し、3バリアントを再ビルドして prerelease `haas-daily` を差し替えます。コンフリクトしたらマージを取りやめ（`haas` は変更しません）、`haas-sync-conflict` ラベルの Issue で知らせます。上流にもフォークにも前回のデイリーから差分がない日はビルドしません。手動 dispatch の `force` で強制実行できます。
 - 各パッケージの zip には `haas-build.json`（variant / channel / version / build）が入り、各リリースには `manifest.json` が付きます。
-- 導入済み端末での更新は、Hex を終了してから配置フォルダーで `hex haas-upgrade` を実行します。自分のチャンネルの最新 `manifest.json` と比べて新しければ、同じバリアントの zip をダウンロードし、サイズと SHA-256 を検証してからファイルを入れ替えます。`--check` は確認のみ、`--yes` は確認プロンプト省略、`--channel daily|stable` はチャンネルの一時上書きです。
+- 導入済み端末での更新は、Hex を終了してから配置フォルダーで `hex haas-upgrade --yes` を実行します。自分のチャンネルの最新 `manifest.json` と比べて新しければ、同じバリアントの zip をダウンロードし、サイズと SHA-256 を検証してからファイルを入れ替えます。`--check` は確認のみ、インストールには `--yes` が必須です（対話プロンプトはありません。hex.exe が GUI サブシステムのため、ターミナルから起動してもシェルが待ち合わせずキー入力が競合するので、確認はフラグで受けます）、`--channel daily|stable` はチャンネルの一時上書きです。`--yes` で入るのは実行時点の最新です。スクリプトから実行する場合は stdin から何も読みません。完了や終了コードを見たいときは `Start-Process -Wait` などで待ち合わせてください。
 - チャンネルはパッケージ側で決まります。タグ版は stable（最新の `hex-v*` リリースを追う）、デイリー版は daily（`haas-daily` を追う）。
-- `haas-build.json` がない旧パッケージ（v3.3.1まで）は、初回だけ `hex haas-upgrade --variant gpu`（CPU版は `--variant cpu`、ARM64版は `--variant arm64`）とバリアントを指定してください。以後はマーカーで自動判定されます。
+- `haas-build.json` がない旧パッケージ（v3.3.1まで）は、初回だけ `hex haas-upgrade --variant gpu --yes` のように、バリアントを指定して `--yes` で実行してください（CPU版は `--variant cpu`、ARM64版は `--variant arm64`）。以後はマーカーで自動判定されます。
 - 入れ替えの際、実行中の `hex.exe` は `hex.exe.upgrade-old` に退避してから差し替えます（古いファイルは次回以降の実行時に削除を試みます）。配置フォルダーへの書き込み権限が必要です。Hex 本体が起動中だと `speech.exe` / `speech.dll` のロックで入れ替え前に停止します。
 
 ## GPUなしのCPUバリアント（Windows x64 / ARM64）

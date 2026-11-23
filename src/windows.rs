@@ -96,7 +96,7 @@ enum Command {
         /// Only report whether an update is available.
         #[arg(long)]
         check: bool,
-        /// Install without asking for confirmation.
+        /// Install the update. (Required to install: there is no interactive prompt.)
         #[arg(long)]
         yes: bool,
         /// Channel to follow, stable or daily (default: the channel in haas-build.json).

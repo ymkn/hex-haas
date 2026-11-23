@@ -61,11 +61,12 @@ The former checkout-local `haas-data/` and `haas-config/` directories are no lon
 Packaged installs update with the fork's own CLI (the upstream in-app updater stays off). Quit Hex first, then run in the install folder:
 
 ```powershell
-hex haas-upgrade          # check, confirm, download, verify, swap in place
+hex haas-upgrade          # report only (no interactive prompt)
+hex haas-upgrade --yes    # download, verify, swap in place
 hex haas-upgrade --check  # report only
 ```
 
-Each package carries `haas-build.json` (variant, channel, version, build); each release carries a `manifest.json` with the per-variant file name, size and SHA-256, and the download is verified against it before any file is replaced. The stable channel follows the newest `hex-v*` release; the daily channel follows the rolling `haas-daily` prerelease published by the daily upstream-sync workflow, which merges `anomalyco/hex` dev into the fork every morning (conflicts stop the sync and are reported on an issue instead). Packages from before the marker (up to v3.3.1) need `--variant gpu`, `--variant cpu` or `--variant arm64` on the first run. The running `hex.exe` is renamed to `hex.exe.upgrade-old` and replaced; later runs remove the old file. A still-running Hex locks `speech.exe`/`speech.dll`, and the lock check stops the swap before anything changes.
+Each package carries `haas-build.json` (variant, channel, version, build); each release carries a `manifest.json` with the per-variant file name, size and SHA-256, and the download is verified against it before any file is replaced. The stable channel follows the newest `hex-v*` release; the daily channel follows the rolling `haas-daily` prerelease published by the daily upstream-sync workflow, which merges `anomalyco/hex` dev into the fork every morning (conflicts stop the sync and are reported on an issue instead). Packages from before the marker (up to v3.3.1) need `--variant gpu`, `--variant cpu` or `--variant arm64` (with `--yes`) on the first run. The running `hex.exe` is renamed to `hex.exe.upgrade-old` and replaced; later runs remove the old file. A still-running Hex locks `speech.exe`/`speech.dll`, and the lock check stops the swap before anything changes. Installation requires `--yes` and the command never reads stdin: hex.exe is a GUI-subsystem binary, so a launching shell does not wait for it and an interactive prompt would race the shell for console input. Scripts that need the result should wait for the process explicitly (for example `Start-Process -Wait`). `--yes` installs the newest release available at execution time, which may be newer than an earlier report showed.
 
 ## Verification
 
