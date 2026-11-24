@@ -16,11 +16,15 @@ if ($Arch -eq 'arm64') {
 foreach ($file in @('hex.exe', 'speech.exe', 'speech.dll')) {
     if (!(Test-Path (Join-Path $dist $file))) { throw "dist\haas-cpu\$file is missing; run scripts/build-haas-cpu.ps1 first." }
 }
-$versionOutput = (& (Join-Path $dist 'hex.exe') --version 2>&1 | Out-String)
+$versionOutput = (& (Join-Path $dist 'hex.exe') --version | Out-String)
 if ($LASTEXITCODE) { throw 'CPU hex.exe --version failed.' }
-# Drop whitespace-only tokens: the version is the last non-empty one
-# ("hex 3.3.0", or "hex 0.0.0-dev-<run>" on a dev build).
-$version = (@($versionOutput -split '\s+') | Where-Object { $_ } | Select-Object -Last 1)
+# The version is the first token that looks like one ("hex 3.3.0", or
+# "hex 0.0.0-dev-<run>" on a dev build). It is NOT the last token: local
+# builds (HEX_LOCAL_BUILD=1, which the Haas builds set) print a long
+# version that appends "Local build", "updates off" and the commit after
+# the version, and taking the last token stamps the marker with the
+# commit, which haas-upgrade cannot order against real versions.
+$version = (@($versionOutput -split '\s+') | Where-Object { $_ -match '^[0-9]+\.[0-9]+\.[0-9]+' } | Select-Object -First 1)
 if (!$version -or ($version -notmatch '^[0-9A-Za-z][0-9A-Za-z.+_-]{0,127}$')) { throw "Unexpected version '$version'." }
 
 $name = "Hex-Haas-$version-windows-$label-cpu"
