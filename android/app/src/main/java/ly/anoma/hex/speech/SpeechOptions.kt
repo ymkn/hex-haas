@@ -25,7 +25,12 @@ internal enum class Spoken(val code: String, val label: String) {
 internal enum class DictationLanguage(val code: String, val label: String, val layout: Spoken?) {
     English("en", "English", Spoken.English), Spanish("es", "Español", Spoken.Spanish),
     German("de", "Deutsch", Spoken.German), Norwegian("no", "Norsk", Spoken.Norwegian),
-    French("fr", "Français", Spoken.French), Italian("it", "Italiano", Spoken.Italian), Dutch("nl", "Nederlands", null);
+    French("fr", "Français", Spoken.French), Italian("it", "Italiano", Spoken.Italian), Dutch("nl", "Nederlands", null),
+    // One entry for Brazil and Portugal: Whisper has a single "pt", and Hex has no regional rules.
+    Portuguese("pt", "Português", null),
+    // No layouts of their own yet: Polish's letters are held on the English keys, and Russian has no
+    // Cyrillic keys, so a Russian speaker dictates here and types on another keyboard.
+    Polish("pl", "Polski", null), Russian("ru", "Русский", null);
 
     companion object {
         fun matching(code: String?): DictationLanguage? = when (code) {
@@ -39,6 +44,11 @@ internal enum class DictationLanguage(val code: String, val label: String, val l
                 ?: system.firstNotNullOfOrNull(::matching) ?: English
     }
 }
+
+/** The layout whose typing model the keyboard reads: the one pinned in Keyboard › Keyboard layout, else the
+ * dictation language's own. Null when the keys are only English's stand-in for a language with no layout
+ * (Português, Nederlands, Polski, Русский): English's next words and autocorrections are not that language's. */
+internal fun typingLayout(pinned: Spoken?, spoken: DictationLanguage): Spoken? = pinned ?: spoken.layout
 
 internal data class SpeechOptions(val style: Style, val spoken: DictationLanguage, val clean: Boolean, val translate: Boolean,
                                    val lowercase: Boolean = false, val endWithPeriod: Boolean = true,
@@ -88,6 +98,14 @@ internal class SpeechPreferences(context: Context) {
     var vocabularyTerms: List<String>
         get() = prefs.getString("vocabularyTerms", null)?.split('\n').orEmpty().filter(String::isNotEmpty)
         set(value) { prefs.edit().putString("vocabularyTerms", VocabularySpelling.sanitize(value).joinToString("\n")).apply() }
+    // Labs › Signature: the line added to each keyboard dictation, off by default.
+    var signature: Boolean
+        get() = prefs.getBoolean("signature", false)
+        set(value) { prefs.edit().putBoolean("signature", value).apply() }
+    var signatureText: String
+        get() = prefs.getString("signatureText", Signature.DEFAULT_TEXT)
+            ?.takeIf { Signature.textProblem(it) == null }?.trim() ?: Signature.DEFAULT_TEXT
+        set(value) { prefs.edit().putString("signatureText", value).apply() }
     fun options(nextEnglish: Boolean?) = SpeechOptions(style, spoken, clean,
         translation && spoken == DictationLanguage.Spanish && (nextEnglish ?: true), lowercase, endWithPeriod, formatLists, spokenPunctuation,
         if (customVocabulary) vocabularyTerms else emptyList())

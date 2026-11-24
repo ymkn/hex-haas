@@ -1,5 +1,6 @@
 package ly.anoma.hex
 
+import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -22,8 +23,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.colorResource
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.pluralStringResource
@@ -36,13 +40,18 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import ly.anoma.hex.feedback.Feedback
+import ly.anoma.hex.feedback.FeedbackForm
 import ly.anoma.hex.speech.*
 import ly.anoma.hex.typing.TypingPreferences
+import ly.anoma.hex.updates.Updates
 
 private enum class Page(val title: Int) {
     Home(R.string.app_name), Dictation(R.string.settings_dictation), Keyboard(R.string.settings_keyboard), Privacy(R.string.settings_privacy),
+    Labs(R.string.settings_labs),
     Language(R.string.settings_dictation_language), Layout(R.string.settings_keyboard_layout), Styles(R.string.settings_style),
-    Policy(R.string.settings_privacy_policy), Licences(R.string.settings_licences), Licence(R.string.settings_licences);
+    Policy(R.string.settings_privacy_policy), Licences(R.string.settings_licences), Licence(R.string.settings_licences),
+    Feedback(R.string.feedback_send_feedback);
     val parent get() = when (this) {
         Language, Styles -> Dictation
         Layout -> Keyboard
@@ -68,8 +77,10 @@ private fun licenceFiles(context: Context) =
 internal fun HexSettings(setup: Setup, speech: SpeechPreferences, typing: TypingPreferences,
                          model: ModelStore.State, download: () -> Unit, phase: SpeechPhase, transcript: String,
                          notice: String?, dictate: () -> Unit, cancel: () -> Unit, clear: () -> Unit, setupPage: (Int) -> Unit,
-                         systemSettings: () -> Unit) {
-    var page by rememberSaveable { mutableStateOf(Page.Home) }
+                         systemSettings: () -> Unit, startPage: String? = null) {
+    var page by rememberSaveable {
+        mutableStateOf(if (startPage == MainActivity.PAGE_KEYBOARD) Page.Keyboard else Page.Home)
+    }
     var licence by rememberSaveable { mutableStateOf("") }
     var practice by remember { mutableStateOf("") }
     val context = LocalContext.current
@@ -94,15 +105,46 @@ internal fun HexSettings(setup: Setup, speech: SpeechPreferences, typing: Typing
     val spokenPunctuation = remember(revision) { speech.spokenPunctuation }
     val customVocabulary = remember(revision) { speech.customVocabulary }
     var vocabularyDraft by remember { mutableStateOf(speech.vocabularyTerms.joinToString("\n")) }
+    val signature = remember(revision) { speech.signature }
+    var signatureDraft by remember { mutableStateOf(speech.signatureText) }
+    val emojiSuggestions = remember(revision) { typing.emojiSuggestions }
+    val keyboardTools = remember(revision) { typing.keyboardTools }
+    // A hidden field or leaving Labs shows the saved line again, never an unsaved draft.
+    LaunchedEffect(page, signature) { if (page != Page.Labs || !signature) signatureDraft = speech.signatureText }
     val autoCapitalize = remember(revision) { typing.autoCapitalize }
     val autocorrect = remember(revision) { typing.autocorrect }
     val swearWords = remember(revision) { typing.suggestSwearWords }
     val spatial = remember(revision) { typing.spatial }
+    val swipe = remember(revision) { typing.swipe }
     val popups = remember(revision) { typing.popups }
     val haptics = remember(revision) { typing.haptics }
+    val letterSymbols = remember(revision) { typing.letterSymbols }
+    val numberRow = remember(revision) { typing.numberRow }
     var copied by remember(transcript) { mutableStateOf(false) }
-    fun open(next: Page) { if (phase != SpeechPhase.Idle) cancel(); page = next }
+    fun open(next: Page) {
+        // A send in progress keeps the form; leaving it otherwise drops what was written.
+        if (page == Page.Feedback && next != Page.Feedback) { if (Feedback.sending) return; Feedback.close() }
+        if (phase != SpeechPhase.Idle) cancel(); page = next
+    }
     BackHandler(page != Page.Home) { open(page.parent) }
+    // Home's dictation result, painted over in the form's picture of Hex: a transcript never leaves the phone.
+    var transcriptCard by remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
+    var transcriptCut by remember { mutableStateOf(false) }
+    var capturing by remember { mutableStateOf(false) }
+    val cardRadius = with(LocalDensity.current) { 14.dp.toPx() }
+    fun sendFeedback() {
+        val activity = context as? Activity ?: return
+        if (capturing) return
+        capturing = true
+        val hide = transcriptCard?.takeIf { transcript.isNotEmpty() }
+        // Square when scrolled part out of view, so the cut edge's corners are covered too.
+        Feedback.captureWindow(activity, hide?.let { android.graphics.RectF(it.left, it.top, it.right, it.bottom) },
+            if (transcriptCut) 0f else cardRadius) { picture ->
+            capturing = false
+            Feedback.start("Home", picture)
+            open(Page.Feedback)
+        }
+    }
 
     Box(Modifier.fillMaxSize().background(colorResource(R.color.page)).safeDrawingPadding(),
         contentAlignment = Alignment.TopCenter) {
@@ -120,7 +162,11 @@ internal fun HexSettings(setup: Setup, speech: SpeechPreferences, typing: Typing
                                 colorFilter = ColorFilter.tint(colorResource(R.color.ink)))
                         }
                         if (page == Page.Home) Spacer(Modifier.width(10.dp))
-                        Label(if (page == Page.Licence) licence else stringResource(page.title), size = 26, weight = FontWeight.SemiBold,
+                        Label(when {
+                            page == Page.Licence -> licence
+                            page == Page.Feedback && Feedback.phase is Feedback.Phase.Sent -> stringResource(R.string.feedback_thanks_title)
+                            else -> stringResource(page.title)
+                        }, size = 26, weight = FontWeight.SemiBold,
                             lines = 2, mod = Modifier.semantics { heading() })
                     }
                     if (page == Page.Home) {
@@ -150,7 +196,10 @@ internal fun HexSettings(setup: Setup, speech: SpeechPreferences, typing: Typing
                             if (phase != SpeechPhase.Idle) Box(Modifier.fillMaxHeight().width(68.dp).clickable(role = Role.Button) { cancel() },
                                 contentAlignment = Alignment.Center) { Label(stringResource(R.string.home_cancel), inverted = true, size = 14) }
                         }
-                        if (transcript.isNotEmpty()) Card {
+                        if (transcript.isNotEmpty()) Card(Modifier.onGloballyPositioned {
+                            transcriptCard = it.boundsInWindow()
+                            transcriptCut = transcriptCard!!.height < it.size.height - 1 || transcriptCard!!.width < it.size.width - 1
+                        }) {
                             SelectionContainer { Label(transcript, mod = Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 4.dp), lines = Int.MAX_VALUE) }
                             // iPhone Hex's Copy and Clear. Android 13 and later show their own copied preview.
                             Row(Modifier.padding(horizontal = 4.dp)) {
@@ -163,8 +212,9 @@ internal fun HexSettings(setup: Setup, speech: SpeechPreferences, typing: Typing
                             }
                         }
                         if (notice != null) Label(notice, muted = true, size = 14, lines = 3)
+                        Updates.HomeCard()
                         Card {
-                            listOf(Page.Dictation, Page.Keyboard, Page.Privacy).forEachIndexed { i, dest ->
+                            listOf(Page.Dictation, Page.Keyboard, Page.Privacy, Page.Labs).forEachIndexed { i, dest ->
                                 if (i != 0) Rule()
                                 Entry(stringResource(dest.title), action = { open(dest) })
                             }
@@ -172,7 +222,9 @@ internal fun HexSettings(setup: Setup, speech: SpeechPreferences, typing: Typing
                         Card {
                             Entry(stringResource(R.string.home_keyboard_settings), value = "↗", action = systemSettings)
                             Rule(); Entry(stringResource(R.string.home_run_setup), action = { setupPage(0) })
+                            if (Feedback.available) { Rule(); Entry(stringResource(R.string.feedback_send_feedback), action = ::sendFeedback) }
                         }
+                        Updates.SettingsCard()
                     }
                     Page.Dictation -> {
                         Card {
@@ -220,6 +272,7 @@ internal fun HexSettings(setup: Setup, speech: SpeechPreferences, typing: Typing
                             Rule(); Toggle(stringResource(R.string.settings_autocorrect), stringResource(R.string.settings_autocorrect_detail), autocorrect) { typing.autocorrect = it }
                             // Shown under Autocorrect while it is on, as on iPhone (it was alone on an Experiments page, on by default).
                             if (autocorrect) { Rule(); Toggle(stringResource(R.string.settings_spatial), stringResource(R.string.settings_spatial_detail), spatial) { typing.spatial = it } }
+                            Rule(); Toggle(stringResource(R.string.settings_swipe), stringResource(R.string.settings_swipe_detail), swipe) { typing.swipe = it }
                             Rule(); Toggle(stringResource(R.string.settings_swear_words), stringResource(R.string.settings_swear_words_detail), swearWords) { typing.suggestSwearWords = it }
                             // The words the keyboard keeps and suggests are Android's own personal dictionary.
                             Rule(); Entry(stringResource(R.string.settings_personal_dictionary), stringResource(R.string.settings_personal_dictionary_detail), "↗",
@@ -247,6 +300,53 @@ internal fun HexSettings(setup: Setup, speech: SpeechPreferences, typing: Typing
                         Card {
                             Entry(stringResource(R.string.settings_privacy_policy), action = { open(Page.Policy) })
                             Rule(); Entry(stringResource(R.string.settings_licences), action = { open(Page.Licences) })
+                        }
+                    }
+                    Page.Feedback -> FeedbackForm(done = { open(Page.Home) })
+                    Page.Labs -> {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Label(stringResource(R.string.labs_output), muted = true, size = 14,
+                                mod = Modifier.padding(start = 16.dp))
+                            Card {
+                                Toggle(stringResource(R.string.signature), stringResource(R.string.signature_detail),
+                                    signature) { speech.signature = it }
+                                if (signature) {
+                                    Rule()
+                                    val ink = colorResource(R.color.ink)
+                                    val problem = Signature.textProblem(signatureDraft)
+                                    Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        BasicTextField(value = signatureDraft, onValueChange = {
+                                            signatureDraft = it
+                                            // An invalid draft never replaces the saved line.
+                                            if (Signature.textProblem(it) == null) speech.signatureText = it.trim()
+                                        }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                                            textStyle = TextStyle(color = ink, fontFamily = inter, fontSize = 16.sp),
+                                            cursorBrush = SolidColor(ink), decorationBox = { field ->
+                                                Box { if (signatureDraft.isEmpty()) Label(Signature.DEFAULT_TEXT, muted = true); field() }
+                                            })
+                                        if (problem != null) Label(stringResource(when (problem) {
+                                            Signature.Problem.Line -> R.string.signature_one_line
+                                            Signature.Problem.Length -> R.string.signature_too_long
+                                        }), size = 13, muted = true)
+                                    }
+                                }
+                            }
+                            Label(stringResource(R.string.labs_keyboard), muted = true, size = 14,
+                                mod = Modifier.padding(start = 16.dp))
+                            Card {
+                                Toggle(stringResource(R.string.letter_symbols), stringResource(R.string.letter_symbols_detail),
+                                    letterSymbols) { typing.letterSymbols = it }
+                                Rule()
+                                Toggle(stringResource(R.string.number_row), stringResource(R.string.number_row_detail),
+                                    numberRow) { typing.numberRow = it }
+                                Rule()
+                                Toggle(stringResource(R.string.emoji_suggestions), stringResource(R.string.emoji_suggestions_detail),
+                                    emojiSuggestions) { typing.emojiSuggestions = it }
+                                Rule()
+                                Toggle(stringResource(R.string.keyboard_tools), stringResource(R.string.keyboard_tools_detail),
+                                    keyboardTools) { typing.keyboardTools = it }
+                            }
                         }
                     }
                     Page.Styles -> Card {
@@ -286,7 +386,7 @@ internal fun HexSettings(setup: Setup, speech: SpeechPreferences, typing: Typing
     }
 }
 
-@Composable private fun Label(text: String, size: Int = 16, weight: FontWeight = FontWeight.Normal,
+@Composable internal fun Label(text: String, size: Int = 16, weight: FontWeight = FontWeight.Normal,
                               muted: Boolean = false, inverted: Boolean = false, lines: Int = 1, mod: Modifier = Modifier) {
     BasicText(text, mod, style = TextStyle(fontFamily = inter, fontWeight = weight, fontSize = size.sp,
         lineHeight = (size + 5).sp, color = colorResource(if (inverted) R.color.page else if (muted) R.color.quiet else R.color.ink)),
@@ -312,14 +412,14 @@ private fun reflow(lines: List<String>) = buildString {
         append(if (ends) "\n" else " ")
     }
 }
-@Composable private fun Action(text: String, onClick: () -> Unit) {
+@Composable internal fun Action(text: String, onClick: () -> Unit) {
     Box(Modifier.heightIn(min = 48.dp).clickable(role = Role.Button, onClick = onClick).padding(horizontal = 12.dp),
         contentAlignment = Alignment.Center) { Label(text, weight = FontWeight.Medium, size = 15) }
 }
-@Composable private fun Card(content: @Composable ColumnScope.() -> Unit) {
-    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(colorResource(R.color.sheet)), content = content)
+@Composable internal fun Card(mod: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
+    Column(mod.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(colorResource(R.color.sheet)), content = content)
 }
-@Composable private fun Rule() {
+@Composable internal fun Rule() {
     Spacer(Modifier.fillMaxWidth().padding(start = 16.dp).height(1.dp).background(colorResource(R.color.rule)))
 }
 @Composable private fun RowScope.RowTitle(title: String, note: String?) {
@@ -328,7 +428,7 @@ private fun reflow(lines: List<String>) = buildString {
         if (note != null) Label(note, size = 13, muted = true, lines = 2)
     }
 }
-@Composable private fun Entry(title: String, note: String? = null, value: String = "›", action: (() -> Unit)? = null) {
+@Composable internal fun Entry(title: String, note: String? = null, value: String = "›", action: (() -> Unit)? = null) {
     val click = if (action != null) Modifier.clickable(role = Role.Button, onClick = action) else Modifier
     Row(Modifier.fillMaxWidth().then(click).heightIn(min = 52.dp).padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -336,7 +436,7 @@ private fun reflow(lines: List<String>) = buildString {
         if (action != null && value.isNotEmpty()) Label(value, muted = true, size = if (value == "›") 22 else 15)
     }
 }
-@Composable private fun Toggle(title: String, note: String, on: Boolean, enabled: Boolean = true, change: (Boolean) -> Unit) {
+@Composable internal fun Toggle(title: String, note: String, on: Boolean, enabled: Boolean = true, change: (Boolean) -> Unit) {
     Row(Modifier.fillMaxWidth().toggleable(on, enabled = enabled, role = Role.Switch, onValueChange = change)
         .heightIn(min = 56.dp).padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {

@@ -815,6 +815,20 @@ fn show(window: &rune::AppHandle<Ui>, destination: Destination) {
     bring_forward(window);
 }
 
+/// Opens the window on General with the Vocabulary sheet, adding a focused
+/// term row when new_term says so (Labs › Vocabulary menu).
+fn show_vocabulary(window: &rune::AppHandle<Ui>, new_term: bool) {
+    window.update(move |ui, tx| {
+        crate::rune_ui::show(ui, Destination::Settings, tx);
+        if new_term {
+            crate::rune_ui::vocabulary::open_new_term(ui, tx);
+        } else {
+            crate::rune_ui::vocabulary::open(ui);
+        }
+    });
+    bring_forward(window);
+}
+
 /// Opens the window where its footer shows the update check's outcome.
 fn show_update_check(window: &rune::AppHandle<Ui>) {
     window.update(|ui, _| crate::rune_ui::update_check_asked(ui));
@@ -931,6 +945,21 @@ impl Pump {
         match action {
             StatusItemAction::OpenSettings => show(&self.window, Destination::Settings),
             StatusItemAction::OpenModels => show(&self.window, Destination::Models),
+            // Labs › Vocabulary menu: Settings' Vocabulary sheet, with a
+            // term row already focused at its end.
+            StatusItemAction::AddVocabularyTerm => {
+                if !crate::labs::vocabulary_menu() {
+                    return;
+                }
+                show_vocabulary(&self.window, true);
+            }
+            // Labs › Vocabulary menu: the sheet alone.
+            StatusItemAction::OpenVocabulary => {
+                if !crate::labs::vocabulary_menu() {
+                    return;
+                }
+                show_vocabulary(&self.window, false);
+            }
             StatusItemAction::SelectModel(model) => {
                 let _ = self.runtime.send(Request::SelectInstalledModel(model));
                 self.model_menu_at = Instant::now();
@@ -947,19 +976,12 @@ impl Pump {
             // Labs › Copy dictation audio: the newest kept recording as a
             // file on the clipboard, never pasted.
             StatusItemAction::CopyLastDictationAudio => {
-                if !(crate::labs::copy_dictation_audio() && crate::labs::keep_recordings()) {
+                if !crate::labs::copy_dictation_audio() {
                     return;
                 }
-                let copied = self
-                    .runtime
-                    .history()
-                    .and_then(|history| history.newest_recording(crate::history::now_ms()))
-                    .ok_or_else(|| eyre!("no dictation with kept audio is in History"))
-                    .and_then(|path| {
-                        crate::history::recordings::copy_to_clipboard(&path)
-                            .map_err(|error| eyre!("{error:#}"))
-                    });
-                if let Err(error) = copied {
+                if let Err(error) =
+                    crate::history::recordings::copy_newest(self.runtime.history().as_ref())
+                {
                     tracing::warn!(%error, "could not copy the last dictation's audio");
                 }
             }
@@ -1107,6 +1129,10 @@ impl Pump {
                 tracing::info!(id = %manifest.id, "meeting transcript ready");
                 self.meeting_state = MeetingMenuState::Idle;
             }
+            ControllerEvent::Discarded(id) => {
+                tracing::info!(%id, "meeting had no speech; moved to the Trash");
+                self.meeting_state = MeetingMenuState::Idle;
+            }
             ControllerEvent::NotesProgress(_) | ControllerEvent::NotesFinished(_) => {}
             ControllerEvent::Failed { title, error } => {
                 tracing::error!(%title, %error, "meeting failed");
@@ -1121,6 +1147,13 @@ impl Pump {
                 let message = error.clone();
                 self.window
                     .update(move |ui, _| crate::rune_ui::meeting_import_failed(ui, message));
+                show(&self.window, Destination::Meetings(None));
+            }
+            ControllerEvent::TranscriptEditFailed { error } => {
+                tracing::error!(%error, "could not delete meeting transcript lines");
+                let message = error.clone();
+                self.window
+                    .update(move |ui, _| crate::rune_ui::meeting_edit_failed(ui, message));
                 show(&self.window, Destination::Meetings(None));
             }
         }

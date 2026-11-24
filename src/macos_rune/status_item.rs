@@ -15,6 +15,7 @@ use crate::app_settings::{AppSettings, HotkeyBinding};
 use crate::calendar::CalendarMeeting;
 use crate::desktop::i18n::{tr, tr_fill};
 use crate::desktop::tray_menu::model_menu_entries;
+use crate::dictation::vocabulary::VocabularyEntry;
 use crate::transcription::models::{MODELS, TranscriptionModelId};
 use crate::transcription::preparation::PreparationStatus;
 
@@ -26,6 +27,11 @@ const STATUS_ICON_POINTS: f64 = 18.0;
 pub enum StatusItemAction {
     OpenSettings,
     OpenModels,
+    /// Labs › Vocabulary menu: the Vocabulary sheet, with a new focused term
+    /// row at its end.
+    AddVocabularyTerm,
+    /// Labs › Vocabulary menu: the Vocabulary sheet alone.
+    OpenVocabulary,
     SelectModel(TranscriptionModelId),
     CancelModelPreparation,
     PasteLast,
@@ -77,6 +83,22 @@ objc2::define_class!(
             let _ = self.ivars().actions.try_send(StatusItemAction::OpenModels);
         }
 
+        #[unsafe(method(addVocabularyTerm:))]
+        fn add_vocabulary_term(&self, _sender: &AnyObject) {
+            let _ = self
+                .ivars()
+                .actions
+                .try_send(StatusItemAction::AddVocabularyTerm);
+        }
+
+        #[unsafe(method(openVocabulary:))]
+        fn open_vocabulary(&self, _sender: &AnyObject) {
+            let _ = self
+                .ivars()
+                .actions
+                .try_send(StatusItemAction::OpenVocabulary);
+        }
+
         #[unsafe(method(selectModel:))]
         fn select_model(&self, sender: &NSMenuItem) {
             if let Some(model) = model_from_tag(sender.tag()) {
@@ -125,6 +147,7 @@ objc2::define_class!(
         fn menu_needs_update(&self, _menu: &NSMenu) {
             relabel();
             refresh_recent_dictations();
+            refresh_vocabulary();
             refresh_copy_dictation_audio();
             refresh_restore_capture();
             refresh_upcoming();
@@ -281,6 +304,8 @@ enum Row {
     /// Labs › Screenshots: hidden until the menu opens with it on.
     RestoreCapture,
     SpeechModel,
+    /// Labs › Vocabulary menu: hidden until the menu opens with it on.
+    Vocabulary,
     Separator,
     Settings,
     Update,
@@ -290,7 +315,7 @@ enum Row {
 /// How many upcoming meetings the menu lists at most.
 const UPCOMING_ROWS: usize = crate::calendar_menu::MAX_ROWS;
 
-const ROWS: [Row; 24] = [
+const ROWS: [Row; 25] = [
     Row::UpcomingHeader,
     Row::UpcomingSlot,
     Row::UpcomingSlot,
@@ -311,6 +336,7 @@ const ROWS: [Row; 24] = [
     Row::CopyLastMeetingTranscript,
     Row::RestoreCapture,
     Row::SpeechModel,
+    Row::Vocabulary,
     Row::Separator,
     Row::Settings,
     Row::Update,
@@ -349,6 +375,7 @@ impl Row {
             ),
             Row::RestoreCapture => label("Restore Last Capture", tr("Restore last capture")),
             Row::SpeechModel => label("Speech Model", tr("Speech model")),
+            Row::Vocabulary => label("Vocabulary", tr("Vocabulary")),
             Row::Settings => label("Settings…", tr("Settings")),
             Row::Update => update_title(&crate::desktop::host::DesktopUpdateStatus::Checking),
             Row::Quit => tr_fill("Quit {}", crate::app_paths::app_name()),
@@ -384,7 +411,8 @@ impl Row {
             | Row::Separator
             | Row::CopySection
             | Row::CopyRecentDictation
-            | Row::SpeechModel => return None,
+            | Row::SpeechModel
+            | Row::Vocabulary => return None,
         })
     }
 
@@ -416,6 +444,7 @@ impl Row {
                 | Row::CopyRecentDictation
                 | Row::CopyLastMeetingTranscript
                 | Row::RestoreCapture
+                | Row::Vocabulary
         )
     }
 }
@@ -533,6 +562,10 @@ struct StatusItemController {
     /// The call links behind the slots now, by slot; `None` is informational.
     upcoming_meetings: RefCell<Vec<Option<CalendarMeeting>>>,
     restore_capture: Retained<NSMenuItem>,
+    /// The row and the term items its menu-open refresh rebuilds
+    /// (Labs › Vocabulary menu).
+    vocabulary: Retained<NSMenuItem>,
+    vocabulary_menu: Retained<NSMenu>,
     update: Option<Retained<NSMenuItem>>,
     update_title: RefCell<String>,
     _menu: Retained<NSMenu>,
@@ -568,12 +601,20 @@ pub fn install() -> Result<Receiver<StatusItemAction>> {
     );
     let models = NSMenu::initWithTitle(NSMenu::alloc(mtm), &NSString::from_str("Speech Model"));
     models.setAutoenablesItems(false);
+    let vocabulary = NSMenu::initWithTitle(NSMenu::alloc(mtm), &NSString::from_str("Vocabulary"));
+    vocabulary.setAutoenablesItems(false);
     let model_items = MODELS
         .iter()
         .enumerate()
         .filter(|(_, model)| model.available())
         .map(|(index, model)| {
-            let item = add_item(&models, &target, model.name, sel!(selectModel:), mtm);
+            let item = add_item(
+                &models,
+                &target,
+                model.name.as_ref(),
+                sel!(selectModel:),
+                mtm,
+            );
             item.setTag(index as isize);
             item.setHidden(true);
             (model.id, item)
@@ -623,6 +664,7 @@ pub fn install() -> Result<Receiver<StatusItemAction>> {
                         Row::CopySection => item.setSubmenu(Some(&meeting_sections_menu)),
                         Row::CopyRecentDictation => item.setSubmenu(Some(&recent_menu)),
                         Row::SpeechModel => item.setSubmenu(Some(&models)),
+                        Row::Vocabulary => item.setSubmenu(Some(&vocabulary)),
                         _ => {}
                     }
                     item
@@ -702,6 +744,8 @@ pub fn install() -> Result<Receiver<StatusItemAction>> {
             upcoming_labels: RefCell::new(Vec::new()),
             upcoming_meetings: RefCell::new(Vec::new()),
             restore_capture: row(Row::RestoreCapture),
+            vocabulary: row(Row::Vocabulary),
+            vocabulary_menu: vocabulary,
             update: (!update_managed).then(|| row(Row::Update)),
             update_title: RefCell::new(Row::Update.title().unwrap_or_default()),
             _menu: menu,
@@ -807,7 +851,7 @@ pub fn update_transcription(settings: &AppSettings, status: &PreparationStatus) 
                 .model_preparing
                 .setTitle(&NSString::from_str(&tr_fill(
                     "Preparing {}…",
-                    crate::transcription::models::definition(model).name,
+                    &crate::transcription::models::definition(model).name,
                 )));
         }
         controller.model_error.setHidden(status.error.is_none());
@@ -922,6 +966,85 @@ fn recent_title(text: &str) -> String {
     menu_title(&text.split_whitespace().collect::<Vec<_>>().join(" "))
 }
 
+/// How many saved terms the Vocabulary submenu lists.
+const VOCABULARY_TERMS: usize = 5;
+
+/// What the Vocabulary submenu lists from the saved terms: the newest five,
+/// newest first, one menu line each.
+#[derive(Debug, Default, Eq, PartialEq)]
+struct VocabularyList {
+    terms: Vec<String>,
+}
+
+fn vocabulary_list(entries: &[VocabularyEntry]) -> VocabularyList {
+    VocabularyList {
+        terms: entries
+            .iter()
+            .rev()
+            .take(VOCABULARY_TERMS)
+            .map(|entry| recent_title(&entry.term))
+            .collect(),
+    }
+}
+
+fn add_vocabulary_term() -> String {
+    label("Add Term…", tr("Add term"))
+}
+
+fn open_vocabulary() -> String {
+    label("Open Vocabulary…", tr("Open vocabulary"))
+}
+
+/// Rebuilds the Vocabulary submenu as the menu opens: Add term…, the last
+/// saved terms newest first, and Open vocabulary…, with no separator while
+/// the list is empty. The saved list is read only while Labs › Vocabulary
+/// menu is on; the row stays hidden while it is off.
+fn refresh_vocabulary() {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let shown = crate::labs::vocabulary_menu();
+    let list = if shown {
+        vocabulary_list(&crate::dictation::vocabulary::entries())
+    } else {
+        VocabularyList::default()
+    };
+    STATUS_ITEM.with(|controller| {
+        let controller = controller.borrow();
+        let Some(controller) = controller.as_ref() else {
+            return;
+        };
+        controller.vocabulary.setHidden(!shown);
+        if !shown {
+            return;
+        }
+        let menu = &controller.vocabulary_menu;
+        menu.removeAllItems();
+        add_item(
+            menu,
+            &controller.target,
+            &add_vocabulary_term(),
+            sel!(addVocabularyTerm:),
+            mtm,
+        );
+        if !list.terms.is_empty() {
+            menu.addItem(&NSMenuItem::separatorItem(mtm));
+            for term in &list.terms {
+                let item = plain_item(term, mtm);
+                item.setEnabled(false);
+                menu.addItem(&item);
+            }
+        }
+        add_item(
+            menu,
+            &controller.target,
+            &open_vocabulary(),
+            sel!(openVocabulary:),
+            mtm,
+        );
+    });
+}
+
 /// Rebuilds Copy Recent Dictation as the menu opens. History is read only
 /// while Labs › Copy recent dictations is on; the item stays hidden while
 /// it is off, History is off, or nothing is listed.
@@ -995,12 +1118,11 @@ fn refresh_copy_dictation_audio() {
 /// is on (the row is hidden otherwise) and the newest History entry that
 /// kept its audio still has its WAV.
 fn copy_last_dictation_audio_enabled() -> bool {
-    crate::labs::copy_dictation_audio()
-        && crate::labs::keep_recordings()
-        && crate::macos_rune::runtime()
-            .and_then(|runtime| runtime.history())
-            .and_then(|history| history.newest_recording(crate::history::now_ms()))
-            .is_some()
+    crate::macos_rune::runtime()
+        .and_then(|runtime| runtime.history())
+        .as_ref()
+        .and_then(crate::history::recordings::newest_copyable)
+        .is_some()
 }
 
 /// Shows Restore Last Capture while Labs › Screenshots is on, as the menu
@@ -1103,26 +1225,14 @@ fn restore_capture_enabled() -> bool {
 }
 
 fn update_title(status: &crate::desktop::host::DesktopUpdateStatus) -> String {
-    use crate::desktop::host::DesktopUpdateStatus;
-    match status {
-        DesktopUpdateStatus::ReadyToRestart => label("Restart to Update", tr("Restart to update")),
-        DesktopUpdateStatus::Available => label("Download Update…", tr("Download update")),
-        DesktopUpdateStatus::SwitchAvailable { channel, version } => {
-            format!("{}…", crate::updater::switch_label(channel, version))
-        }
-        _ => label("Check for Updates…", tr("Check for updates")),
-    }
+    crate::updater::menu_title(status)
 }
 
 /// While a meeting records, the updater refuses Restart to update, so the
 /// item that would ask for it is dimmed instead. Every other update row
 /// (Check for updates, Download update, a channel switch) stays usable.
 fn update_enabled(recording: bool, status: &crate::desktop::host::DesktopUpdateStatus) -> bool {
-    !(recording
-        && matches!(
-            status,
-            crate::desktop::host::DesktopUpdateStatus::ReadyToRestart
-        ))
+    crate::updater::offer_hold(status, recording).is_none()
 }
 
 /// Shows the saved Paste Last binding beside Paste Last Dictation, or
@@ -1340,6 +1450,7 @@ mod tests {
                 "Copy Last Meeting Transcript".into(),
                 "Restore Last Capture".into(),
                 "Speech Model".into(),
+                "Vocabulary".into(),
                 "—".into(),
                 "Settings…".into(),
                 "Check for Updates…".into(),
@@ -1353,7 +1464,7 @@ mod tests {
         for row in ROWS {
             let opens_submenu = matches!(
                 row,
-                Row::CopySection | Row::CopyRecentDictation | Row::SpeechModel
+                Row::CopySection | Row::CopyRecentDictation | Row::SpeechModel | Row::Vocabulary
             );
             let informational = matches!(row, Row::UpcomingHeader | Row::UpcomingEmpty);
             assert_eq!(
@@ -1466,6 +1577,36 @@ mod tests {
         );
         assert_eq!(long, "A long dictation that goes on and on well past…");
         assert_eq!(long.chars().count(), 47);
+    }
+
+    #[test]
+    fn vocabulary_lists_the_last_five_terms_newest_first() {
+        let entry = |term: &str| VocabularyEntry {
+            term: term.into(),
+            sounds_like: Vec::new(),
+        };
+        let entries: Vec<_> = ["one", "two", "three", "four", "five", "six"]
+            .into_iter()
+            .map(entry)
+            .collect();
+        assert_eq!(
+            vocabulary_list(&entries).terms,
+            ["six", "five", "four", "three", "two"]
+        );
+        assert!(vocabulary_list(&[]).terms.is_empty());
+        assert_eq!(
+            vocabulary_list(&[entry(
+                "  A very long term that goes on and on well past one menu line  "
+            )])
+            .terms,
+            ["A very long term that goes on and on well past…"]
+        );
+        assert_eq!(
+            vocabulary_list(&[entry("Dax   Inc.\n")]).terms,
+            ["Dax Inc."]
+        );
+        assert_eq!(add_vocabulary_term(), "Add Term…");
+        assert_eq!(open_vocabulary(), "Open Vocabulary…");
     }
 
     #[test]

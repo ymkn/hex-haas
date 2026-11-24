@@ -653,7 +653,9 @@ fn select_installed(
     if crate::app_settings::AppSettings::read()
         .is_ok_and(|settings| settings.transcription == *selection)
     {
-        let name = crate::transcription::models::definition(selection.model).name;
+        let name = crate::transcription::models::definition(selection.model)
+            .name
+            .to_string();
         println!("{name} ({}) is already selected", selection.language);
         return 0;
     }
@@ -704,7 +706,9 @@ fn select_in_running_hex(
 fn save_selection(
     selection: &crate::transcription::models::TranscriptionSelection,
 ) -> color_eyre::Result<String> {
-    let name = crate::transcription::models::definition(selection.model).name;
+    let name = crate::transcription::models::definition(selection.model)
+        .name
+        .to_string();
     let mut settings = crate::app_settings::AppSettings::load()?;
     if settings.transcription == *selection {
         return Ok(format!(
@@ -751,24 +755,29 @@ fn selection(
 /// `hex model status|devices|check|transcribe`, run in this process.
 #[cfg(not(target_os = "macos"))]
 fn offline_model(command: ModelCommand) -> u8 {
-    use crate::transcription::models::{definition, is_installed, is_verified, model_path};
+    use crate::transcription::models::{definition, model_path};
+    use crate::transcription::readiness::readiness;
     report((|| match command {
         ModelCommand::Status { model, language } => {
             // Found catalog files count as installed, as `hex model list` says.
             let _ = crate::transcription::found_models::scan();
             let selection = selection(model, language)?;
             let model = definition(selection.model);
-            let installed = is_installed(model, &selection.language);
+            let status = readiness(&model, &selection.language);
             println!(
                 "{}\t{}\t{}\t{}",
-                if installed { "installed" } else { "missing" },
-                if installed && is_verified(model) {
+                if status.installed {
+                    "installed"
+                } else {
+                    "missing"
+                },
+                if status.ready {
                     "verified"
                 } else {
                     "unverified"
                 },
                 model.name,
-                model_path(model)?.display()
+                model_path(&model)?.display()
             );
             Ok(())
         }

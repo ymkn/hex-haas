@@ -28,7 +28,7 @@ extension DictationController {
                 await download.stop()
                 ParakeetUltraModel.remove()
             }
-            if engineName != ParakeetUltraTranscriber.name, isModelReady, phase != .preparingModel {
+            if engine != .parakeetUltra, isModelReady, phase != .preparingModel {
                 // Ultra wasn't dictating: drop a load of it beside the engine that is.
                 modelPrepGeneration &+= 1
                 return
@@ -53,7 +53,7 @@ extension DictationController {
         // A load beside the engine this replaces is dropped; the end of this one decides again.
         multilingualDownload.dropLoad()
         startMultilingualDownloadIfWanted()
-        phase = .preparingModel
+        transition(model: .preparing)
         copied = false
         preparingMultilingualParakeet = false
         modelPreparation = ModelPreparationProgress(
@@ -79,7 +79,7 @@ extension DictationController {
                 self.transcriptionLanguageID = await candidate.languageIdentifier
                 self.keyboardBridge.setModelInstalled(true)
                 self.isModelReady = true
-                self.phase = .ready
+                self.transition(model: .ready)
                 if self.preparingMultilingualParakeet {
                     self.multilingualParakeetLoaded()
                 }
@@ -112,7 +112,7 @@ extension DictationController {
                 // loaded and can dictate. A first failure on Apple Speech has no model to keep.
                 self.keyboardBridge.setModelInstalled(self.isModelReady || ParakeetTranscriber.hasCachedModel)
                 self.pendingHandoff = nil
-                self.phase = .failed(UserFacingError.message(for: error, context: .model))
+                self.failModel(UserFacingError.message(for: error, context: .model))
                 self.publishKeyboardSnapshot()
                 // A downloaded Parakeet Ultra can still dictate.
                 self.syncMultilingualParakeet()
@@ -150,7 +150,7 @@ extension DictationController {
                 self.preparationFailedInBackground = self.isInBackground
                 self.pendingHandoff = nil
                 self.keyboardBridge.setModelInstalled(self.isModelReady || ParakeetTranscriber.hasCachedModel)
-                self.phase = .failed(String(localized: "The speech model isn't ready. Try again."))
+                self.failModel(String(localized: "The speech model isn't ready. Try again."))
                 self.publishKeyboardSnapshot()
                 return
             }
@@ -172,7 +172,7 @@ extension DictationController {
         }
         guard modelPrepGeneration == generation else { throw CancellationError() }
         try Task.checkCancellation()
-        engineName = candidate.displayName
+        engine = candidate.engine
         preparingMultilingualParakeet = candidate is ParakeetUltraTranscriber
         try await candidate.prepare { [weak self] progress in
             Task { @MainActor [weak self] in
@@ -215,7 +215,7 @@ extension DictationController {
                 try await candidate.prepare { _ in }
                 guard self.modelPrepGeneration == prepGen else { return }
                 self.transcriber = candidate
-                self.engineName = candidate.displayName
+                self.engine = candidate.engine
                 self.transcriptionLanguage = await candidate.languageName
                 self.transcriptionLanguageID = await candidate.languageIdentifier
                 self.languageOffer = nil
@@ -223,9 +223,9 @@ extension DictationController {
                 self.keyboardBridge.setModelInstalled(true)
                 switch self.phase {
                 case .modelRequired, .failed:
-                    self.phase = .ready
+                    self.transition(model: .ready)
                 default:
-                    break
+                    self.markModelReadyPreservingCapture()
                 }
                 self.multilingualParakeetLoaded()
                 self.publishKeyboardSnapshot()

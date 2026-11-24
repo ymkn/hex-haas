@@ -86,17 +86,12 @@ pub(super) fn handle_hotkey_action(
                 indicator,
             )
         }
-        HotkeyAction::PasteLast | HotkeyAction::PasteMeeting => {
+        HotkeyAction::PasteLast => {
             // The paste chord's modifier press started a provisional capture.
             context.cancel();
             feedback::retract_start();
             dictation.cancel()?;
-            let paste_result = match action {
-                HotkeyAction::PasteLast => worker.paste_last(),
-                HotkeyAction::PasteMeeting => worker.paste_meeting(),
-                _ => unreachable!(),
-            };
-            if let Err(error) = paste_result {
+            if let Err(error) = worker.paste_last() {
                 feedback::play(Tone::Error);
                 events.dictation(DictationPhase::Failed(error.into()), "")?;
             }
@@ -234,7 +229,7 @@ pub(super) fn control_dictation(
         CaptureAction::Stop => false,
         CaptureAction::Toggle => !recording,
         CaptureAction::Cancel if recording => {
-            hotkeys.cancel_print();
+            hotkeys.cancel_capture();
             hotkeys.suspend_recording();
             handle_hotkey_action(
                 HotkeyAction::CancelShortcut,
@@ -272,7 +267,7 @@ pub(super) fn control_dictation(
                     "the dictation shortcut is held; release it and try again",
                 ));
             }
-            hotkeys.raw_capture = raw;
+            hotkeys.begin_capture(Shortcut::Dictation, raw);
             let accepted = handle_hotkey_action(
                 HotkeyAction::Start,
                 raw,
@@ -302,7 +297,7 @@ pub(super) fn control_dictation(
                     ControlReply::done("Recording; `hex dictation stop` or the shortcut finishes")
                 }
             } else {
-                hotkeys.dictation.suspend();
+                hotkeys.suspend(Shortcut::Dictation);
                 ControlReply::error("busy", "the microphone is busy; try again")
             }
         }
@@ -316,10 +311,13 @@ pub(super) fn control_dictation(
             // recording's start reply joins it: a plain stop answers as a
             // plain stop does.
             let printing = print.is_some();
-            let start_printed = hotkeys.print_capture.is_some();
+            let active = hotkeys.take_capture();
+            let raw = active.as_ref().is_some_and(|capture| capture.raw);
+            let start_print = active.and_then(|capture| capture.print);
+            let start_printed = start_print.is_some();
             // A print-only recording answers its start command too: both it
             // and a printing stop hear the one transcript.
-            let print = match (hotkeys.print_capture.take(), print) {
+            let print = match (start_print, print) {
                 (Some(start), Some(stop)) => Some(start.join(stop)),
                 (Some(start), None) => Some(start),
                 (None, print) => print,
@@ -338,7 +336,7 @@ pub(super) fn control_dictation(
                 indicator,
                 release.capture,
                 print,
-                hotkeys.raw_capture,
+                raw,
                 None,
             )?;
             match finished {

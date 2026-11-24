@@ -619,6 +619,7 @@ fn rows(ui: &Ui) -> Vec<Row> {
     rows.push(row(Feature::Appearance, Some(&PANEL)));
     if caps.meetings {
         rows.push(row(Feature::LiveChapters, None));
+        rows.push(row(Feature::StopAnyCallRecording, None));
         // macOS's status item lists them, from the meeting controller's own
         // calendar read.
         if cfg!(target_os = "macos") {
@@ -629,8 +630,13 @@ fn rows(ui: &Ui) -> Vec<Row> {
         if Feature::MeetingImport.on_this_os() {
             rows.push(row(Feature::MeetingImport, None));
         }
+        rows.push(row(Feature::TranscriptEdits, None));
     }
     rows.push(row(Feature::VocabularyFiles, Some(&BOOK)));
+    // macOS's menu-bar menu offers it, right under Speech Model.
+    if caps.os == super::platform::Os::Macos {
+        rows.push(row(Feature::VocabularyMenu, None));
+    }
     // macOS reads the focused window through Accessibility as a capture
     // becomes real.
     if caps.os == super::platform::Os::Macos {
@@ -765,6 +771,7 @@ fn rows(ui: &Ui) -> Vec<Row> {
         });
     }
     rows.push(row(Feature::HistoryStats, None));
+    rows.push(row(Feature::HistoryStatsStrip, None));
     rows.push(row(Feature::KeepRecordings, None));
     rows.push(row(Feature::CopyDictationAudio, None));
     // The picker is a Mac gesture and History; elsewhere neither exists.
@@ -848,52 +855,13 @@ fn rows(ui: &Ui) -> Vec<Row> {
     }
     #[cfg(hex_capture)]
     if ui.platform.scrawl.is_some() {
-        // A written capture's copy runs through the same engine and the same
-        // Annotate lock.
-        let annotate_locked = crate::policy::Policy::current().locks(crate::policy::Lock::Annotate);
-        let locked = annotate_locked || Feature::CopyCaptureZip.managed().is_some();
-        let copy_zip = row(Feature::CopyCaptureZip, Some(&FOLDER));
-        rows.push(Row {
-            locked,
-            about: if locked {
-                super::managed_note().into()
-            } else {
-                copy_zip.about.clone()
-            },
-            on: !locked && Feature::CopyCaptureZip.on(settings),
-            ..copy_zip
-        });
-        // `hex annotate inspect|zoom|frames|skill` for coding agents: the
-        // same engine and Annotate lock as the copy above.
-        let agent_locked = annotate_locked || Feature::AnnotateAgentTools.managed().is_some();
-        let agent_tools = row(Feature::AnnotateAgentTools, Some(&TERMINAL));
-        rows.push(Row {
-            locked: agent_locked,
-            about: if agent_locked {
-                super::managed_note().into()
-            } else {
-                agent_tools.about.clone()
-            },
-            on: !agent_locked && Feature::AnnotateAgentTools.on(settings),
-            ..agent_tools
-        });
-        // The Annotate pane's Agents section writes that skill into each
-        // coding agent's folder and links hex onto PATH (macOS).
-        let install_locked = annotate_locked || Feature::AnnotateAgentInstall.managed().is_some();
-        let agent_install = row(Feature::AnnotateAgentInstall, Some(&TERMINAL));
-        rows.push(Row {
-            locked: install_locked,
-            about: if install_locked {
-                super::managed_note().into()
-            } else {
-                agent_install.about.clone()
-            },
-            on: !install_locked && Feature::AnnotateAgentInstall.on(settings),
-            ..agent_install
-        });
-        // The dictation shortcut keeps working while a capture records.
+        // Every Annotate-group feature carries Lock::Annotate in its managed()
+        // check, so `row` locks them under DisableAnnotate automatically.
+        rows.push(row(Feature::CopyCaptureZip, Some(&FOLDER)));
+        rows.push(row(Feature::AnnotateAgentTools, Some(&TERMINAL)));
+        rows.push(row(Feature::AnnotateAgentInstall, Some(&TERMINAL)));
         rows.push(row(Feature::DictateWhileAnnotating, Some(&KEYBOARD)));
-        let locked = annotate_locked;
+        let locked = crate::policy::Policy::current().locks(crate::policy::Lock::Annotate);
         rows.push(Row {
             lab: Lab::Annotate,
             icon: Pane::Annotate.icon(),
@@ -943,12 +911,12 @@ fn live_text_note_for(
         return cpu_engine
             .then(|| tr("Live words need the GPU, and Speech engine is set to CPU").to_owned());
     }
-    let streaming: Vec<&'static str> = MODELS
+    let streaming: Vec<&str> = MODELS
         .iter()
         .filter(|model| model.streams && model.available() && model.supports_language(language))
-        .map(|model| model.name)
+        .map(|model| model.name.as_ref())
         .collect();
-    match *streaming.as_slice() {
+    match streaming.as_slice() {
         [first, second, ..] => Some(tr_named(
             "This speech model doesn't show live words; pick {first} or {second}",
             &[("first", first), ("second", second)],
@@ -1004,6 +972,7 @@ fn row_key(lab: Lab) -> &'static str {
         Feature::ParakeetUltra => "lab-parakeet-ultra",
         Feature::StandaloneSpecialKeys => "lab-special-keys",
         Feature::HistoryStats => "lab-history-stats",
+        Feature::HistoryStatsStrip => "lab-history-stats-strip",
         Feature::RecentDictations => "lab-recent-dictations",
         Feature::SkipPauses => "lab-skip-pauses",
         Feature::OutputFixes => "lab-output-fixes",
@@ -1034,6 +1003,7 @@ fn row_key(lab: Lab) -> &'static str {
         Feature::AnnotateAgentInstall => "lab-annotate-agent-install",
         Feature::DictateWhileAnnotating => "lab-dictate-while-annotating",
         Feature::MeetingImport => "lab-meeting-import",
+        Feature::TranscriptEdits => "lab-transcript-edits",
         Feature::OpenCodeInWsl => "lab-opencode-in-wsl",
         Feature::YoloMode => "lab-yolo-mode",
         Feature::ApiProcessing => "lab-api-processing",
@@ -1050,7 +1020,9 @@ fn row_key(lab: Lab) -> &'static str {
         Feature::ModesEditor => "lab-modes-editor",
         Feature::DropTranscribe => "lab-drop-transcribe",
         Feature::VocabularyFiles => "lab-vocabulary-files",
+        Feature::VocabularyMenu => "lab-vocabulary-menu",
         Feature::DictationStyle => "lab-dictation-style",
+        Feature::StopAnyCallRecording => "lab-stop-any-call-recording",
     }
 }
 
@@ -1357,7 +1329,7 @@ mod tests {
         let streaming: Vec<&str> = crate::transcription::models::MODELS
             .iter()
             .filter(|model| model.streams && model.available() && model.supports_language("en"))
-            .map(|model| model.name)
+            .map(|model| model.name.as_ref())
             .collect();
         for name in streaming.iter().take(2) {
             assert!(note.contains(*name), "{note:?} names {name}");

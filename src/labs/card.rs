@@ -44,6 +44,7 @@ impl Feature {
             Self::ParakeetUltra => "Parakeet Ultra",
             Self::StandaloneSpecialKeys => "Special keys alone",
             Self::HistoryStats => "Dictation stats",
+            Self::HistoryStatsStrip => "Stats on History",
             Self::RecentDictations => "Copy recent dictations",
             Self::SkipPauses => "Skip long pauses",
             Self::OutputFixes => "Fix results in Output",
@@ -64,6 +65,7 @@ impl Feature {
             Self::Screenshots => "Screenshots",
             Self::AnnotateReplay => "Annotate last 15 seconds",
             Self::MeetingImport => "Import audio",
+            Self::TranscriptEdits => "Delete transcript lines",
             Self::CapsLockDictation => "Caps Lock dictation",
             Self::OpenCodeInWsl => "OpenCode in WSL",
             Self::ApiProcessing => "Process API transcripts",
@@ -84,6 +86,7 @@ impl Feature {
             Self::DropTranscribe => "Transcribe dropped audio",
             Self::PasteLastPicker => "Paste Last picker",
             Self::VocabularyFiles => "Vocabulary files",
+            Self::VocabularyMenu => "Vocabulary menu",
             Self::AnnotateAgentTools => "Agent tools for captures",
             Self::AnnotateAgentInstall => "Install agent skill from Annotate",
             Self::Signature => "Signature",
@@ -91,6 +94,7 @@ impl Feature {
             Self::HudHeight => "HUD height",
             Self::VoiceIsolation => "Voice isolation",
             Self::DictateWhileAnnotating => "Dictate while annotating",
+            Self::StopAnyCallRecording => "Stop every call recording when the call ends",
         }
     }
 
@@ -192,6 +196,9 @@ impl Feature {
             Self::HistoryStats => {
                 "Add a Stats button to History that summarizes the dictations you kept, with time saved against your typing speed, the hour you dictate most, a year-long heatmap, and all-time totals kept beyond History's retention (counts only, no text). The hex history stats command prints it too"
             }
+            Self::HistoryStatsStrip => {
+                "Show your dictation totals in a compact strip at the top of History. Needs Dictation stats."
+            }
             Self::RecentDictations => {
                 "Copy one of your last five dictations from the menu bar, under Paste Last Dictation"
             }
@@ -249,6 +256,9 @@ impl Feature {
             }
             Self::MeetingImport => {
                 "Add an audio file to Meetings and turn it into text on this Mac"
+            }
+            Self::TranscriptEdits => {
+                "Select lines in a saved meeting transcript and delete them. Summaries, copies, and the Markdown file use what's left"
             }
             Self::CapsLockDictation => {
                 "Press Caps Lock to start dictating and again to finish. Hex keeps Caps Lock off and uses its light while it records and writes the text"
@@ -313,6 +323,9 @@ impl Feature {
             Self::VocabularyFiles => {
                 "Import terms from a CSV file in the Vocabulary sheet, or save the whole list as one"
             }
+            Self::VocabularyMenu => {
+                "Add terms to Vocabulary from the menu bar, or open the Vocabulary sheet"
+            }
             Self::AnnotateAgentTools => {
                 "Adds hex annotate zoom, inspect, frames, and skill so coding agents can read a capture closely"
             }
@@ -331,6 +344,12 @@ impl Feature {
             }
             Self::DictateWhileAnnotating => {
                 "Dictate while a capture records: the text pastes as usual, and the capture keeps going"
+            }
+            Self::StopAnyCallRecording if !cfg!(target_os = "macos") => {
+                "Also stop an offered or by-hand call recording 30 s after its call app leaves the microphone, even with Stop when the call ends off"
+            }
+            Self::StopAnyCallRecording => {
+                "Also stop an offered, calendar, or by-hand call recording 30 s after its call app leaves the microphone, even with Stop when the call ends off"
             }
         }
     }

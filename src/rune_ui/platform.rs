@@ -251,6 +251,8 @@ pub(super) struct ScrawlView {
     pub(super) folder_error: Option<String>,
     /// Turning captures on or off failed (the pane sets it).
     pub(super) enable_error: Option<String>,
+    /// How it works is open (the pane sets it).
+    pub(super) how_it_works: bool,
 }
 
 #[cfg(hex_capture)]
@@ -332,9 +334,14 @@ pub(super) struct PlatformState {
     /// Developer builds: keeps Meetings available without opt-in in debug builds
     /// (`crate::DEVELOPER_FEATURES_ENABLED` on a native host).
     pub(super) developer: bool,
-    /// macOS 27 lists Accessibility as "Device Control and Data Access"
+    /// macOS 27 lists Accessibility as "Device Control and Data Access", and
+    /// 27.3 as "System & App Protection Override"
     /// (`permission_guide::list_name`); the permission rows use that name.
     pub(super) accessibility_renamed: bool,
+    /// Whether System Settings takes a tile dragged into the Accessibility
+    /// list (`permission_guide::drag_supported`); macOS 27.3 adds Hex with +
+    /// instead, so no copy asks for a drag there.
+    pub(super) accessibility_drag_supported: bool,
     /// The Hex Microphone's live filter tuning
     /// (`hex_microphone::current_tuned_config`).
     pub(super) tuning: TunedFilterConfig,
@@ -421,6 +428,7 @@ impl PlatformState {
             preview: false,
             developer: false,
             accessibility_renamed: false,
+            accessibility_drag_supported: true,
             tuning: TunedFilterConfig::default(),
             demo: None,
             hud: HudLab::default(),
@@ -592,6 +600,12 @@ pub(super) enum MeetingRequest {
     Stop,
     /// Import a local audio file as a meeting (macOS; Labs › Import audio).
     Import(PathBuf),
+    /// Delete selected lines from a saved meeting's transcript
+    /// (Labs › Delete transcript lines).
+    DeleteTranscript {
+        id: String,
+        entries: Vec<crate::meeting::TranscriptEntryKey>,
+    },
     Rename {
         id: String,
         title: String,

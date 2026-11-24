@@ -291,7 +291,12 @@ Launch Hex, setup incomplete              // setup.tour; every build and OS, ful
 │   │   │   ├── Returned from System Settings still untrusted (2 s, or 6 s side-by-side) ->
 │   │   │   │   "An older Hex entry can keep this off" + "Still grey? Fix it"
 │   │   │   │   -> resets the running bundle ID + retired IDs, prompts, and reopens the guide
-│   │   │   └── macOS 27 names the list "Device Control and Data Access"; the row follows
+│   │   │   ├── macOS 27 names the list "Device Control and Data Access"; the row follows
+│   │   │   └── macOS 27.3 renames it "System & App Protection Override" and takes no
+│   │   │       dragged tile: a compact bar sits below System Settings (above it when there
+│   │   │       is no room) out of the pane's + controls, and says to click the Privacy &
+│   │   │       Security notification or add Hex with +; the row and the pane's name follow.
+│   │   │       Check: `macos_27_3_names_accessibility_without_a_dragged_tile`
 │   │   ├── On in System Settings, unusable until relaunch -> "Needs a restart"
 │   │   │   └── Every permission on -> "Restart Hex" -> relaunch at setup  // setup.restart
 │   │   └── Each grant -> a beat with its check -> the card floats off -> on
@@ -427,7 +432,8 @@ Choose a supported language              // setup.language-conditioning; macOS +
 │   offers it (#1991)
 ├── Bangla -> Whisper only, with the `bn` hint; Auto lets Whisper guess per clip
 ├── Khmer -> Whisper only, with the `km` hint; Auto lets Whisper guess per clip
-└── Azerbaijani -> Whisper only, with the `az` hint; Auto lets Whisper guess per clip
+├── Azerbaijani -> Whisper only, with the `az` hint; Auto lets Whisper guess per clip
+└── Catalan -> Whisper only, with the `ca` hint; Auto lets Whisper guess per clip
 ```
 
 Whisper and Qwen3-ASR (including QwenCleo) read the shared
@@ -595,6 +601,14 @@ starts on Whisper. `azerbaijani_is_transcribed_by_whisper_with_its_language_hint
 checks the recommendation, the `az` hint, that Whisper's picker offers it, and
 that Qwen3-ASR rejects it. It runs no inference, and Azerbaijani accuracy has
 not been measured.
+
+Catalan (`ca`) is offered because Whisper large-v3-turbo was trained on it and
+no other available catalog model supports it, so Whisper is its only,
+recommended choice and a system whose first preferred language is Catalan
+starts on Whisper. `catalan_is_transcribed_by_whisper_with_its_language_hint`
+checks the recommendation, the `ca` hint, that Whisper's picker offers it, and
+that Qwen3-ASR rejects it. It runs no inference, and Catalan accuracy has not
+been measured.
 
 Checks start in [desktop/onboarding.rs](../../src/desktop/onboarding.rs),
 [transcription.rs](../../src/transcription.rs), and
@@ -916,10 +930,12 @@ Completed output                         // output
     ├── Labs > Copy dictation audio (off) -> copies a kept WAV as a file   // labs.copy-dictation-audio
     │   -> the card's Copy audio beside Play, and the menu bar or tray's Copy last dictation audio
     │   -> needs Keep recordings; it stores no audio itself (labs.md)
-    └── Labs > Dictation stats (off) -> History's Stats dialog and hex history stats   // labs.history-stats
-        -> headline tiles, time saved with a typing-speed slider, the busiest hour, a 30-day chart, top apps
-        -> a 53-week heatmap and all-time totals, from a daily rollup in usage.json with no text or app names
-        -> Clear all history deletes the rollup too (labs.md)
+    ├── Labs > Dictation stats (off) -> History's Stats dialog and hex history stats   // labs.history-stats
+    │   -> headline tiles, time saved with a typing-speed slider, the busiest hour, a 30-day chart, top apps
+    │   -> a 53-week heatmap and all-time totals, from a daily rollup in usage.json with no text or app names
+    │   -> Clear all history deletes the rollup too (labs.md)
+    └── Labs > Stats on History (off) -> one compact strip of those six headline numbers above the list   // labs.history-stats-strip
+        -> needs Dictation stats and its own switch; off, History is exactly as before (labs.md)
 Every entry since #1177 -> "Speech model" fact: the model that made its text (+ language when chosen)
 ```
 
@@ -1095,7 +1111,7 @@ General                                  // settings
 │       ├── Turning it on without System Audio Recording -> ask now, never while dictating
 │       ├── On -> Screen & System Audio Recording row: Allow / waiting / Allowed
 │       └── Dictation -> browser_media sequence below
-├── Sounds -> one row ("Classic · 50%" or Off) opening a sheet: Sound volume slider in 5% steps, then each set to hear and pick
+├── Sounds -> one row ("Classic keys · 50%" or Off) opening a sheet: Sound volume slider in 5% steps, then each set to hear and pick
 │   ├── Slider release saves and previews start unless Off; only the sheet's previews play while Off
 │   ├── A saved zero displays Off; enabling sounds through the CLI restores the default level
 │   └── Default output changes or disappears (macOS) -> next tone reopens on the current default
@@ -1277,8 +1293,8 @@ what is playing, so Hex hears the browsers through a private process tap
 (aggregate `anomaly.hex.browser-tap.<pid>`, apart from the meeting tap) and sends
 play only after it saw the browser go silent right after its own pause. The
 browsers are the ones [microphone_activity.rs](../../src/microphone_activity.rs)
-knows: Chrome, Brave, Safari, Firefox, Edge, Arc, Vivaldi, Helium, Ardia, and
-Zen, whose helpers count as their browser. The sequence checks in
+knows: Chrome, Brave, Safari, Firefox, Edge, Arc, Vivaldi, Helium, Ardia,
+Zen, and Aside, whose helpers count as their browser. The sequence checks in
 [audio/browser_media.rs](../../src/audio/browser_media.rs) run on fakes:
 `a_confirmed_pause_is_resumed`, `two_sounding_tabs_never_get_play`,
 `a_browser_already_playing_gets_no_play`, `a_call_is_never_paused`,
@@ -1521,9 +1537,10 @@ other way. Check: `the_page_is_read_only_when_processing_uses_it` in
 browser. On macOS the front window's title is read only by meeting detection
 and while a script transformation is set up (`reads_window_title`). When
 something uses the page, macOS asks the front tab of Safari, Orion, Chrome,
-Brave, Edge, Arc, Vivaldi, Opera, Helium, and Chromium over AppleScript (one
-Automation prompt per browser; a refusal keeps the application context) and
-reads any other app's focused AXWebArea `AXURL` (Firefox, Zen, web views).
+Brave, Edge, Arc, Vivaldi, Opera, Helium, Chromium, and Aside over
+AppleScript (one Automation prompt per browser; a refusal keeps the
+application context) and reads any other app's focused AXWebArea `AXURL`
+(Firefox, Zen, web views).
 That AppleScript read is not part of the 500 ms foreground-context poll: the
 poll reads it once when a scriptable browser becomes the frontmost process
 (caching its address, or no address after a failed read, per pid), so
@@ -1715,7 +1732,12 @@ Menu bar and Settings                    // maintenance
 │   │   neutral keyboard, and a restart starts unpaused
 │   ├── Paste Last Dictation ⌥⇧V (saved binding), Copy Recent Dictation ▸ (Labs),
 │   │   Copy Last Meeting Transcript (Meetings on), Restore Last Capture (Labs ›
-│   │   Screenshots on; dimmed until a capture card was closed), Speech Model ▸
+│   │   Screenshots on; dimmed until a capture card was closed), Speech Model ▸,
+│   │   Vocabulary ▸ (Labs › Vocabulary menu, off: Add term… opens Settings on
+│   │   the Vocabulary sheet with a new focused row, then the last five saved
+│   │   terms newest first as informational rows, then Open vocabulary…, which
+│   │   opens the sheet alone; off, the row is hidden and the menu is unchanged,
+│   │   labs.md)
 │   ├── Settings… ⌘, · Check for Updates… · Quit Hex ⌘Q
 │   │   └── Labs > ⌘Q closes Settings (off, #1473) -> ⌘Q closes the Settings
 │   │       window instead; dictation keeps running, the menu bar icon quits (labs.md)
@@ -1727,8 +1749,9 @@ Menu bar and Settings                    // maintenance
 │   │   translate. Check: the_menu_follows_the_interface_language
 │   └── check: the_menu_reads_upcoming_then_meetings_then_actions_then_the_app,
 │       paste_last_shows_the_saved_binding_or_nothing,
-│       the_pause_row_reads_pause_or_resume (status_item.rs; the
-│       row order and key equivalents only, no native menu is drawn)
+│       the_pause_row_reads_pause_or_resume,
+│       vocabulary_lists_the_last_five_terms_newest_first (status_item.rs;
+│       the row order and key equivalents only, no native menu is drawn)
 ├── Icon -> 18 pt monochrome Hex mark template (recording variant + elapsed time)
 │   └── Labs > Hide menu bar icon (off, #1064) -> hidden unless a meeting is under
 │       way; shortcuts keep working; Finder or Spotlight reopen -> Settings (labs.md)
@@ -1890,8 +1913,8 @@ Hex checks the release service            // maintain.updates
 │       │   └── A release published after the relaunch -> the next launch's check
 │       ├── macOS -> renamex_np swap (also at quit) -> relaunch -> old bundle removed at launch
 │       │   // one .Hex-update-<version> folder at a time: staging a newer build removes the one it replaces
-│       └── Labs › Release notes link -> a release build's footer carries this build's notes:
-│           anoma.ly/hex/dev#<version> for a dev build, github.com/anomalyco/hex/releases/tag/v<version> for a stable one;
+│       └── Labs › Release notes link -> a release build's footer links to what changed since this build:
+│           anoma.ly/hex/dev?since=<version> for a dev build, github.com/anomalyco/hex/releases/tag/v<version> for a stable one;
 │           local and test builds show no link (by build kind, not version string)
 ├── macOS location not replaceable (read-only, translocated, root-owned) -> Download update (DMG)
 ├── Package manager (pacman, Nix) -> its command, once it serves another version
@@ -2282,7 +2305,8 @@ Linux beta                               // not macOS feature parity
 │       │   // keysym outside the active group
 │       │   ├── 15 s after the last paste -> session closes when its grant restores, so
 │       │   │   GNOME's remote-control indicator shows only around pastes (#718); a grant
-│       │   │   that can't restore keeps its session
+│       │   │   that can't restore keeps its session; KDE keeps it too, for the
+│       │   │   paster's lifetime, since Plasma notifies on every session start (#2508)
 │       │   ├── Session showed the dialog -> 250 ms for it to hand focus back
 │       │   └── Restored or open session -> 150 ms after wl-copy (minus the reopen), so the target holds the new
 │       │       selection before Ctrl+V (GNOME pasted nothing or the old clipboard, #578)
@@ -2353,7 +2377,9 @@ sends a letter no group has on its pc105 key, rather than keysyms, which fixes
 KWin 6.8's fake input, where a Latin `v` under a Russian layout arrived as a
 bare `v` with Ctrl stuck down (#1939), and Mutter, which drops a keysym outside
 the active group. Neither fix is observed on a real KDE or GNOME session
-either. The modifier wait (`ShortcutKeys` in
+either. The KDE session exemption (`closes_idle_remote_desktop` in
+[linux/session.rs](../../src/linux/session.rs)) is unit-tested only, not
+observed on Plasma. The modifier wait (`ShortcutKeys` in
 [linux/input.rs](../../src/linux/input.rs)) has unit tests for its timing only;
 it is not yet observed on Hyprland, and a modifier held past the wait still
 changes the paste. wtype numbers its keymap from evdev code 1 in order of first
@@ -2511,7 +2537,8 @@ smoke tests on Windows 10 and on ARM64 hardware have not been run.
 Linux updates                            // maintain.linux-updates
 ├── Direct install (versions/ + install.json receipt) -> release service -> staged -> sidebar footer: Restart to update
 ├── Source install (source-build marker) -> Sidebar footer: Updated from your source checkout
-├── Local build (HEX_LOCAL_BUILD=1) -> Sidebar footer: Local build · updates off; Version 2.3.1 (local <commit>); no checks, no channel row
+├── Local build (HEX_LOCAL_BUILD=1, every OS) -> Sidebar footer: 3.4.0 · Local build
+│   └── Hover or read its accessible description, or run `hex --version` -> full commit and updates off; no checks or channel row
 ├── pacman (AUR hex-bin: /usr/bin, root-owned) or Nix store -> Sidebar footer: Updated by your package manager
 └── Anything else (a downloaded executable) -> Sidebar footer: Download update
 ```
@@ -2683,7 +2710,7 @@ Linux General > Sounds > Sound volume     // dictate.feedback.linux; X11 + Wayla
 ├── Slider at 0 -> No recording tones; the last level is kept
 └── Release above 0 -> Save and apply live; preview the start sound
 Linux General > Sounds > a set            // dictate.sound-theme
-└── Press it -> Save and apply live; play its dictation
+└── Classic keys (default), Kalimba, and five more sets -> Press to save and play; Play only previews
 
 Capture                                  // hex app and hex dictate
 ├── Shortcut starts capture -> Queue start sound immediately, before audio arrives
@@ -2882,7 +2909,7 @@ macOS `hex app` -> one menu-bar process, Rune window // dev.rune-ui-macos
 ├── While the window shows, its poll re-checks timed state every 250 ms (Rune Tx::wake_after); close hides it (Dock policy restored)
 ├── ⌘Q / menu-bar Quit / Ctrl-C quit and join
 ├── Meeting capsules: Rune interactive overlays (offer, call ended, ready, recording
-│   with Copy new (N) / Copy all of the in-call transcript; compact until hovered,
+│   with Copy agent prompt / Copy all of the in-call transcript; compact until hovered,
 │   dragged to any corner)
 └── Modes app icons: Finder's icon (NSWorkspace) in the picker, chips, and mode rows
 Windows `hex app` -> one tray process, Rune window // dev.rune-ui-windows
@@ -3132,8 +3159,79 @@ iOS prototype (`HEXMobile`) -> Record/transcribe/copy and keyboard handoff
 │   path receives none
 └── Proof limits: unit tests only; no CI compiles the iOS targets
 Android keyboard -> English, Spanish, German and Bokmål typing assistance
+├── Português, Nederlands, Polski or Русский with no pinned layout -> English's keys and
+│   accents (DictationLanguage.layout is null), with English's word list only standing in for
+│   the keys' geometry: the strip keeps what was typed and your own dictionary words as
+│   completions, and text shortcuts, double-space period, capitals and the literal chip stay.
+│   No English completions, next words, autocorrection, tap correction, swipe typing or emoji
+│   keywords. A layout pinned in Keyboard > Keyboard layout brings that layout's model.
+│   Checks: `aDictationLanguageWithoutItsOwnLayoutHasNoTypingModel` in InsertionTest.kt and
+│   `standInOffersYourWordsAndShortcutsButNoEnglishCompletionsOrNextWords` /
+│   `standInTurnsOffAutocorrectButKeepsYourTextReplacements` in StandInTypingTest.kt; not
+│   tried on a device.
 ├── Keyboard > Suggest swear words (off) -> opt in to profanity; listed slurs never offered
-└── Type a listed word in full -> keep its spelling on space or tap its literal chip
+├── Type a listed word in full -> keep its spelling on space or tap its literal chip
+├── Labs > Keyboard > Symbols on letter keys (off) -> hold a letter from QWERTY's home and
+│   bottom rows (a–l, z–m) for its symbol first, SwiftKey-style (m for /, a for @), with the
+│   letter's accents after it; symbols follow the letter, so AZERTY q/w and QWERTZ y get none,
+│   and row 1 (including AZERTY a/z) keeps its digits; off, the keys are unchanged. With
+│   Number row on, row 1's AZERTY a/z and QWERTZ z show their symbols (@, _) as hint and hold
+│   instead of digits.
+│   `heldLettersOfferSymbolsWhenTheLabIsOn` in InsertionTest.kt passed in
+│   https://github.com/anomalyco/hex/actions/runs/45273240353 (testDebugUnitTest + compileDebugKotlin,
+│   GitHub-hosted); not tried on a device or emulator.
+├── Labs > Output > Signature (off) -> one editable line (up to 200 characters; empty adds
+│   nothing, default "Sent from Hex") on its own line at the end of each keyboard dictation,
+│   added once; the next dictation starts on a new line below it, and a signed dictation
+│   never continues the signature line. Home's preview and Copy stay unsigned, and Hex's
+│   own fields are never signed.
+│   Unit tests plus a passing `./gradlew :app:testDebugUnitTest :app:compileDebugKotlin`
+│   on a GitHub-hosted runner (https://github.com/anomalyco/hex/actions/runs/45268305325, the
+│   latest observed verification); the repo has no Android CI.
+├── Labs > Keyboard > Number row (off) -> 1 2 3 4 5 6 7 8 9 0 above the letter rows on
+│   every layout (en, es, nb, de, fr, it), typed like normal keys. The first letter row's
+│   corner digits and digit-first hold are hidden while it shows; accents on hold stay, and
+│   the Symbols on letter keys hints and holds still work, with row 1 letters that have a
+│   symbol (AZERTY a/z, QWERTZ z) showing it instead of the digit. The keyboard is one row
+│   taller and the Hex menu matches that height; ?123, the symbols pages and the pads keep
+│   their keys and are a row shorter than the letters while it is on. Off, the page is
+│   unchanged.
+│   KeyboardPageTest plus a passing `./gradlew :app:testDebugUnitTest :app:compileDebugKotlin`
+│   on a GitHub-hosted runner (https://github.com/anomalyco/hex/actions/runs/45275591325, the
+│   latest observed verification); not tried on a device. The repo has no Android CI.
+├── Labs > Keyboard > Emoji suggestions (off) -> on the English layout, while a word
+│   that names an emoji is being typed (smile -> 😊, joy/haha -> 😂, heart -> ❤️), the
+│   strip's last slot offers it beside the word suggestions, padded to that slot even when
+│   it is the only one. Another layout's model never offers one. A tap replaces the word
+│   and commits it with the same space rules as a word suggestion; continuing to type
+│   keeps the word. Nothing matching leaves the strip unchanged. The list keeps the same
+│   0.85 strong cut-off as the iPhone strip, plus a reviewed joy -> 😂 and a reviewed
+│   exclusion list (number words that name clock faces, and ordinary words that name an
+│   emoji's object in another sense), generated from the iOS keyboard's
+│   emoji-index-en.txt (Unicode emoji-test.txt 18.0 and CLDR 49 annotations, Unicode
+│   License v3, plus Hex's chat words). It is a compact word-to-emoji asset read lazily
+│   only while the toggle is on; the loader keeps only emoji the device's `Paint.hasGlyph`
+│   can draw (minSdk 31 draws up to Emoji 13.1), so the strip never shows tofu. Matching is
+│   case-insensitive and whole-word.
+│   Checks: `./gradlew :app:testDebugUnitTest :app:compileDebugKotlin` (includes
+│   `EmojiKeywordsTest`) and `python3 scripts/code-shape.py --check`; the repo has no
+│   Android CI.
+└── Labs > Keyboard > Keyboard tools (off) -> while the strip has nothing else to show (no
+    suggestion chips, Undo dictation, notice or dictation) and the field is not a password,
+    PIN or other secure field, the "Hold Hex to talk" hint becomes up to four icon buttons
+    without making the keyboard taller: Emoji (the bottom row's emoji key, so only on the
+    letters, never on a symbol page or a pad), Paste (the editor's own
+    `performContextMenuAction(android.R.id.paste)`, so Hex never reads the clipboard; shown
+    only while `clipboard.hasPrimaryClip()`), Settings (reopens Hex on its Keyboard page
+    through an intent extra MainActivity reads, NEW_TASK | CLEAR_TOP, replacing whatever Hex
+    screen was open) and Undo (the last autocorrection reverted exactly as the Delete right
+    after it does, shared through `KeyboardEngine.revert`; shown only while that correction is
+    still right before the cursor, and only when no next-word suggestions fill the strip, though
+    the Delete right after an autocorrection still undoes it when they do). Changing the toggle
+    redraws a visible strip at once; off, the strip is unchanged.
+    Checks: `./gradlew :app:testDebugUnitTest :app:compileDebugKotlin` (includes
+    `KeyboardToolsTest`) and `python3 scripts/code-shape.py --check`; the repo has no
+    Android CI. Not tried on a device or emulator.
 Unmerged Windows / deferred features -> Not part of this map
 ```
 
@@ -3211,10 +3309,10 @@ discovery or installed-app behavior.
 
 `default_paste_hotkeys_follow_build_capabilities` in
 [app_settings.rs](../../src/app_settings.rs) checks the production default runtime
-and settings projections: Paste Last remains available in both build profiles;
-meeting paste is present in debug or after the Meetings opt-in. `meeting_paste_is_only_active_in_developer_builds`
-in [suppression.rs](../../src/suppression.rs) checks the corresponding constructed
-hotkey event, including ordinary-chord discard in release. These replace an
+and settings projections: Paste Last remains available in both build profiles.
+`option_control_v_is_an_ordinary_chord` in [suppression.rs](../../src/suppression.rs)
+checks that Option-Control-V, the removed meeting paste, is an ordinary chord
+that discards a capture. These replace an
 unconditional debug-only expectation and a test-only copy of the reservation rule;
 they do not establish native keyboard delivery or meeting insertion.
 

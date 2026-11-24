@@ -217,7 +217,9 @@ impl Pump {
                     Err(error) => return Some(error.into()),
                 };
                 let definition = crate::transcription::models::definition(selection.model);
-                if !crate::transcription::models::is_installed(definition, &selection.language) {
+                if !crate::transcription::readiness::readiness(&definition, &selection.language)
+                    .installed
+                {
                     return Some(ControlReply::error(
                         "not-installed",
                         format!(
@@ -238,7 +240,9 @@ impl Pump {
                     Err(error) => return Some(error.into()),
                 };
                 let definition = crate::transcription::models::definition(selection.model);
-                if crate::transcription::models::is_installed(definition, &selection.language) {
+                if crate::transcription::readiness::readiness(&definition, &selection.language)
+                    .installed
+                {
                     return start_model_use(runtime, selection, reply);
                 }
                 Some(reply_with(
@@ -402,6 +406,9 @@ impl Pump {
                 }
                 (Some(ControllerEvent::Stopping), true) => {
                     ControlReply::done("Stopping the meeting recording")
+                }
+                (Some(ControllerEvent::Discarded(_)), true) => {
+                    ControlReply::done("Stopped recording; it had no speech and went to the Trash")
                 }
                 (Some(ControllerEvent::Transcribing | ControllerEvent::Finished(_)), true) => {
                     ControlReply::done("Stopped recording; transcribing the meeting")
@@ -794,7 +801,9 @@ fn wait_for_model(
     runtime: &RuntimeHandle,
     selection: crate::transcription::models::TranscriptionSelection,
 ) -> Result<ControlReply, ControlError> {
-    let name = crate::transcription::models::definition(selection.model).name;
+    let name = crate::transcription::models::definition(selection.model)
+        .name
+        .to_string();
     // What the runtime runs: the saved selection, or a lost import's fallback.
     let matches = |settings: &AppSettings| {
         super::runtime::same_model_and_language(&settings.transcription, &selection)
@@ -805,7 +814,7 @@ fn wait_for_model(
     };
     let ready = || {
         crate::transcription::models::validate(&selection)
-            .is_ok_and(|model| crate::transcription::models::is_ready(model, &selection.language))
+            .is_ok_and(|model| crate::transcription::models::is_ready(&model, &selection.language))
     };
     if ready() && load().is_ok_and(|settings| matches(&settings)) {
         return Ok(ControlReply::unchanged(format!(
@@ -1007,7 +1016,7 @@ mod tests {
                 None,
             ),
             app_switcher: crate::transcription::app_model_switching::Switcher::new(false, None),
-            automatic_preparation: false,
+            automatic_preparation: None,
             preparation,
             recognition_start: None,
             listener_failure: Default::default(),

@@ -45,7 +45,7 @@ pub(crate) use self::meetings::meeting_import_failed;
 #[cfg(hex_capture)]
 mod captures;
 mod meetings_host;
-pub(crate) use meetings_host::{meeting_failed, meeting_settings_saved};
+pub(crate) use meetings_host::{meeting_edit_failed, meeting_failed, meeting_settings_saved};
 mod cloud_setup;
 mod model_details;
 mod model_import;
@@ -78,7 +78,7 @@ mod spark;
 mod speech_model;
 #[cfg(target_os = "macos")]
 pub(crate) mod story_link;
-mod vocabulary;
+pub(crate) mod vocabulary;
 mod whats_new;
 
 use std::sync::Arc;
@@ -599,6 +599,16 @@ struct ServiceView {
     editing: bool,
 }
 
+/// The one modal sheet currently open over the window.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Modal {
+    Picker,
+    Explainer,
+    SoundSets,
+    Vocabulary,
+    Calls,
+}
+
 /// The one anchored menu or popover that is open.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Menu {
@@ -648,6 +658,7 @@ pub(crate) struct Ui {
     /// The settings the host last reported, to adopt only its changes.
     service_settings: Option<AppSettings>,
     pane: Pane,
+    modal: Option<Modal>,
     open: Option<Menu>,
     // General
     microphones: Result<crate::audio::InputDevices, String>,
@@ -677,6 +688,9 @@ pub(crate) struct Ui {
     screenshot_folder: labs::screenshots::FolderChoice,
     /// A scene previewing the badge of a build kind this binary is not.
     build_preview: Option<BuildKind>,
+    /// A scene showing the Paste Last picker over the window.
+    #[cfg(all(target_os = "macos", hex_capture))]
+    paste_preview: bool,
     capture: Capture,
     vocabulary: vocabulary::VocabularyEditor,
     /// The model the service was last seen preparing, and since when.
@@ -802,6 +816,7 @@ impl Ui {
             connection_error: None,
             service_settings: None,
             pane: Pane::General,
+            modal: None,
             open: None,
             microphones: Ok(Default::default()),
             microphones_route: None,
@@ -816,6 +831,8 @@ impl Ui {
             #[cfg(all(target_os = "macos", hex_capture))]
             screenshot_folder: labs::screenshots::FolderChoice::default(),
             build_preview: None,
+            #[cfg(all(target_os = "macos", hex_capture))]
+            paste_preview: false,
             capture: Capture::Idle,
             vocabulary,
             preparing: None,
@@ -1062,9 +1079,15 @@ impl Ui {
             // its refresh moved to now by `send`) rather than show stale
             // state for a tick.
             Ok(()) => {
+                if is_relaunch {
+                    self.platform.relaunch_failed = false;
+                }
                 self.host.poll(&mut self.platform);
             }
-            Err(_) if is_relaunch => self.platform.relaunch_failed = true,
+            Err(_) if is_relaunch => {
+                self.platform.relaunch_failed = true;
+                onboarding::input(self, crate::desktop::onboarding::Input::RelaunchFailed);
+            }
             Err(error) => self.error = Some(error),
         }
     }
@@ -1151,14 +1174,43 @@ impl Ui {
         }
     }
 
+    fn is_modal(&self, modal: Modal) -> bool {
+        self.modal == Some(modal)
+    }
+
+    /// Opens `modal` alone, closing any open sheet and any open menu first so
+    /// two sheets can never be open at once.
+    fn open_modal(&mut self, modal: Modal) {
+        self.close_modal();
+        self.open = None;
+        self.modal = Some(modal);
+    }
+
+    /// Closes the active modal sheet, if any, running its teardown hook.
+    fn close_modal(&mut self) {
+        let Some(old) = self.modal.take() else {
+            return;
+        };
+        match old {
+            Modal::Picker => picker::on_close(self),
+            Modal::Explainer => {}
+            Modal::SoundSets => sound_sets::on_close(self),
+            Modal::Vocabulary => vocabulary::on_close(self),
+            Modal::Calls => calls::on_close(self),
+        }
+    }
+
+    /// Closes `modal` only when it is the active modal sheet.
+    fn close_modal_if(&mut self, modal: Modal) {
+        if self.modal == Some(modal) {
+            self.close_modal();
+        }
+    }
+
     /// Closes the dialogs and sheets a pane switch or window close ends.
     fn close_dialogs(&mut self) {
         find_popover::close(self);
-        picker::close(self);
-        explainer::close(self);
-        sound_sets::close(self);
-        calls::close(self);
-        vocabulary::close(self);
+        self.close_modal();
         history::close_stats(self);
     }
 
@@ -1232,11 +1284,7 @@ fn on_key(ui: &mut Ui, event: &rune::KeyEvent, tx: &mut Tx) -> bool {
     }
     if let rune::Key::Command(digit @ '1'..='9') = event.key
         && !event.mods.alt
-        && !ui.picker.open
-        && !ui.explainer.open
-        && !ui.sound_sets.open
-        && !ui.calls.open
-        && !ui.vocabulary.open
+        && ui.modal.is_none()
         && !ui.history.stats_open
         && ui.tour.is_none()
     {
@@ -1255,35 +1303,21 @@ fn on_key(ui: &mut Ui, event: &rune::KeyEvent, tx: &mut Tx) -> bool {
     {
         return true;
     }
-    if ui.explainer.open {
-        explainer::close(ui);
-        true
-    } else if ui.sound_sets.open {
-        sound_sets::close(ui);
-        true
-    } else if ui.calls.open {
-        // A row's open menu closes first.
-        if matches!(ui.open, Some(Menu::Call(_))) {
+    if let Some(modal) = ui.modal {
+        // A row's open menu inside Calls closes before the sheet itself.
+        if modal == Modal::Calls && matches!(ui.open, Some(Menu::Call(_))) {
             ui.open = None;
         } else {
-            calls::close(ui);
+            ui.close_modal();
         }
-        true
-    } else if ui.vocabulary.open {
-        vocabulary::close(ui);
-        true
-    } else if ui.picker.open {
-        picker::close(ui);
         true
     } else if ui.open.is_some() {
         ui.open = None;
         true
-    } else if ui.meetings.renaming.is_some() || ui.meetings.delete_armed.is_some() {
-        ui.meetings.renaming = None;
-        ui.meetings.delete_armed = None;
+    } else if meetings::cancel_edit(ui) {
         true
     } else {
-        ui.pane == Pane::History && ui.history.cancel_delete()
+        ui.pane == Pane::History && ui.history.cancel_delete(tx)
     }
 }
 
@@ -1451,6 +1485,9 @@ fn poll(ui: &mut Ui, clock: f64, tx: &mut Tx) -> bool {
             changed |= leave_hidden_pane(ui);
         }
     }
+    // The lab, the selected meeting's status, or its notes can take the
+    // selection away between frames.
+    changed |= meetings::settle_selection(ui);
     let preparing = ui
         .view
         .as_ref()
@@ -1481,6 +1518,7 @@ fn leave_hidden_pane(ui: &mut Ui) -> bool {
         Pane::Modes => Pane::Output,
         _ => Pane::General,
     };
+    ui.close_modal();
     ui.open = None;
     true
 }
@@ -1559,20 +1597,18 @@ fn view(ui: &Ui, cx: &mut Cx<Ui>) -> El {
         .hover_motion_within(Anim::INSTANT, Anim::INSTANT)
         .child(sidebar(ui, p))
         .child(panel);
-    if let Some(modal) = picker::modal(ui, p) {
-        layer.extend(modal);
+    explainer::sync_reduced_motion(ui, cx);
+    match ui.modal {
+        Some(Modal::Picker) => layer.extend(picker::modal(ui, p)),
+        Some(Modal::Explainer) => layer.extend(explainer::modal(ui, cx, p)),
+        Some(Modal::SoundSets) => layer.extend(sound_sets::modal(ui, p)),
+        Some(Modal::Vocabulary) => layer.extend(vocabulary::modal(ui, p)),
+        Some(Modal::Calls) => layer.extend(calls::modal(ui, p)),
+        None => {}
     }
-    if let Some(modal) = explainer::modal(ui, cx, p) {
-        layer.extend(modal);
-    }
-    if let Some(modal) = sound_sets::modal(ui, p) {
-        layer.extend(modal);
-    }
-    if let Some(modal) = vocabulary::modal(ui, p) {
-        layer.extend(modal);
-    }
-    if let Some(modal) = calls::modal(ui, p) {
-        layer.extend(modal);
+    #[cfg(all(target_os = "macos", hex_capture))]
+    if ui.paste_preview {
+        layer.push(paste_picker::preview(p));
     }
     if let Some(first_run) = onboarding_kit::live::overlay(ui, p, cx.is_reduced_motion()) {
         layer.push(first_run);

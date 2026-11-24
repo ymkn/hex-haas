@@ -7,6 +7,7 @@
     <string name="keyboard_note_transcribe">无法转录，请再试一次。</string>
     <string name="keyboard_note_no_speech">没有听到说话</string>
     <string name="keyboard_note_model">语音模型不可用</string>
+    <string name="keyboard_note_minute">已录满 1 分钟，录音停止</string>
     <string name="keyboard_cancel_dictation">取消听写</string>
     <string name="keyboard_finish_dictation">完成听写</string>
     <string name="keyboard_undo_dictation">撤销听写</string>
@@ -20,12 +21,16 @@
     <string name="keyboard_recording">正在录音</string>
     <string name="keyboard_keep">保留 %1$s</string>
     <string name="keyboard_suggest">建议 %1$s</string>
+    <string name="keyboard_suggest_emoji">建议表情符号 %1$s</string>
     <string name="keyboard_menu">Hex 菜单</string>
     <string name="keyboard_menu_open">"Hex 菜单  ›"</string>
     <string name="keyboard_menu_done">完成</string>
     <string name="keyboard_numbers">数字和符号</string>
     <string name="keyboard_letters">字母</string>
     <string name="keyboard_emoji">表情符号</string>
+    <string name="keyboard_tool_paste">粘贴</string>
+    <string name="keyboard_tool_settings">键盘设置</string>
+    <string name="keyboard_tool_undo">撤销自动更正</string>
     <string name="keyboard_next">下一个键盘</string>
     <string name="keyboard_hex">Hex 听写</string>
     <string name="keyboard_space">空格</string>

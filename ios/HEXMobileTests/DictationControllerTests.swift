@@ -88,7 +88,7 @@ private final class FakeAudioManager: AudioManaging {
 
 /// A preparation that never answers, as Speech or its asset store not answering.
 private actor SilentTranscriber: LocalTranscribing {
-    nonisolated let displayName = "Apple Speech"
+    nonisolated let engine: DictationEngine = .appleSpeech
     let languageName = "English"
     private(set) var preparationCancelled = false
 
@@ -105,6 +105,7 @@ private actor SilentTranscriber: LocalTranscribing {
 }
 
 private actor ControlledTranscriber: LocalTranscribing {
+    nonisolated let engine: DictationEngine = .appleSpeech
     nonisolated let displayName = "Controlled Speech"
     let languageName = "English"
 
@@ -169,7 +170,7 @@ private actor ControlledTranscriber: LocalTranscribing {
 
 /// A transcriber whose model can't be got ready, such as a language Apple Speech can't install.
 private actor UnpreparableTranscriber: LocalTranscribing {
-    nonisolated let displayName = "Apple Speech"
+    nonisolated let engine: DictationEngine = .appleSpeech
     let languageName = "Russian"
     let error: Error
 
@@ -2120,7 +2121,7 @@ final class DictationControllerTests: XCTestCase {
         XCTAssertEqual(controller.phase, .ready)
 
         // Turned off while Parakeet Ultra dictated: Hex prepares the engine it picks without it.
-        controller.engineName = ParakeetUltraTranscriber.name
+        controller.engine = .parakeetUltra
         controller.multilingualParakeetChanged()
         try await settle()
         XCTAssertEqual(made, 2)
@@ -2288,7 +2289,7 @@ final class DictationControllerTests: XCTestCase {
 
         // A failed model with none ready still sets up.
         controller.isModelReady = false
-        controller.phase = .failed("The speech model isn't ready. Try again.")
+        controller.failModel("The speech model isn't ready. Try again.")
         XCTAssertTrue(controller.primaryActionPreparesModel)
     }
 
@@ -3355,6 +3356,15 @@ final class SpeechModelInstallTests: XCTestCase {
             XCTAssertEqual(UserFacingError.message(for: shown, context: .transcription), "Open Hex to download English.")
             XCTAssertTrue(settings.keyboardNeedsHex(), "the Hex key opens Hex, which downloads it")
         }
+        // Hebrew picked by hand on an English iPhone: the keyboard's install failing names
+        // English to try, but Hex set nothing aside, so Hex downloads Hebrew too.
+        let hebrew = SpeechModelUnavailable(language: "he-IL", reason: .notOnThisIPhone, fallback: "en-US", automatic: false)
+        settings.clearKeyboardNeedsHex()
+        let first = SpeechModelNeedsHex.keyboardError(for: hebrew, language: "he-IL", settings: settings)
+        XCTAssertEqual(UserFacingError.message(for: first, context: .transcription), "Hex couldn't transcribe that. Try again.")
+        let shown = SpeechModelNeedsHex.keyboardError(for: hebrew, language: "he-IL", settings: settings)
+        XCTAssertEqual(UserFacingError.message(for: shown, context: .transcription), "Open Hex to download Hebrew.")
+        XCTAssertTrue(settings.keyboardNeedsHex())
     }
 
     func testAKeyboardDictationThatWorksBetweenTwoFailuresKeepsTheKeyboardDictating() async throws {
@@ -3374,9 +3384,14 @@ final class SpeechModelInstallTests: XCTestCase {
         XCTAssertTrue(settings.noteKeyboardModelFailure(at: marked.addingTimeInterval(LanguageSettings.keyboardStrikeWindow + 60)))
     }
 
+    /// Only a language Hex itself set aside keeps the sentence naming another one to try.
     func testTheKeyboardKeepsAMoveToAnotherLanguageAndACancel() {
         let switched = SpeechModelUnavailable(language: "ru-RU", reason: .notOnThisIPhone, fallback: "en-US")
         let offer = SpeechModelUnavailable(language: "ru-RU", reason: .notOnThisIPhone, fallback: "en-US", automatic: false)
+        // Hex's own installs of Russian failed twice in a row.
+        settings.noteUnavailable("ru-RU")
+        settings.noteUnavailable("ru-RU")
+        XCTAssertTrue(settings.isUnavailable("ru-RU"))
         for error in [switched, offer] {
             let shown = SpeechModelNeedsHex.keyboardError(for: error, language: "ru-RU", settings: settings)
             XCTAssertEqual(shown as? SpeechModelUnavailable, error, "the next dictation works without Hex")

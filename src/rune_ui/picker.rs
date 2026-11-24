@@ -22,13 +22,13 @@ use super::controls::{
     segmented,
 };
 use super::lists::{Tone, error_panel};
-use super::{Request, Ui};
+use super::{Modal, Request, Ui};
 use crate::app_settings::AppSettings;
 use crate::desktop::i18n::{tr, tr_fill, tr_named};
 use crate::transcription::models::{
     self as transcription_models, AUTO_LANGUAGE, BenchmarkRecord, ModelDefinition,
-    ModelPreparationStage, ModelRuntime, Recommendation, TranscriptionModelId,
-    TranscriptionSelection, language_name,
+    ModelPreparationStage, ModelRef, Recommendation, TranscriptionModelId, TranscriptionSelection,
+    language_name,
 };
 
 const PANEL_WIDTH: f32 = compare::WIDTH;
@@ -86,7 +86,6 @@ pub(super) enum View {
 
 #[derive(Default)]
 pub(super) struct Picker {
-    pub(super) open: bool,
     pub(super) view: View,
     /// The models that don't speak the saved language, in the full list.
     pub(super) others_open: bool,
@@ -125,7 +124,7 @@ impl Picker {
 
     pub(super) fn selected_installed(&self, settings: &AppSettings) -> bool {
         transcription_models::validate(&settings.transcription)
-            .is_ok_and(|model| self.installed(model, &settings.transcription.language))
+            .is_ok_and(|model| self.installed(&model, &settings.transcription.language))
     }
 
     /// Whether `model` can run here. A fixture's installed stand-ins count as
@@ -140,7 +139,7 @@ impl Picker {
 
     pub(super) fn selected_ready(&self, settings: &AppSettings) -> bool {
         transcription_models::validate(&settings.transcription)
-            .is_ok_and(|model| self.ready(model, &settings.transcription.language))
+            .is_ok_and(|model| self.ready(&model, &settings.transcription.language))
     }
 
     fn clear_deletion(&mut self) {
@@ -150,12 +149,7 @@ impl Picker {
 }
 
 pub(super) fn open(ui: &mut Ui) {
-    super::explainer::close(ui);
-    super::sound_sets::close(ui);
-    super::vocabulary::close(ui);
-    super::calls::close(ui);
-    ui.open = None;
-    ui.picker.open = true;
+    ui.open_modal(Modal::Picker);
     ui.picker.clear_deletion();
     // Models already on this computer: headers only, on a worker.
     super::found::scan(ui);
@@ -323,10 +317,7 @@ pub(super) fn benchmark_detail(record: &BenchmarkRecord) -> String {
     parts.join(" · ")
 }
 
-pub(super) type PickerModel = (
-    &'static ModelDefinition,
-    Option<transcription_models::Recommendation>,
-);
+pub(super) type PickerModel = (ModelRef, Option<transcription_models::Recommendation>);
 
 /// The picker's models for `language` in `sort`'s order, only those that
 /// support it when `supported_only`. Recommended keeps the catalog's order.
@@ -376,7 +367,10 @@ fn hidden_model(
 }
 
 pub(super) fn close(ui: &mut Ui) {
-    ui.picker.open = false;
+    ui.close_modal_if(Modal::Picker);
+}
+
+pub(super) fn on_close(ui: &mut Ui) {
     ui.picker.in_use_first = None;
     ui.picker.clear_deletion();
 }
@@ -389,7 +383,7 @@ pub(super) fn cancel(ui: &mut Ui) {
 
 /// Asks for `model` with the saved language when it supports it, else with
 /// its default language, which Settings then names.
-pub(super) fn choose(ui: &mut Ui, model: &'static ModelDefinition) {
+pub(super) fn choose(ui: &mut Ui, model: &ModelDefinition) {
     ui.picker.clear_deletion();
     let current = &ui.settings.transcription;
     // A file that is here but not checked is not active yet: choosing it
@@ -435,7 +429,7 @@ pub(super) fn fallback_note(ui: &Ui) -> Option<String> {
             &[
                 (
                     "model",
-                    transcription_models::definition(fallback.model).name,
+                    &transcription_models::definition(fallback.model).name,
                 ),
                 ("previous", language_name(&fallback.from)),
                 ("language", language_name(&selection.language)),
@@ -444,28 +438,26 @@ pub(super) fn fallback_note(ui: &Ui) -> Option<String> {
     })
 }
 
-pub(super) fn delete(ui: &mut Ui, model: &'static ModelDefinition) {
+pub(super) fn delete(ui: &mut Ui, id: TranscriptionModelId) {
     ui.picker.deletion_error = None;
-    if ui.picker.deletion != Some(model.id) {
-        ui.picker.deletion = Some(model.id);
+    if ui.picker.deletion != Some(id) {
+        ui.picker.deletion = Some(id);
         return;
     }
     ui.picker.deletion = None;
     if !ui.live() {
         return;
     }
-    match transcription_models::remove_installed(model) {
+    let model = transcription_models::definition(id);
+    match transcription_models::remove_installed(&model) {
         Ok(()) => tracing::info!(model = ?model.id, "deleted transcription model"),
         Err(error) => ui.picker.deletion_error = Some(error.to_string()),
     }
 }
 
-/// The picker's scrim and panel over the window, when open: the scrim fades
+/// The picker's scrim and panel over the window: the scrim fades
 /// and the panel scales in as one surface ([`modal_transition`]).
-pub(super) fn modal(ui: &Ui, p: Paint) -> Option<[El; 2]> {
-    if !ui.picker.open {
-        return None;
-    }
+pub(super) fn modal(ui: &Ui, p: Paint) -> [El; 2] {
     let c = &p.k.c;
     let language = ui.settings.transcription.language.clone();
     let view = ui.picker.view;
@@ -611,7 +603,7 @@ pub(super) fn modal(ui: &Ui, p: Paint) -> Option<[El; 2]> {
             .w_full()
             .h_full()
     };
-    Some([
+    [
         layer("picker-scrim")
             .fill(c.scrim)
             .on_press(close)
@@ -622,7 +614,7 @@ pub(super) fn modal(ui: &Ui, p: Paint) -> Option<[El; 2]> {
             // Keys stay inside, Escape or a press outside closes, and focus
             // returns to the control that opened it.
             .child(panel.modal(true, close)),
-    ])
+    ]
 }
 
 /// `model`'s preparation label and progress while the service prepares it.
@@ -645,7 +637,7 @@ pub(super) fn preparation(ui: &Ui, model: &ModelDefinition) -> Option<(String, O
             });
             (
                 tr_fill("Downloading {}%", &format!("{:.0}", fraction * 100.0)),
-                matches!(model.runtime, ModelRuntime::Gguf(_)).then_some(fraction),
+                model.runtime.is_gguf().then_some(fraction),
             )
         }
     })
@@ -757,20 +749,20 @@ fn hidden_note(ui: &Ui, p: Paint, shown: &[PickerModel], language: &str) -> Opti
     let selected = transcription_models::definition(ui.settings.transcription.model);
     let active = transcription_selection_is_active(
         &ui.settings.transcription,
-        selected,
+        &selected,
         ui.picker
-            .installed(selected, selected.language_for(language)),
+            .installed(&selected, selected.language_for(language)),
     )
     .then_some(selected.id);
     let (id, is_preparing) = hidden_model(shown, preparing, active)?;
     let model = transcription_models::definition(id);
     let state = if is_preparing {
-        preparation(ui, model)?.0
+        preparation(ui, &model)?.0
     } else {
         tr("Active").to_owned()
     };
-    let names = [("model", model.name), ("state", state.as_str())];
-    let copy = if downloaded_filter(ui) && !is_downloaded(ui, model, language) {
+    let names = [("model", model.name.as_ref()), ("state", state.as_str())];
+    let copy = if downloaded_filter(ui) && !is_downloaded(ui, &model, language) {
         tr_named(
             "{model} is hidden by the downloaded filter: {state}",
             &names,
@@ -815,7 +807,7 @@ pub(super) fn parakeet_ultra_fixture(ui: &mut Ui) {
         model: TranscriptionModelId::ParakeetV3,
         language: "mt".into(),
     };
-    ui.picker.open = true;
+    ui.open_modal(Modal::Picker);
     ui.picker.view = View::All;
     ui.picker.sort = Sort::Name;
     ui.picker.supported_only = true;
@@ -826,7 +818,7 @@ pub(super) fn parakeet_ultra_fixture(ui: &mut Ui) {
 /// The picker open with English and Parakeet saved; `downloading` shows a
 /// model mid-download.
 pub(super) fn fixture(ui: &mut Ui, downloading: Option<TranscriptionModelId>) {
-    ui.picker.open = true;
+    ui.open_modal(Modal::Picker);
     if let (Some(model), Some(view)) = (downloading, ui.view.as_mut()) {
         let bytes = transcription_models::definition(model)
             .download_bytes()
@@ -867,8 +859,10 @@ mod tests {
         let selection = TranscriptionSelection::default();
         let model = transcription_models::definition(selection.model);
 
-        assert!(!transcription_selection_is_active(&selection, model, false));
-        assert!(transcription_selection_is_active(&selection, model, true));
+        assert!(!transcription_selection_is_active(
+            &selection, &model, false
+        ));
+        assert!(transcription_selection_is_active(&selection, &model, true));
     }
 
     fn ids(models: &[PickerModel]) -> Vec<TranscriptionModelId> {
@@ -939,7 +933,7 @@ mod tests {
     #[test]
     fn benchmark_details_show_raw_rates_and_mark_unknowns() {
         let qwen = transcription_models::definition(TranscriptionModelId::Qwen3Asr06B);
-        let record = transcription_models::benchmark(qwen).unwrap();
+        let record = transcription_models::benchmark(&qwen).unwrap();
         assert_eq!(benchmark_rate(&record), "7.57% CER · lower is better");
         let detail = benchmark_detail(&record);
         for part in [
@@ -955,7 +949,7 @@ mod tests {
             assert!(detail.contains(part), "{detail:?} lacks {part:?}");
         }
         let parakeet = transcription_models::definition(TranscriptionModelId::ParakeetV2);
-        let detail = benchmark_detail(&transcription_models::benchmark(parakeet).unwrap());
+        let detail = benchmark_detail(&transcription_models::benchmark(&parakeet).unwrap());
         for part in [
             "English",
             "Dataset unknown",
@@ -965,18 +959,18 @@ mod tests {
             assert!(detail.contains(part), "{detail:?} lacks {part:?}");
         }
         let apple = transcription_models::definition(TranscriptionModelId::AppleSpeech);
-        assert!(transcription_models::benchmark(apple).is_none());
+        assert!(transcription_models::benchmark(&apple).is_none());
     }
 
     #[test]
     fn most_accurate_needs_comparable_figures_only_with_benchmark_details() {
         let cohere = transcription_models::definition(TranscriptionModelId::CohereTranscribe);
         let badge = Some(Recommendation::MostAccurate);
-        assert_eq!(shown_recommendation(badge, cohere, "en", false), badge);
-        assert_eq!(shown_recommendation(badge, cohere, "en", true), None);
+        assert_eq!(shown_recommendation(badge, &cohere, "en", false), badge);
+        assert_eq!(shown_recommendation(badge, &cohere, "en", true), None);
         let recommended = Some(Recommendation::Recommended);
         assert_eq!(
-            shown_recommendation(recommended, cohere, "el", true),
+            shown_recommendation(recommended, &cohere, "el", true),
             recommended
         );
     }

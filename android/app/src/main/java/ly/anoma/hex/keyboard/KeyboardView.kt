@@ -47,12 +47,15 @@ internal class KeyboardView(context: Context, private val ime: HexKeyboard) : Li
 
     override fun showPage(page: KeyboardPage) {
         keys.showPage(page)
+        resizeMenu()
         // What TalkBack names the keyboard as it appears, as Gboard's "English (US) (QWERTY)".
         val title = context.getString(R.string.keyboard_pane, page.language.label)
         if (accessibilityPaneTitle != title) accessibilityPaneTitle = title
     }
     override fun suggestions(slots: List<Suggestion>) = strip.suggestions(slots)
     override fun undoDictation(shown: Boolean) = strip.undo(shown)
+    override fun toolsChanged() = strip.update()
+    fun notice(notice: StripNotice?) = strip.notice(notice)
 
     /** Emoji in place of the strip and the keys, the window's height unchanged (Gboard's panel
      * replaces its toolbar too); ABC brings both back. */
@@ -65,9 +68,17 @@ internal class KeyboardView(context: Context, private val ime: HexKeyboard) : Li
         if (!keys.emojiOpen) return
         keys.closeEmoji(); strip.visibility = VISIBLE; strip.update()
     }
+    /** The menu takes the keys' height for the page, the number row included: opening it never resizes. */
+    private fun resizeMenu() {
+        val params = menu.layoutParams ?: return
+        if (params.height == keys.menuHeight) return
+        params.height = keys.menuHeight
+        menu.layoutParams = params
+    }
     fun openMenu() {
         if (strip.recording) return
         closeEmoji()
+        resizeMenu()
         keys.visibility = GONE; menu.visibility = VISIBLE
         strip.choosing = true; strip.menuOpened(); menu.home(); strip.update()
     }
@@ -95,12 +106,13 @@ internal class KeyboardView(context: Context, private val ime: HexKeyboard) : Li
             find(keys)?.performAccessibilityAction(AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS, null)
         }
     }
-    fun status(phase: SpeechPhase, hint: String) {
+    /** [note]: [hint] is a dictation's note, not the idle hint. */
+    fun status(phase: SpeechPhase, hint: String, note: Boolean = false) {
         cue(this.phase, phase); this.phase = phase
         val idle = phase == SpeechPhase.Idle
         strip.prepare(phase, hint)
         if (!idle) { heldAt = null; closeMenu() }
-        strip.status(phase, hint, menu.visibility == VISIBLE)
+        strip.status(phase, hint, menu.visibility == VISIBLE, note)
         // Keep the snapshotted paste language visible until this dictation has finished.
         if (idle) keys.refreshSpace()
         strip.update()

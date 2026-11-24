@@ -32,6 +32,7 @@ mod strings;
 mod style;
 mod text_language;
 mod traditional_chinese;
+mod transcript_edits;
 mod voice_isolation;
 
 pub(crate) use clock::{clock_time, twelve_hour_clock};
@@ -328,7 +329,7 @@ pub(crate) fn tr(english: &str) -> &str {
 
 /// Whether the interface is in English, for labels whose English form
 /// differs from the translated key (macOS menus' title case).
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn english() -> bool {
     current() == ENGLISH
 }
@@ -610,6 +611,7 @@ mod tests {
         include_str!("../rune_ui/macos_host.rs"),
         include_str!("../rune_ui/meeting_capsules.rs"),
         include_str!("../rune_ui/meetings.rs"),
+        include_str!("../rune_ui/meetings/selection.rs"),
         include_str!("../rune_ui/models.rs"),
         include_str!("../rune_ui/found.rs"),
         include_str!("../rune_ui/found_choice.rs"),
@@ -676,6 +678,7 @@ mod tests {
         include_str!("../rune_ui/vocabulary.rs"),
         include_str!("../rune_ui/windows_host.rs"),
         include_str!("tray_menu.rs"),
+        include_str!("../updater/presentation.rs"),
         include_str!("../calendar_menu.rs"),
         include_str!("../macos_rune/status_item.rs"),
         include_str!("../rune_ui/history/unified.rs"),

@@ -22,12 +22,32 @@ internal class TypingPreferences(context: Context) {
     var spatial: Boolean
         get() = prefs.getBoolean("spatial", true)
         set(value) { prefs.edit().putBoolean("spatial", value).apply() }
+    /** Keyboard › Swipe typing: slide through a word's letters to type it. On by default, as on iPhone and Gboard. */
+    var swipe: Boolean
+        get() = prefs.getBoolean("swipe", true)
+        set(value) { prefs.edit().putBoolean("swipe", value).apply() }
     var popups: Boolean
         get() = prefs.getBoolean("popups", true)
         set(value) { prefs.edit().putBoolean("popups", value).apply() }
     var haptics: Boolean
         get() = prefs.getBoolean("haptics", true)
         set(value) { prefs.edit().putBoolean("haptics", value).apply() }
+    /** Labs › Keyboard › Symbols on letter keys: a held second or third row key offers its symbol first. */
+    var letterSymbols: Boolean
+        get() = prefs.getBoolean("letterSymbols", false)
+        set(value) { prefs.edit().putBoolean("letterSymbols", value).apply() }
+    /** Labs › Keyboard › Number row: the digits above the letters. Off by default. */
+    var numberRow: Boolean
+        get() = prefs.getBoolean(NUMBER_ROW, false)
+        set(value) { prefs.edit().putBoolean(NUMBER_ROW, value).apply() }
+    /** Labs › Keyboard › Emoji suggestions: the word being typed's emoji in the strip, off by default. */
+    var emojiSuggestions: Boolean
+        get() = prefs.getBoolean(EMOJI_SUGGESTIONS, false)
+        set(value) { prefs.edit().putBoolean(EMOJI_SUGGESTIONS, value).apply() }
+    /** Labs › Keyboard › Keyboard tools: emoji, paste, settings and undo in the strip, off by default. */
+    var keyboardTools: Boolean
+        get() = prefs.getBoolean(KEYBOARD_TOOLS, false)
+        set(value) { prefs.edit().putBoolean(KEYBOARD_TOOLS, value).apply() }
 
     // Remember only explicit rejection of this exact pair in this language; never save typed text.
     private fun pair(language: String, original: String, replacement: String): String {
@@ -40,5 +60,10 @@ internal class TypingPreferences(context: Context) {
         val key = pair(language, original, replacement)
         prefs.edit().putInt(key, (prefs.getInt(key, 0) + 1).coerceAtMost(2)).apply()
     }
-    companion object { const val SUGGEST_SWEAR_WORDS = "suggestSwearWords" }
+    companion object {
+        const val SUGGEST_SWEAR_WORDS = "suggestSwearWords"
+        const val NUMBER_ROW = "numberRow"
+        const val EMOJI_SUGGESTIONS = "emojiSuggestions"
+        const val KEYBOARD_TOOLS = "keyboardTools"
+    }
 }

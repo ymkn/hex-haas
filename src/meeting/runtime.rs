@@ -193,6 +193,10 @@ fn follow(event: &ControllerEvent, window: &rune::AppHandle<Ui>) {
             tracing::info!(id = %manifest.id, "meeting transcript ready");
             *state = MeetingMenuState::Idle;
         }
+        ControllerEvent::Discarded(id) => {
+            tracing::info!(%id, "meeting had no speech; moved to the Trash");
+            *state = MeetingMenuState::Idle;
+        }
         ControllerEvent::Failed { title, error } => {
             tracing::error!(%title, %error, "meeting failed");
             *state = MeetingMenuState::Idle;
@@ -212,8 +216,21 @@ fn follow(event: &ControllerEvent, window: &rune::AppHandle<Ui>) {
             });
             window.open();
         }
-        ControllerEvent::CallEnded { app, .. } => {
-            tracing::info!(%app, "the call ended; the recording continues until Stop");
+        ControllerEvent::TranscriptEditFailed { error } => {
+            tracing::error!(%error, "could not delete meeting transcript lines");
+            let message = error.clone();
+            window.update(move |ui, _| crate::rune_ui::meeting_edit_failed(ui, message));
+        }
+        ControllerEvent::CallEnded { app, auto_stop } => {
+            if *auto_stop {
+                tracing::info!(
+                    %app,
+                    "the call ended; the recording stops in {} s unless kept",
+                    crate::meeting::detection::AUTO_STOP_GRACE.as_secs()
+                );
+            } else {
+                tracing::info!(%app, "the call ended; the recording continues until Stop");
+            }
         }
         ControllerEvent::Offer(..)
         | ControllerEvent::OfferWithdrawn(_)

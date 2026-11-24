@@ -419,16 +419,15 @@ fn use_model(
 ) -> Result<ControlReply, ControlError> {
     let selection = super::model_selection(&load()?, model, language)?;
     let definition = crate::transcription::models::definition(selection.model);
-    let installed = crate::transcription::models::is_installed(definition, &selection.language);
-    let ready = crate::transcription::models::is_ready(definition, &selection.language);
+    let status = crate::transcription::readiness::readiness(&definition, &selection.language);
     let state = host.state()?;
-    if same_model(&state.settings.transcription, &selection) && ready {
+    if same_model(&state.settings.transcription, &selection) && status.ready {
         return Ok(ControlReply::unchanged(format!(
             "{} ({}) is already in use",
             definition.name, selection.language
         )));
     }
-    if !installed && !install {
+    if !status.installed && !install {
         return Err(ControlError::new(
             "not-installed",
             format!(
@@ -440,7 +439,7 @@ fn use_model(
         ));
     }
     host.choose_model(selection.clone())?;
-    if !installed {
+    if !status.installed {
         return Ok(ControlReply::done(format!(
             "Downloading {} ({}); Hex switches to it once it's ready. \
              `hex status` shows progress, `hex model cancel` stops it",
@@ -459,7 +458,9 @@ fn wait_for_model(
     host: &dyn Host,
     selection: &TranscriptionSelection,
 ) -> Result<ControlReply, ControlError> {
-    let name = crate::transcription::models::definition(selection.model).name;
+    let name = crate::transcription::models::definition(selection.model)
+        .name
+        .to_string();
     // What the listener runs: the saved selection, or a lost import's fallback.
     let matches = |settings: &crate::app_settings::AppSettings| {
         same_model(&settings.transcription, selection)
@@ -470,7 +471,7 @@ fn wait_for_model(
     };
     let ready = || {
         crate::transcription::models::validate(selection)
-            .is_ok_and(|model| crate::transcription::models::is_ready(model, &selection.language))
+            .is_ok_and(|model| crate::transcription::models::is_ready(&model, &selection.language))
     };
     let started = Instant::now();
     let mut seen_preparing = false;
