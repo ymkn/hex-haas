@@ -507,11 +507,9 @@ impl LocalTranscriber {
     ) -> Result<Self> {
         #[cfg(target_os = "windows")]
         if selection.model == crate::transcription::models::TranscriptionModelId::HaasJaV1 {
+            check_canceled(canceled)?;
             let definition = validate(selection)?;
-            let path = crate::transcription::models::verify_installed(
-                &definition,
-                &AtomicBool::new(false),
-            )?;
+            let path = crate::transcription::models::verify_installed(&definition, canceled)?;
             let mut worker = speech_cpp::SpeechCpp::load(&path)?;
             // Prewarm before publishing the new selection to the listener.
             worker.transcribe(&vec![0.0; 24_000])?;
@@ -536,6 +534,7 @@ impl LocalTranscriber {
             });
         }
         if selection.model == crate::transcription::models::TranscriptionModelId::CloudApi {
+            check_canceled(canceled)?;
             // This fork's cloud backend: nothing to verify or warm; the
             // endpoint in Settings is all it needs. Failing here with a
             // clear message beats a first transcription failing later.

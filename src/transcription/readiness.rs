@@ -7,8 +7,8 @@ use std::borrow::Cow;
 
 use super::found_models;
 use super::models::{
-    ModelDefinition, TranscriptionModelId, VocabularyUse, all_models, is_installed, is_verified,
-    model_path,
+    ModelDefinition, ModelRuntime, TranscriptionModelId, VocabularyUse, all_models, is_installed,
+    is_verified, model_path,
 };
 
 /// One readiness snapshot for a speech model: whether its files are here,
@@ -113,7 +113,10 @@ pub fn catalog_models(language: &str) -> Vec<CatalogModelInfo> {
         .filter(|model| model.available())
         .map(|model| {
             let status = readiness(&model, language);
-            let managed = !model.runtime.is_gguf();
+            // Managed means the system keeps the model (Apple Speech);
+            // this fork's Cloud API is an endpoint the user configures,
+            // so it is not managed even though it has no GGUF file.
+            let managed = matches!(model.runtime, ModelRuntime::AppleSpeech);
             CatalogModelInfo {
                 id: model.id,
                 id_str: model.id.as_str().to_string(),
