@@ -580,7 +580,7 @@ impl MeetingSource {
             Self::Banshee => "Banshee",
             Self::Zoom => "Zoom",
             Self::Teams => "Microsoft Teams",
-            Self::SlackHuddle => "Slack Huddle",
+            Self::SlackHuddle => "Slack huddle",
             Self::FaceTime => "FaceTime",
             Self::WhatsApp => "WhatsApp",
             Self::Gather => "Gather",
@@ -3348,9 +3348,8 @@ mod tests {
         let first = watch.detector.open_offer().unwrap();
         assert!(watch.detector.take_withdrawn_offers().is_empty());
 
-        // Minting two OfferIds at the exact same Instant produces distinct IDs.
-        let now = watch.now();
-        assert_ne!(OfferId::at(now), OfferId::at(now));
+        // Consecutive OfferIds are distinct.
+        assert_ne!(OfferId::next(), OfferId::next());
 
         assert_eq!(watch.stable(&zoom, &[]), Some(Detection::Offer(zoom)));
         let second = watch.detector.open_offer().unwrap();
