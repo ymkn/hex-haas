@@ -40,6 +40,9 @@ pub(crate) enum ControllerCommand {
     /// offered again once its app releases and retakes the microphone.
     OfferTimedOut(OfferId),
     Stop,
+    /// Discard from the recording capsule's ✕: stop capture, skip the final
+    /// transcript, and move the recording to the Trash.
+    Discard,
     /// Import a local audio file as a meeting (macOS; Labs › Import audio).
     Import(PathBuf),
     /// Delete selected lines from a saved meeting's transcript
@@ -48,6 +51,9 @@ pub(crate) enum ControllerCommand {
         id: String,
         entries: Vec<meeting::TranscriptEntryKey>,
     },
+    /// Leave Hex's microphone out of the recording under way, or put it
+    /// back (Labs › Mute the microphone while recording, macOS).
+    SetMicrophoneMuted(bool),
     Summarize(String),
     /// Record a calendar meeting from its reminder, first opening its call
     /// link when `join`.
@@ -159,8 +165,14 @@ struct ActiveRecording {
     /// call app present, so the absence one is dropped every pass.
     call_stop: AutoStop,
     stop: Arc<AtomicBool>,
+    /// Set with `stop` by Discard: the worker skips its final pass and the
+    /// controller trashes what it recorded.
+    discard: Arc<AtomicBool>,
     updates: Receiver<meeting::RecordingUpdate>,
     reported_started: bool,
+    /// A browser's playback stopped counting while the Mac was locked, and
+    /// that was logged once for this recording (#2685); cleared on unlock.
+    playback_locked_noted: bool,
     worker: JoinHandle<Result<meeting::MeetingManifest>>,
 }
 
@@ -184,7 +196,11 @@ fn flush_withdrawn_offers(detector: &mut MeetingDetector, events: &SyncSender<Co
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MeetingMenuState {
     Idle,
-    Starting,
+    Starting {
+        /// Stop was requested while the recorder was still starting: it
+        /// finishes that meeting before it takes another.
+        stopping: bool,
+    },
     Recording {
         started: Instant,
         id: String,
@@ -194,6 +210,10 @@ pub enum MeetingMenuState {
         /// The microphone is digitally silent, as a call app holding it with
         /// voice processing leaves it (#1518).
         warning: Option<TrackWarning>,
+        /// Stop was requested and the capture worker is still closing its
+        /// sources. The recorder holds this recording until it finishes
+        /// transcribing, so nothing new can start yet.
+        stopping: bool,
     },
     Transcribing,
 }
@@ -203,6 +223,17 @@ impl MeetingMenuState {
     pub(crate) fn source_warning(&mut self, warning: Option<TrackWarning>) {
         if let Self::Recording { warning: shown, .. } = self {
             *shown = warning;
+        }
+    }
+
+    /// A stop was requested for what the recorder is doing now. It finishes
+    /// that meeting before it takes another, so nothing new starts until the
+    /// mirror reads `transcribing` or `idle`. Idle has nothing to stop, and
+    /// a transcribing meeting is already past capture.
+    pub(crate) fn stopping_requested(&mut self) {
+        match self {
+            Self::Starting { stopping } | Self::Recording { stopping, .. } => *stopping = true,
+            Self::Idle | Self::Transcribing => {}
         }
     }
 }
@@ -231,6 +262,11 @@ pub(crate) fn controller_loop(
 
     while !shutdown.load(Ordering::Relaxed) {
         let enabled = crate::app_settings::meetings_enabled();
+        // Labs › Mute the microphone while recording off: clear the switch on
+        // the first pass that sees it, so turning the lab back on in the same
+        // recording does not silently mute it again. The sink reads the same
+        // gate with each packet, so audio is already back by then.
+        crate::meeting::capture::reconcile_microphone_mute(crate::labs::meeting_microphone_mute());
         poll_import(&mut importing, &events);
         let requested_commands = meeting_requests
             .try_iter()
@@ -244,6 +280,9 @@ pub(crate) fn controller_loop(
                 MeetingRequest::Import(path) => ControllerCommand::Import(path),
                 MeetingRequest::DeleteTranscript { id, entries } => {
                     ControllerCommand::DeleteTranscript { id, entries }
+                }
+                MeetingRequest::SetMicrophoneMuted(muted) => {
+                    ControllerCommand::SetMicrophoneMuted(muted)
                 }
             });
         for command in commands.try_iter().take(8).chain(requested_commands) {
@@ -486,6 +525,11 @@ fn handle_command(
                 active.end(detector, events);
             }
         }
+        ControllerCommand::Discard => {
+            if let Some(active) = recording.as_ref() {
+                active.throw_away(detector, events);
+            }
+        }
         ControllerCommand::KeepRecording => {
             if let Some(active) = recording.as_mut() {
                 let changed = active.call_switch.changed();
@@ -497,6 +541,17 @@ fn handle_command(
                 if active.auto_stop.disarm() || changed || page_stop {
                     tracing::info!("kept recording after the call ended");
                 }
+            }
+        }
+        // Labs › Mute the microphone while recording: it acts on the recording
+        // under way, and only while the lab is on.
+        ControllerCommand::SetMicrophoneMuted(muted) => {
+            if crate::meeting::capture::request_microphone_mute(
+                recording.is_some(),
+                crate::labs::meeting_microphone_mute(),
+                muted,
+            ) {
+                tracing::info!(muted, "meeting microphone mute set");
             }
         }
         ControllerCommand::Summarize(id) => start_notes(id, events),
@@ -817,8 +872,9 @@ fn start_recording(
     events: &SyncSender<ControllerEvent>,
 ) {
     // `Starting` closes a showing reminder; no reminder shows over a
-    // recording.
+    // recording. Every recording begins with the microphone in.
     reminders.scheduler.clear();
+    crate::meeting::capture::set_microphone_muted(false);
     if automatic {
         tracing::info!(
             source = start.app_label,
@@ -828,6 +884,8 @@ fn start_recording(
     }
     let stop = Arc::new(AtomicBool::new(false));
     let worker_stop = stop.clone();
+    let discard = Arc::new(AtomicBool::new(false));
+    let worker_discard = discard.clone();
     // Stop can send six updates before the controller next drains them.
     let (update_sender, updates) = mpsc::sync_channel(16);
     // A recording started by hand watches the call app it found on the
@@ -838,8 +896,14 @@ fn start_recording(
     };
     let call_switch = CallSwitch::with_kept(start.call, start.switched_from);
     let meeting_start = start.meeting;
-    let worker =
-        thread::spawn(move || meeting::record(meeting_start, &worker_stop, Some(update_sender)));
+    let worker = thread::spawn(move || {
+        meeting::record(
+            meeting_start,
+            &worker_stop,
+            Some(&worker_discard),
+            Some(update_sender),
+        )
+    });
     let _ = events.send(ControllerEvent::Starting(offer));
     *recording = Some(ActiveRecording {
         title: start.title,
@@ -852,8 +916,10 @@ fn start_recording(
         call_switch,
         call_stop: AutoStop::default(),
         stop,
+        discard,
         updates,
         reported_started: false,
+        playback_locked_noted: false,
         worker,
     });
 }
@@ -903,11 +969,16 @@ fn poll_recording(
         let active = recording
             .take()
             .ok_or_else(|| eyre!("recording disappeared"))?;
+        // Labs › Mute the microphone while recording ends with its recording.
+        crate::meeting::capture::set_microphone_muted(false);
         match active
             .worker
             .join()
             .unwrap_or_else(|_| Err(eyre!("meeting recorder panicked")))
         {
+            Ok(manifest) if active.discard.load(Ordering::Relaxed) => {
+                publication::discarded(manifest, events);
+            }
             Ok(manifest) => publication::finished(manifest, events),
             Err(error) => {
                 let _ = events.send(ControllerEvent::Failed {
@@ -948,8 +1019,31 @@ fn poll_recording(
             crate::app_settings::meeting_stop_when_call_ends(),
             crate::labs::stop_any_call_recording(),
         );
+        // A browser seems to keep its output open after its call while the
+        // Mac is locked (#2685): playback stops counting there, and one note
+        // per recording says so, so the next report shows whether that is
+        // what happened.
+        let locked = crate::audio::system_idle::session_locked();
+        if !locked {
+            active.playback_locked_noted = false;
+        } else if auto_stop
+            && !active.playback_locked_noted
+            && crate::microphone_activity::is_browser_id(Some(application))
+        {
+            active.playback_locked_noted = true;
+            tracing::info!(
+                application,
+                "the Mac is locked; the browser's playback no longer keeps its call present"
+            );
+        }
         let applications = active_microphone_applications();
-        let pass = call_end::watched_pass(application, auto_stop, &applications, call_app_playing);
+        let pass = call_end::watched_pass(
+            application,
+            locked,
+            auto_stop,
+            &applications,
+            call_app_playing,
+        );
         if pass.present {
             detector.keep_snooze_alive();
         }
@@ -1526,8 +1620,10 @@ mod tests {
             call_switch: CallSwitch::new(None),
             call_stop: AutoStop::default(),
             stop: Arc::new(AtomicBool::new(false)),
+            discard: Arc::new(AtomicBool::new(false)),
             updates,
             reported_started: true,
+            playback_locked_noted: false,
             worker: thread::spawn(|| Err(eyre!("not recording"))),
         });
         if let Some(active) = recording.as_mut() {
@@ -1566,8 +1662,10 @@ mod tests {
             call_switch: CallSwitch::new(call.map(str::to_string)),
             call_stop: AutoStop::default(),
             stop: Arc::new(AtomicBool::new(false)),
+            discard: Arc::new(AtomicBool::new(false)),
             updates,
             reported_started: true,
+            playback_locked_noted: false,
             worker: thread::spawn(|| Err(eyre!("not recording"))),
         }
     }
@@ -1968,8 +2066,10 @@ mod tests {
             call_switch: CallSwitch::new(None),
             call_stop: AutoStop::default(),
             stop: Arc::new(AtomicBool::new(false)),
+            discard: Arc::new(AtomicBool::new(false)),
             updates,
             reported_started: true,
+            playback_locked_noted: false,
             worker: thread::spawn(|| Err(eyre!("not recording"))),
         });
         start_import(

@@ -135,14 +135,6 @@ impl Pane {
     }
 }
 
-pub(in crate::rune_ui) fn destination(ui: &mut Ui, pane: Destination) -> Destination {
-    if ui.history.unified.enabled && pane == Destination::Captures {
-        filter(ui, Filter::Captures);
-        Destination::History
-    } else {
-        pane
-    }
-}
 pub(in crate::rune_ui) fn poll(ui: &mut Ui) -> bool {
     if !ui.history.unified.enabled
         || ui.pane != Destination::History
@@ -515,7 +507,7 @@ fn entry_kind_label(entry: &Listed) -> &'static str {
     }
 }
 
-pub(super) fn view(ui: &Ui, p: Paint, cx: &mut Cx<Ui>, layer: &mut Vec<El>) -> (Vec<El>, El) {
+pub(super) fn view(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> (Vec<El>, El) {
     // With no captures to mix in, the filter would list one kind.
     let mut actions = Vec::new();
     if ui.settings.capture.enabled || ui.settings.labs.screenshots {
@@ -628,9 +620,6 @@ pub(super) fn view(ui: &Ui, p: Paint, cx: &mut Cx<Ui>, layer: &mut Vec<El>) -> (
     } else {
         ld::body(p, "history-body", column, detail)
     };
-    if let Some(modal) = super::stats::modal(ui, p, cx) {
-        layer.extend(modal);
-    }
     let mut pane = col().key("history-pane").grow(1.).shrink();
     if let Some(error) = &ui.history.error {
         pane = pane.child(error_panel(

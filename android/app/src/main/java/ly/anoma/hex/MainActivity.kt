@@ -55,6 +55,8 @@ class MainActivity : ComponentActivity() {
         /** The keyboard's Settings tool opens Hex on this page, not Home: [PAGE_KEYBOARD] names it. */
         const val EXTRA_PAGE = "ly.anoma.hex.extra.page"
         const val PAGE_KEYBOARD = "keyboard"
+        /** The keyboard's "Speed test done" line opens Labs › Diagnostics. */
+        const val PAGE_DIAGNOSTICS = "diagnostics"
     }
     private val prefs by lazy { getSharedPreferences("setup", MODE_PRIVATE) }
     private val imm by lazy { getSystemService(InputMethodManager::class.java) }
@@ -76,9 +78,10 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        capture = MicCapture(LocalSpeech(applicationContext),
-            update = { next, reason -> phase = next; notice = speechNote(reason) },
-            meter = {}, insert = { text, _ -> transcript = text })
+        capture = MicCapture(LocalSpeech(applicationContext), DictationPlace.Home,
+            // Home's Dictate bar too: onStop cancels, so the screen mustn't sleep mid-dictation.
+            update = { next, reason -> phase = next; notice = speechNote(reason); window.keepAwake(next) },
+            meter = {}, insert = { text, _, _ -> transcript = text })
         page = prefs.getInt("page", 0).coerceIn(0, 3)
         // The keyboard's Settings tool opens Hex on its Keyboard page for the launch that carried the extra.
         // The task keeps its base intent, so a Recents relaunch still carries it: a restored or history
@@ -89,22 +92,28 @@ class MainActivity : ComponentActivity() {
         // Debug builds only: am start --ez feedback_drop_first_response true loses Send feedback's first answer, to
         // show that the retry, with the same Idempotency-Key, gets the same issue back.
         if (BuildConfig.DEBUG) ly.anoma.hex.feedback.Feedback.dropFirstResponse = intent.getBooleanExtra("feedback_drop_first_response", false)
+        // Debug builds only: am start --es cpu_capacity 300,300,1024,1024 (right after a force-stop, before any dictation)
+        // rates the cores as given, so an emulator, which the kernel doesn't rate, keeps dictation's threads pinned.
+        if (BuildConfig.DEBUG) intent.getStringExtra("cpu_capacity")?.let { given ->
+            SpeechModel.capacityOverride = given.split(',').map { it.trim().toIntOrNull() }
+        }
         for (name in listOf(Settings.Secure.DEFAULT_INPUT_METHOD, Settings.Secure.ENABLED_INPUT_METHODS))
             contentResolver.registerContentObserver(Settings.Secure.getUriFor(name), false, changed)
         refresh()
-        ModelStore.refresh(this)
+        ModelStore.small.refresh(this)
+        ModelStore.english.refresh(this)
         setContent {
             HexTheme {
                 BackHandler(page in 1..2) { go(page - 1) }
-                val model = ModelStore.state.collectAsState().value
-                if (page == 3) HexSettings(setup, speech, typing, model, { ModelStore.download(this) },
+                val model = ModelStore.small.state.collectAsState().value
+                if (page == 3) HexSettings(setup, speech, typing, model, ::modelRowAction,
                     phase, transcript, notice, ::dictate, capture::cancel, { transcript = "" }, { go(it) },
                     { startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS)) },
                     startPage = startPage)
                 else SetupScreen(page, setup, ::go, ::askForMic,
                     enable = { enabling = true; startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS)) },
                     choose = { imm.showInputMethodPicker() }, model = model,
-                    download = { ModelStore.download(this) })
+                    download = { ModelStore.small.download(this) }, rowAction = ::modelRowAction)
             }
         }
     }
@@ -117,6 +126,11 @@ class MainActivity : ComponentActivity() {
             SpeechPhase.Opening, SpeechPhase.Listening -> capture.finish()
             SpeechPhase.Transcribing -> Unit
         }
+    }
+    /** The speech model row's action: Download or Try again, or, while it waits for Wi-Fi, the download on mobile data. */
+    private fun modelRowAction() {
+        if (ModelStore.small.state.value == ModelStore.State.WaitingForWifi) ModelStore.small.useMobileData(this)
+        else ModelStore.small.download(this)
     }
     private fun go(next: Int) {
         if (page == 3 && next != 3) { capture.cancel(); transcript = "" }
@@ -157,7 +171,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun HexTheme(content: @Composable () -> Unit) {
+internal fun HexTheme(content: @Composable () -> Unit) {
     val ink = colorResource(R.color.ink)
     val page = colorResource(R.color.page)
     val scheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()
@@ -168,7 +182,8 @@ private fun HexTheme(content: @Composable () -> Unit) {
 
 @Composable
 private fun SetupScreen(page: Int, setup: Setup, go: (Int) -> Unit, ask: () -> Unit,
-                        enable: () -> Unit, choose: () -> Unit, model: ModelStore.State, download: () -> Unit) {
+                        enable: () -> Unit, choose: () -> Unit, model: ModelStore.State, download: () -> Unit,
+                        rowAction: () -> Unit) {
     val colors = MaterialTheme.colorScheme
     var text by remember(page) { mutableStateOf("") }
     val keyboard = LocalSoftwareKeyboardController.current
@@ -217,7 +232,7 @@ private fun SetupScreen(page: Int, setup: Setup, go: (Int) -> Unit, ask: () -> U
                                 }), setup.chosen, stringResource(if (setup.enabled) R.string.setup_choose else R.string.setup_enable),
                                     if (setup.enabled) choose else enable)
                                 HorizontalDivider(color = colors.outline)
-                                ModelRow(model, download)
+                                ModelRow(model, rowAction)
                             }
                         }
                         2 -> {
@@ -314,10 +329,12 @@ private fun SetupRow(title: String, note: String, ready: Boolean, action: String
         ModelStore.Problem.Server -> R.string.model_stopped
     })
     is ModelStore.State.Loading -> stringResource(R.string.model_loading, state.percent)
+    ModelStore.State.WaitingForWifi -> stringResource(R.string.model_waiting_wifi)
 }
 internal fun modelAction(state: ModelStore.State) = when (state) {
     ModelStore.State.Available -> R.string.model_download
     is ModelStore.State.Retry -> R.string.model_try_again
+    ModelStore.State.WaitingForWifi -> R.string.model_use_mobile_data
     else -> null
 }
 
