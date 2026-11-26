@@ -8,28 +8,40 @@
     <string name="back">Back</string>
 
     <!-- Setup -->
-    <string name="setup_step">Step %1$d of %2$d</string>
     <string name="setup_on_device" formatted="false">100% on device</string>
     <string name="setup_welcome_title">Talk instead of type,\nin any app.</string>
-    <string name="setup_welcome_detail">Hex uses the internet only to download its speech model (190 MB, plus any you add in Labs) and, when you tap Send, to send the feedback you write. Your voice and words stay on this device.</string>
-    <string name="setup_get_started">Get started</string>
-    <string name="setup_title">Set up Hex</string>
-    <string name="setup_detail">Allow the microphone, then choose Hex as your keyboard.</string>
     <string name="setup_microphone">Microphone</string>
-    <string name="setup_microphone_detail">So Hex can hear you</string>
-    <string name="setup_allow">Allow</string>
-    <string name="setup_settings">Settings</string>
+    <string name="setup_microphone_note">Only while you hold the Hex key</string>
+    <string name="setup_microphone_blocked">In Settings: Permissions › Microphone</string>
     <string name="setup_keyboard">Hex keyboard</string>
     <string name="setup_keyboard_chosen">Current keyboard</string>
     <string name="setup_keyboard_enabled">Choose Hex in the list</string>
-    <string name="setup_keyboard_off">Turn on Hex in Settings</string>
-    <string name="setup_enable">Turn on</string>
-    <string name="setup_choose">Choose</string>
+    <string name="setup_keyboard_off">Turn it on in Android’s list, then come back</string>
+    <string name="setup_keyboard_warning">Android warns about every keyboard you turn on. Hex keeps what you type on this phone.</string>
+    <string name="setup_model_size">190 MB, the only download Hex needs</string>
+    <string name="setup_language">Language</string>
+    <string name="setup_language_phone">%1$s, your phone’s language</string>
+    <!-- Automatic dictates in the phone's first language Hex has; the others are a hold of the space bar away. -->
+    <string name="setup_language_first">%1$s, your phone’s first language. To dictate in %2$s, hold the space bar.</string>
+    <string name="setup_language_or">%1$s or %2$s</string>
+    <!-- %2$s is the phone's first language in its own name, such as 日本語. -->
+    <string name="setup_language_unsupported">%1$s. Hex can’t dictate in %2$s yet.</string>
+    <string name="setup_settings">Settings</string>
     <string name="setup_ready">Ready</string>
-    <string name="setup_continue">Continue</string>
+    <!-- The one button: always the next step Android needs a person for. -->
+    <string name="setup_next_microphone">Allow microphone</string>
+    <string name="setup_next_settings">Open Settings</string>
+    <string name="setup_next_keyboard">Turn on keyboard</string>
+    <string name="setup_next_choose">Choose keyboard</string>
+    <string name="setup_next_try">Try it</string>
     <string name="setup_try_title">Try the keyboard</string>
     <string name="setup_try_detail">Hold the Hex key, say a few words, then let go.</string>
     <string name="setup_try_hint">Your words appear here</string>
+    <string name="setup_try_model_loading">Speech model %1$d%%. Until it’s done, Hex uses the smaller built-in one.</string>
+    <string name="setup_try_done">That’s Hex. Hold the Hex key in any app.</string>
+    <string name="setup_try_built_in">This try used the smaller built-in model.</string>
+    <string name="setup_try_built_in_loading">This try used the smaller built-in model. The full one is %1$d%% downloaded.</string>
+    <string name="setup_try_built_in_ready">This try used the smaller built-in model. The full one is ready, so try once more.</string>
     <string name="setup_choose_hex">Choose Hex keyboard</string>
     <string name="setup_skip">Skip for now</string>
     <string name="setup_done">Done</string>
@@ -50,6 +62,7 @@
 
     <!-- Home -->
     <string name="home_ready">Ready</string>
+    <string name="home_ready_downloading">Ready · speech model %1$d%%</string>
     <plurals name="home_finish_setup">
         <item quantity="one">Finish setup · %d step</item>
         <item quantity="other">Finish setup · %d steps</item>
@@ -76,6 +89,8 @@
     <string name="settings_automatic">Automatic</string>
     <string name="settings_dictation_language">Dictation language</string>
     <string name="dictation_language_automatic_detail">Follows the keyboard layout, else the phone’s language</string>
+    <!-- Between language names in a list, each in its own language: "English, Español". -->
+    <string name="language_list_separator">", "</string>
     <string name="dictation_lowercase">Lowercase</string>
     <string name="dictation_lowercase_detail">Lowercases everything</string>
     <string name="dictation_format_lists">Format lists</string>
@@ -85,7 +100,9 @@
     <string name="dictation_end_with_period">End with a period</string>
     <string name="dictation_end_with_period_detail">Off drops the final period, keeps ? and !</string>
     <string name="settings_translate">Translate what I say</string>
-    <string name="settings_translate_detail">Dictate in Spanish, write in English</string>
+    <string name="settings_translate_detail">Speak Spanish, Hex writes English</string>
+    <string name="settings_translate_heard">Spanish Hex hears is written in English; other languages as spoken</string>
+    <string name="settings_translate_needs_spanish">Spanish to English only. Set Dictation language to Español to use it</string>
     <string name="settings_clean">Clean up what I say</string>
     <string name="settings_clean_detail">Drops ums, repeats and corrected words</string>
     <string name="dictation_vocabulary">Custom vocabulary</string>
@@ -94,6 +111,14 @@
     <string name="settings_keyboard_layout">Keyboard layout</string>
     <string name="settings_layout_follows">Follows dictation · %1$s</string>
     <string name="settings_layout_automatic_detail">Follows your dictation language</string>
+    <string name="settings_keyboard_height">Height</string>
+    <string name="keyboard_height_extra_short">Extra short</string>
+    <string name="keyboard_height_short">Short</string>
+    <string name="keyboard_height_mid_short">Mid-short</string>
+    <string name="keyboard_height_normal">Normal</string>
+    <string name="keyboard_height_mid_tall">Mid-tall</string>
+    <string name="keyboard_height_tall">Tall</string>
+    <string name="keyboard_height_extra_tall">Extra tall</string>
     <string name="settings_autocorrect">Autocorrect</string>
     <string name="settings_autocorrect_detail">Fixes typos when you press space</string>
     <string name="settings_spatial">Spatial autocorrect</string>
@@ -111,7 +136,15 @@
     <string name="settings_test_keyboard">Test keyboard…</string>
     <string name="settings_privacy_line">Your voice and words stay on this phone</string>
     <!-- Hex Preview has its own copy, with its update check (src/preview/res/values): edit both. -->
-    <string name="settings_privacy_detail">Hex turns speech into text on this phone and never uploads your voice or what you type with its keyboard. It keeps no keystrokes or transcripts. Two labs keep what they learn on this phone, and only once you turn them on: Learn from my fixes keeps the word pairs you corrected after dictating, and Adaptive touch keeps an average of where you tap each key. Delete what Hex learned in Labs removes both. Feedback leaves the phone only when you tap Send in Send feedback: then your message, the pictures you keep, your email if you add one and details about Hex and this phone go to Anomaly’s feedback inbox (Bellhop). Your dictations, recordings, vocabulary and corrections are never included.</string>
+    <string name="settings_privacy_detail">Hex turns speech into text on this phone and never uploads your voice or what you type with its keyboard. It keeps no keystrokes or transcripts.</string>
+    <string name="settings_privacy_labs">Some labs keep something on this phone, only once you turn them on, and never send it:</string>
+    <string name="settings_privacy_lab_fixes">The word pairs you corrected after dictating. Delete what Hex learned in Labs removes them.</string>
+    <string name="settings_privacy_lab_touch">An average of where you tap each key. Delete what Hex learned in Labs removes it.</string>
+    <string name="settings_privacy_lab_model">Only how long your recent dictations took to transcribe against how long you spoke, and a few counts, never words or audio. Turning it off deletes them.</string>
+    <string name="settings_privacy_lab_clipboard">Reads what you copy and keeps the last 20 texts, each for an hour unless you pin it, skipping text an app marks as sensitive and anything copied while a password field is open. Turning it off deletes them.</string>
+    <string name="settings_privacy_lab_words">The words from a file you choose to import. Turning it off stops the suggestions; Remove imported words deletes them.</string>
+    <string name="settings_privacy_feedback">Feedback leaves the phone only when you tap Send in Send feedback: then your message, the pictures you keep, your email if you add one and details about Hex and this phone go to Anomaly’s feedback inbox (Bellhop). Your dictations, recordings, vocabulary and corrections are never included.</string>
+    <string name="settings_privacy_updates"></string>
     <string name="settings_privacy_policy">Privacy policy</string>
     <string name="settings_licences">Open-source licences</string>
     <string name="settings_labs">Labs</string>
@@ -129,6 +162,21 @@
     <string name="fast_english_no_space">Not enough storage</string>
     <!-- Dictation › Speech model, while Faster English dictation is on and downloaded. -->
     <string name="fast_english_in_use">English uses faster dictation (Labs).</string>
+    <!-- On mobile data or a metered Wi-Fi, as model_waiting_wifi: the download waits for Wi-Fi unless the person taps
+         model_use_mobile_data, whether a tap or Labs › Pick the English model for this phone asked for it. -->
+    <string name="fast_english_waiting_wifi">%1$d MB. Starts by itself on Wi-Fi.</string>
+    <!-- Dictation › Speech model, when Labs › Pick the English model for this phone chose faster English dictation: what is
+         true now. Proposals for Ryan's wording. -->
+    <string name="fast_english_chosen">English uses faster dictation, chosen for this phone.</string>
+    <string name="fast_english_chosen_waiting">Faster English dictation chosen for this phone: %1$d MB, starts by itself on Wi-Fi.</string>
+    <string name="fast_english_chosen_loading">Faster English dictation chosen for this phone: downloading %1$d MB · %2$d%%</string>
+    <!-- %1$s: fast_english_stopped, fast_english_no_connection or fast_english_no_space. -->
+    <string name="fast_english_chosen_problem">Faster English dictation chosen for this phone: %1$s</string>
+    <!-- Labs › Dictation › Pick the English model for this phone, off by default. %1$d: the download's size in MB. -->
+    <string name="pick_model">Pick the English model for this phone</string>
+    <string name="pick_model_detail">If English dictation is slow here, Hex downloads its faster English model (%1$d MB) on Wi-Fi and uses it.</string>
+    <string name="listen_for_language">Automatic listens for the language</string>
+    <string name="listen_for_language_detail">Dictates in the language you speak, out of your keyboard’s and phone’s languages.</string>
     <!-- Labs › Dictation › Learn from my fixes: word pairs, counts and when each fix was last made, never
          the dictation. -->
     <string name="learn_fixes">Learn from my fixes</string>
@@ -159,6 +207,32 @@
     <string name="smart_quotes_detail">Types ’ ‘ “ ” for \' and \"</string>
     <string name="swipe_delete_letters">Delete swiped words letter by letter</string>
     <string name="swipe_delete_letters_detail">Delete after a swipe removes one letter, not the word</string>
+    <string name="imported_words">SwiftKey words</string>
+    <string name="imported_words_detail">Suggests the words SwiftKey learned from you, from its export. Stays on this phone.</string>
+    <string name="imported_words_import">Import words…</string>
+    <string name="imported_words_import_detail">The ZIP from SwiftKey’s data portal (View data › Export all), or a plain list of words</string>
+    <string name="imported_words_none">No words found in this file</string>
+    <string name="imported_words_remove">Remove imported words</string>
+    <string name="imported_words_remove_confirm">Remove imported words?</string>
+    <string name="imported_words_remove_action">Remove</string>
+    <plurals name="imported_words_added">
+        <item quantity="one">Added %s new word.</item>
+        <item quantity="other">Added %s new words.</item>
+    </plurals>
+    <plurals name="imported_words_already">
+        <item quantity="one">%s was already here.</item>
+        <item quantity="other">%s were already here.</item>
+    </plurals>
+    <plurals name="imported_words_full">
+        <item quantity="one">%s left out: the list is full.</item>
+        <item quantity="other">%s left out: the list is full.</item>
+    </plurals>
+    <plurals name="imported_words_kept">
+        <item quantity="one">%s word imported</item>
+        <item quantity="other">%s words imported</item>
+    </plurals>
+    <string name="marks_take_fix_space">Punctuation after autocorrect</string>
+    <string name="marks_take_fix_space_detail">A period or comma right after an autocorrection goes against the word</string>
     <string name="adaptive_touch">Adaptive touch</string>
     <string name="adaptive_touch_detail">Learns where you tap each key. Stays on this phone and keeps averages, never what you type.</string>
     <string name="adaptive_touch_learning">Learning: %1$d of %2$d taps</string>
@@ -166,10 +240,29 @@
     <string name="adaptive_touch_reset">Reset touch learning</string>
     <string name="adaptive_touch_reset_confirm">Reset touch learning?</string>
     <string name="adaptive_touch_reset_action">Reset</string>
+    <string name="clipboard_history">Clipboard history</string>
+    <string name="clipboard_history_detail">Reads what you copy and keeps the last 20 texts on this phone, each for an hour unless you pin it. Skips text an app marks as sensitive. Turning it off deletes them.</string>
     <string name="password_manager_suggestions">Password manager suggestions</string>
     <string name="password_manager_suggestions_detail">Show logins, codes and cards from your autofill service in the suggestion strip</string>
     <string name="voice_only_mode">Voice-only mode</string>
     <string name="voice_only_detail">Lets you switch to Hex just to dictate from another keyboard, then switches back</string>
+    <string name="voice_bar_from_menu">Voice bar from the Hex menu</string>
+    <string name="voice_bar_from_menu_detail">Adds Voice only to the Hex menu, which folds the keys into a small dictation bar in the same field</string>
+    <string name="hex_key_left">Hex key on the left</string>
+    <string name="hex_key_left_detail">Moves the Hex key you hold to talk to the left end of the suggestion strip</string>
+    <string name="volume_in_menu">Volume in the Hex menu</string>
+    <string name="volume_in_menu_detail">Adds Volume to the Hex menu, which opens the phone’s volume controls</string>
+    <!-- Labs › Keyboard › Key colors, iPhone Hex's words. -->
+    <string name="key_colors">Key colors</string>
+    <string name="key_color">Color</string>
+    <string name="key_color_black">Black</string>
+    <string name="key_color_white">White</string>
+    <string name="key_color_navy">Navy</string>
+    <string name="key_color_forest">Forest</string>
+    <string name="key_color_ember">Ember</string>
+    <string name="key_color_burgundy">Burgundy</string>
+    <string name="test_keyboard_on_home">Test keyboard on Home</string>
+    <string name="test_keyboard_on_home_detail">Puts the Test keyboard field on Home instead of the Keyboard page</string>
     <!-- Hex words files and Custom vocabulary's Word replacements (docs/specs/hex-words.md). -->
     <string name="words_open_label">Add to Hex</string>
     <string name="words_replacements">Word replacements</string>
@@ -272,4 +365,11 @@
     <string name="words_refused_not_hex_words">Hex didn’t open this file: it isn’t a Hex words file.</string>
     <string name="words_refused_bad_version">Hex didn’t open this file: its version isn’t one Hex understands.</string>
     <string name="words_refused_cant_open">Hex couldn’t open that file.</string>
+    <!-- Labs › Dictate from Quick Settings: the Labs row, the tile's label and the sheet's lines. -->
+    <string name="quick_dictation">Dictate from Quick Settings</string>
+    <string name="quick_dictation_detail">Adds a Hex tile to Quick Settings. Tap it in any app, speak, and Hex copies the text for you to paste. For apps where Hex can’t be your keyboard, such as work apps.</string>
+    <string name="quick_tile">Hex dictation</string>
+    <string name="quick_hint">Speak, then tap Finish dictation</string>
+    <string name="quick_copied">Copied. Paste it where you were typing.</string>
+    <string name="quick_close">Close</string>
 </resources>

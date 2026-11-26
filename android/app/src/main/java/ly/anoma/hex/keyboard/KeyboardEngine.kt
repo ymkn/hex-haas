@@ -80,6 +80,8 @@ internal class KeyboardEngine(
     private val background: Executor = Executor { it.run() },
     /** The bundled emoji words (Labs › Keyboard › Emoji suggestions), read lazily. */
     private val emoji: EmojiWords? = null,
+    /** A swipe that can't be read ([swipeUnreadable]) went down: the strip says why, the first time in a field. */
+    private val swipeUnavailable: () -> Unit = {},
     private val clock: () -> Long = { SystemClock.uptimeMillis() },
     private val main: Handler = Handler(Looper.getMainLooper()),
     /** Labs › Learn from my fixes: what became of a tracked dictation. Null reports nothing; the tracker
@@ -133,6 +135,10 @@ internal class KeyboardEngine(
     private var spaceAnchor: String? = null
     private var spaceAt = 0L
     private var pickedAnchor: String? = null
+    // With Labs › Keyboard › Punctuation after autocorrect on, the space an autocorrection or a text replacement typed
+    // with its fix on space: a clause mark takes it as it takes a pick's ("keyboadr", space, "." gives "keyboard.").
+    // A space typed after an unchanged word keeps it. Off, it is never set, so nothing changes.
+    private var fixedAnchor: String? = null
     private var heldAnchor: String? = null
     var secure = true
         private set
@@ -164,6 +170,8 @@ internal class KeyboardEngine(
     /** A swipe is under way: from the touch becoming one until it ends. */
     var swiping = false
         private set
+    /** The strip already said, in this field, that its swipes can't be read. */
+    private var toldSwipe = false
 
     fun startInput(attribute: EditorInfo) {
         tracker.finish()
@@ -176,7 +184,7 @@ internal class KeyboardEngine(
         exactField = field.exact
         keyEventEditor = field.keyEvents
         learnsTyping = field.learns
-        resetTyping(); word = null; clearSpaces(); forgetSwipe()
+        resetTyping(); word = null; clearSpaces(); forgetSwipe(); toldSwipe = false
         adaptive = adaptiveTouch(); adaptive?.beginSession()
         pad = Pad.of(attribute.inputType)
         symbols = pad != null
@@ -311,7 +319,7 @@ internal class KeyboardEngine(
     private fun resetTyping() {
         cancelChip(); word?.reset(); undo = null; expectedCaret = -1; prefix = ""
     }
-    private fun clearSpaces() { spaceAnchor = null; pickedAnchor = null; heldAnchor = null; swipeAnchor = null }
+    private fun clearSpaces() { spaceAnchor = null; pickedAnchor = null; fixedAnchor = null; heldAnchor = null; swipeAnchor = null }
 
     // Labs › Keyboard › Adaptive touch while it is on: the word reads your own key centres once it has them.
     private var adaptive: AdaptiveTouch? = null
@@ -560,7 +568,7 @@ internal class KeyboardEngine(
             // Your text replacements first, whatever autocorrect is set to; they never offer an undo.
             val swap = w.textReplacement(b)
             if (swap != null && replace(swap.original, smartWord(swap.replacement) + " ")) {
-                teachEnd(b, swap); resetTyping(); afterSpace(now); return
+                teachEnd(b, swap); resetTyping(); afterSpace(now); if (feedback.marksTakeFixSpace) fixedAnchor = spaceAnchor; return
             }
             if (feedback.autocorrect && correctingField && old.isNotEmpty() && endsWith(prefix + old)) {
                 val fix = w.finish(' ', point, grid, ::smartWord)
@@ -569,7 +577,7 @@ internal class KeyboardEngine(
                     cancelChip()
                     undo = Undo(lang, fix.original, fix.replacement)
                     if (expectedCaret >= 0) expectedCaret += fix.replacement.length + 1 - fix.original.length
-                    teachEnd(b, fix); w.reset(); afterSpace(now); return
+                    teachEnd(b, fix); w.reset(); afterSpace(now); if (feedback.marksTakeFixSpace) fixedAnchor = spaceAnchor; return
                 }
             }
         }
@@ -597,9 +605,10 @@ internal class KeyboardEngine(
         if (value == " ") { space(); return }
         val b = before()
         val mark = value.length == 1 && TypingWord.endsWord(value[0])
-        // A clause-ending mark takes the space a picked suggestion typed ("Hello,"); in a URL field, so does any mark
-        // that joins a word ("github." and "github/", never "github /").
-        if (value.length == 1 && SpaceRules.takesPickedSpace(value[0], exactField) && pickedAnchor != null && pickedAnchor == b && b.endsWith(" ")) {
+        // A clause-ending mark takes the space a picked suggestion, an autocorrection or a text replacement typed
+        // ("Hello,"); in a URL field, so does any mark that joins a word ("github." and "github/", never "github /").
+        val typedSpace = (pickedAnchor != null && pickedAnchor == b) || (fixedAnchor != null && fixedAnchor == b)
+        if (value.length == 1 && SpaceRules.takesPickedSpace(value[0], exactField) && typedSpace && b.endsWith(" ")) {
             clearSpaces()
             if (replace(" ", value)) { resetTyping(); showPredictions(before()); inputDone(); return }
         }
@@ -675,11 +684,18 @@ internal class KeyboardEngine(
         word?.takeIf { canEndWord() }?.textReplacement(before())?.let { replace(it.original, smartWord(it.replacement)) }
         resetTyping(); clearSpaces(); surface?.suggestions(emptyList())
         val info = editor
-        if (info?.actionLabel != null && (info.imeOptions and EditorInfo.IME_FLAG_NO_ENTER_ACTION) == 0 &&
-            target.performEditorAction(info.actionId)) { tracker.sent(); return }
-        if (target.defaultEditorAction()) { tracker.sent(); return }
-        if (keyEventEditor) target.sendKey(KeyEvent.KEYCODE_ENTER)
-        else type("\n")
+        // Before any action or key press: a Return that ends a word teaches adaptive touch as a typed one does.
+        val b = if (keyEventEditor) "" else before()
+        // Only a multi-line field takes "\n" as text; a one-line field without an action gets the Enter key (#2864).
+        when (EnterPress.run(target, info?.inputType ?: (InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE),
+            info?.imeOptions ?: 0, info?.actionLabel, info?.actionId ?: 0)) {
+            EnterPress.Action -> tracker.sent()
+            EnterPress.LineBreak -> type("\n")
+            // The key press, with the bookkeeping type("\n") does: the word ends, next words follow.
+            EnterPress.Key -> if (!keyEventEditor) {
+                teachEnd(b); showPredictions(if (word != null) before() else null); inputDone()
+            }
+        }
     }
 
     /** A space-bar slide starts moving the cursor: the word in progress stays as typed. A field whose text
@@ -828,11 +844,17 @@ internal class KeyboardEngine(
      * (not a password, email address or number, where Hex reads no words), with its typing model loaded and not
      * English's list standing in for a language without one. */
     val swipes get() = feedback.swipe && !secure && word?.standIn == false && !symbols && pad == null && target.connected
+    /** Where [swipes] would be but English's list only stands in for the dictation language's words: a swipe types
+     * nothing, as before, and the strip says so ([swipeUnavailable]). */
+    val swipeUnreadable get() = feedback.swipe && !secure && word?.standIn == true && !symbols && pad == null && target.connected
 
     /** A letter touch became a swipe: its key no longer types. Null when it can't be one here. */
     fun beginSwipe(): SwipeContext? {
         val w = word ?: return null
-        if (!swipes) return null
+        if (!swipes) {
+            if (swipeUnreadable && !toldSwipe) { toldSwipe = true; swipeUnavailable() }
+            return null
+        }
         // A word delete took back stays remembered for this swipe; anything else ends the Undo dictation offer.
         if (dictated != null) offerUndo(null)
         continuation.clear(); cancelChip(); forgetSwipe(); adaptive?.forget()

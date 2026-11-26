@@ -9,11 +9,16 @@ import Foundation
 /// where the keyboard can use it (`KeyboardParakeetDownload.hold`).
 nonisolated struct KeyboardParakeetSettings {
     static let enabledKey = "experiments.keyboardParakeet"
-    /// What the keyboard last said about it (`KeyboardState`), for the app's Experiments row.
+    /// What the keyboard last said about it (`KeyboardState`), for the app's Speech model in keyboard row.
     static let keyboardStateKey = "experiments.keyboardParakeet.keyboardState"
     static let keyboardStateAtKey = "experiments.keyboardParakeet.keyboardStateAt"
     /// Whether that state is the multilingual model's (Parakeet Ultra) rather than V2's.
     static let keyboardStateMultilingualKey = "experiments.keyboardParakeet.keyboardStateMultilingual"
+    /// Why the keyboard said `.unavailable` (`UnavailableReason`); none from builds before 1.0.5.
+    static let keyboardStateReasonKey = "experiments.keyboardParakeet.keyboardStateReason"
+    /// With `shortOfMemory` from the budget check: what was free then (bytes,
+    /// `os_proc_available_memory`), so Settings can say it. Stays on the iPhone.
+    static let keyboardStateFreeKey = "experiments.keyboardParakeet.keyboardStateFree"
     /// The keyboard's memory limit on this iPhone, as the keyboard measured it.
     static let keyboardLimitKey = "experiments.keyboardParakeet.keyboardLimit"
     static let keyboardLimitNotification = "anomaly.hex.keyboardParakeet.keyboardLimit"
@@ -25,8 +30,21 @@ nonisolated struct KeyboardParakeetSettings {
         /// Neural Engine. The keyboard dictates with Apple's speech recognition meanwhile.
         case preparing
         case ready
-        /// This keyboard can't use it (its memory limit, no Neural Engine, a load that failed).
+        /// This keyboard can't use it (`UnavailableReason` says why).
         case unavailable
+    }
+
+    /// Why the keyboard couldn't use it, so Settings › Dictation can say so and what happens next.
+    enum UnavailableReason: String {
+        /// Too little memory left when the keyboard opened (`KeyboardParakeetBudget.allowsLoad`).
+        /// For now: the keyboard tries again the next time it opens.
+        case shortOfMemory
+        /// No Neural Engine on this device. For good.
+        case noNeuralEngine
+        /// It loaded, but not on the Neural Engine. Set aside in that keyboard process.
+        case notOnNeuralEngine
+        /// The load threw. Set aside in that keyboard process until Try again (`purgesCompiled`).
+        case loadFailed
     }
 
     private let defaults: UserDefaults?
@@ -77,8 +95,9 @@ nonisolated struct KeyboardParakeetSettings {
         multilingual ? "experiments.keyboardParakeet.loadedOnce.ultra" : "experiments.keyboardParakeet.loadedOnce.v2"
     }
 
-    /// Hex removed a model the keyboard may have compiled: the keyboard clears its compiled
-    /// copies the next time it starts, before it loads the picked one (`KeyboardParakeet`).
+    /// Hex removed a model the keyboard may have compiled, or Try again was tapped after a load
+    /// that failed: the keyboard clears its compiled copies the next time it starts, before it
+    /// loads the picked one, and tries again a model it had set aside (`KeyboardParakeet`).
     static let purgeCompiledKey = "experiments.keyboardParakeet.purgeCompiled"
 
     var purgesCompiled: Bool {
@@ -91,10 +110,58 @@ nonisolated struct KeyboardParakeetSettings {
         defaults?.bool(forKey: Self.keyboardStateMultilingualKey) == true
     }
 
-    func setKeyboardState(_ state: KeyboardState?, multilingual: Bool = false, now: Date = Date()) {
+    func setKeyboardState(
+        _ state: KeyboardState?,
+        multilingual: Bool = false,
+        reason: UnavailableReason? = nil,
+        free: Int? = nil,
+        now: Date = Date()
+    ) {
+        // Hex reads these from another process: `.unavailable` gets its reason (and what was
+        // free) before the state, so it is never seen without one
+        // (`forgetUnavailableWithoutReason`).
+        if state == .unavailable {
+            defaults?.set(reason?.rawValue, forKey: Self.keyboardStateReasonKey)
+            if reason == .shortOfMemory, let free, free > 0 {
+                defaults?.set(free, forKey: Self.keyboardStateFreeKey)
+            } else {
+                defaults?.removeObject(forKey: Self.keyboardStateFreeKey)
+            }
+        }
         defaults?.set(state?.rawValue, forKey: Self.keyboardStateKey)
         defaults?.set(multilingual, forKey: Self.keyboardStateMultilingualKey)
         defaults?.set(now.timeIntervalSince1970, forKey: Self.keyboardStateAtKey)
+        if state != .unavailable {
+            defaults?.removeObject(forKey: Self.keyboardStateReasonKey)
+            defaults?.removeObject(forKey: Self.keyboardStateFreeKey)
+        }
+    }
+
+    /// What was free when the keyboard last said it was short of memory (bytes), where it
+    /// measured it: not after a memory warning, nor from a keyboard before it said.
+    var shortOfMemoryFree: Int? {
+        guard unavailableReason == .shortOfMemory,
+              let free = defaults?.object(forKey: Self.keyboardStateFreeKey) as? Int, free > 0 else { return nil }
+        return free
+    }
+
+    /// A keyboard from before 1.0.5 said `.unavailable` without a reason, and nothing else
+    /// clears it until the keyboard loads again, which some never do (a limit under 131 MB:
+    /// `KeyboardParakeetPlan.tooSmall` loads nothing and writes nothing). It says nothing true
+    /// any more, so Hex forgets it at launch; since 1.0.5 the keyboard always writes a reason.
+    @discardableResult
+    func forgetUnavailableWithoutReason() -> Bool {
+        guard keyboardState?.state == .unavailable,
+              defaults?.string(forKey: Self.keyboardStateReasonKey) == nil else { return false }
+        setKeyboardState(nil)
+        return true
+    }
+
+    /// Why the keyboard last said `.unavailable`; nil for any other state.
+    var unavailableReason: UnavailableReason? {
+        guard keyboardState?.state == .unavailable,
+              let raw = defaults?.string(forKey: Self.keyboardStateReasonKey) else { return nil }
+        return UnavailableReason(rawValue: raw)
     }
 
     /// The keyboard's memory limit (bytes), nil until the keyboard first opened on this iPhone.

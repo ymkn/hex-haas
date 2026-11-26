@@ -1127,7 +1127,7 @@ CoreAudio formats, AppleScript details, or event serialization.
   pastes, even on failure or timeout; no speech exits 4. History records it as
   Printed and Paste Last skips it.
 - Option-Shift-V pastes the last completed dictation. Meetings have no paste
-  shortcut: the recording capsule's Copy agent prompt and Copy all are the
+  shortcut: the recording capsule's Copy agent prompt and Copy transcript are the
   in-call copies.
 - Do not persist captured audio by default. Explicit foreground meeting
   recording must remain visibly active. Diagnostic dictation retention is an
@@ -1218,7 +1218,7 @@ CoreAudio formats, AppleScript details, or event serialization.
   launch with Meetings on runs the final pass on the dictation engine's model
   (or its own after 30 s without an engine).
 - Every in-call meeting view and copy (the Meetings pane, the capsule's
-  Copy all, provisional titles, `hex meetings`, and MCP) reads the
+  Copy transcript, provisional titles, `hex meetings`, and MCP) reads the
   rolling Parakeet transcript, which publishes only entries no later chunk
   can replace; after Stop they read the final transcript.
 - Meeting system audio uses a Core Audio process tap on macOS (System Audio
@@ -1290,7 +1290,9 @@ CoreAudio formats, AppleScript details, or event serialization.
   records the screen, runs with `SharedResources::none()` (Hex never calls
   `install_shared_resources`: no ingest server, ingest token, or global
   shortcuts), logs to tracing, and writes only to the captures folder
-  (`capture.folder`, Scrawl's own by default) and Scrawl's router folders. A
+  (`capture.folder`, `<support>/annotations` by default) and Hex's
+  `<support>/annotation-router`. See [the package contract](docs/hex-annotation.md)
+  for read-only legacy discovery, retries and the rollout boundary. A
   written capture is copied to the clipboard (never pasted) and, with
   `capture.routing`'s autoSend on, routed by Scrawl's router in Hex's process
   (`capture_host::routing`): one `capture-look` thread per stop, one

@@ -3,11 +3,101 @@ import Network
 import Observation
 import SwiftUI
 
+/// Settings › Dictation › Model's two downloads, English's and Multilingual's, start by themselves
+/// only on Wi-Fi (`isUnmetered`: not cellular, a personal hotspot or Low Data Mode). Use mobile
+/// data on the line that says so lets that one model's download use any connection until it is
+/// on the iPhone, a stop and a try again included; picking the other model asks again
+/// (`forgetMobileData`). The decision is kept in the App Group, so a download Hex picks up at
+/// the next launch keeps it. `--simulate-cellular` (simulator scenes) reads as off Wi-Fi.
+@MainActor
+@Observable
+final class SpeechModelDownloadNetwork {
+    static let shared = SpeechModelDownloadNetwork(
+        isUnmetered: ProcessInfo.processInfo.arguments.contains(cellularLaunchArgument) ? false : nil,
+        watchesConnection: !ProcessInfo.processInfo.arguments.contains(cellularLaunchArgument)
+    )
+    static let mobileDataKey = "settings.speechModel.mobileData"
+    static let cellularLaunchArgument = "--simulate-cellular"
+
+    /// Whether the connection is one to download on by itself; nil until the monitor says.
+    private(set) var isUnmetered: Bool?
+    /// The model whose download may use mobile data (`SpeechModelChoice.rawValue`).
+    private(set) var mobileDataModel: String?
+    @ObservationIgnored private let defaults: UserDefaults?
+    @ObservationIgnored private let watchesConnection: Bool
+    @ObservationIgnored private var monitor: NWPathMonitor?
+    @ObservationIgnored private var observers: [@MainActor (Bool) -> Void] = []
+
+    init(
+        defaults: UserDefaults? = UserDefaults(suiteName: KeyboardBridge.appGroup),
+        isUnmetered: Bool? = nil,
+        watchesConnection: Bool = true
+    ) {
+        self.defaults = defaults
+        self.isUnmetered = isUnmetered
+        self.watchesConnection = watchesConnection
+        mobileDataModel = defaults?.string(forKey: Self.mobileDataKey)
+    }
+
+    func usesMobileData(for model: SpeechModelChoice) -> Bool {
+        mobileDataModel == model.rawValue
+    }
+
+    /// Whether `model`'s download may start or go on now.
+    func mayDownload(_ model: SpeechModelChoice) -> Bool {
+        isUnmetered == true || usesMobileData(for: model)
+    }
+
+    /// Use mobile data, tapped on `model`'s waiting line.
+    func allowMobileData(for model: SpeechModelChoice) {
+        mobileDataModel = model.rawValue
+        defaults?.set(model.rawValue, forKey: Self.mobileDataKey)
+    }
+
+    /// `model` is on the iPhone, or (nil) the other model was picked: the next download asks again.
+    func forgetMobileData(for model: SpeechModelChoice? = nil) {
+        guard let current = mobileDataModel, model == nil || model?.rawValue == current else { return }
+        mobileDataModel = nil
+        defaults?.removeObject(forKey: Self.mobileDataKey)
+    }
+
+    /// Told of every change of connection after this.
+    func observe(_ observer: @escaping @MainActor (Bool) -> Void) {
+        observers.append(observer)
+    }
+
+    /// A connection report: a change tells each observer.
+    func report(unmetered: Bool) {
+        guard unmetered != isUnmetered else { return }
+        isUnmetered = unmetered
+        for observer in observers {
+            observer(unmetered)
+        }
+    }
+
+    func watch() {
+        guard watchesConnection, monitor == nil else { return }
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] path in
+            let unmetered = KeyboardParakeetDownload.isUnmetered(
+                satisfied: path.status == .satisfied,
+                expensive: path.isExpensive,
+                constrained: path.isConstrained,
+                cellular: path.usesInterfaceType(.cellular)
+            )
+            Task { @MainActor in self?.report(unmetered: unmetered) }
+        }
+        monitor.start(queue: DispatchQueue.global(qos: .utility))
+        self.monitor = monitor
+    }
+}
+
 /// Settings › Dictation › Speech model in keyboard: gets Parakeet V2 into the App Group for the keyboard,
 /// with FluidAudio's download (each file resumes from its `.partial`), at launch, whenever Hex
 /// comes back to the front, on Wi-Fi coming back and once the keyboard measured its memory,
-/// until every file is there. By itself only where the keyboard would use it (`hold`);
-/// turned on by hand, at once on any connection.
+/// until every file is there. By itself only where the keyboard would use it (`hold`), on Wi-Fi
+/// or after Use mobile data (`SpeechModelDownloadNetwork`); turned on by hand, at once on any
+/// connection.
 @MainActor
 @Observable
 final class KeyboardParakeetDownload {
@@ -35,9 +125,7 @@ final class KeyboardParakeetDownload {
 
     private(set) var state = State.idle
     @ObservationIgnored private var task: Task<Void, Never>?
-    @ObservationIgnored private var network: NWPathMonitor?
-    /// Whether the connection is one to download 464 MB on, once `network` said.
-    @ObservationIgnored private var isUnmetered: Bool?
+    @ObservationIgnored private var watching = false
 
     /// What the download weighs: Parakeet V2's four models and vocabulary, about 464 MB.
     static let bytes: Int64 = 464_400_000
@@ -57,23 +145,48 @@ final class KeyboardParakeetDownload {
             .replacingOccurrences(of: " ", with: "\u{00A0}")
     }
 
+    /// "464 MB", for Remove: whole megabytes as `format` counts them.
+    static func wholeMegabytes(_ bytes: Int64) -> String {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        formatter.allowedUnits = [.useMB]
+        formatter.isAdaptive = false
+        return formatter.string(fromByteCount: bytes).replacingOccurrences(of: " ", with: "\u{00A0}")
+    }
+
+    /// What a model's folder holds on disk, its files' sizes added up.
+    nonisolated static func bytesOnDisk(_ directory: URL) -> Int64 {
+        let keys: [URLResourceKey] = [.fileSizeKey, .isRegularFileKey]
+        guard let files = FileManager.default.enumerator(at: directory, includingPropertiesForKeys: keys) else { return 0 }
+        var total: Int64 = 0
+        for case let file as URL in files {
+            guard let values = try? file.resourceValues(forKeys: Set(keys)), values.isRegularFile == true else { continue }
+            total += Int64(values.fileSize ?? 0)
+        }
+        return total
+    }
+
     var isDownloaded: Bool { SpeechModelStore.isComplete(ParakeetTranscriber.cacheDirectory) }
 
     /// What holds the download back now, nil once it may start by itself.
     var hold: Hold? {
-        Self.hold(
+        let network = SpeechModelDownloadNetwork.shared
+        return Self.hold(
             plan: KeyboardParakeetPlan.current(),
-            unmetered: isUnmetered,
-            freeBytes: Self.freeBytes()
+            unmetered: network.isUnmetered,
+            freeBytes: Self.freeBytes(),
+            mobileData: network.usesMobileData(for: .english)
         )
     }
 
     /// Only for a keyboard that would use it: resolved from `KeyboardParakeetPlan`, plus a
-    /// connection that isn't cellular, a hotspot or Low Data Mode, and `freeSpaceNeeded` free.
+    /// connection that isn't cellular, a hotspot or Low Data Mode (unless Use mobile data was
+    /// tapped for it), and `freeSpaceNeeded` free.
     nonisolated static func hold(
         plan: KeyboardParakeetPlan,
         unmetered: Bool?,
-        freeBytes: Int64?
+        freeBytes: Int64?,
+        mobileData: Bool = false
     ) -> Hold? {
         switch plan {
         case .twoLanguage, .multilingual:
@@ -85,10 +198,18 @@ final class KeyboardParakeetDownload {
         case .tooSmall:
             return .keyboardTooSmall
         case .off, .awaitingV2Download, .awaitingV2DownloadUsingUltra, .readyV2:
-            guard unmetered == true else { return .notOnWiFi }
+            guard unmetered == true || mobileData else { return .notOnWiFi }
             if let freeBytes, freeBytes < freeSpaceNeeded { return .needsSpace }
             return nil
         }
+    }
+
+    /// Turned on by hand: at once, on any connection and whatever space is free, but never
+    /// where the keyboard measured that it can't use it (`keyboardTooSmall`), so not again
+    /// after Remove there either; before the keyboard has measured anything, still at once.
+    /// Otherwise only with nothing holding it.
+    nonisolated static func downloads(turnedOnByHand: Bool, hold: Hold?) -> Bool {
+        turnedOnByHand ? hold != .keyboardTooSmall : hold == nil
     }
 
     /// Whether a connection lets the download start by itself: up, not expensive (a personal
@@ -109,10 +230,8 @@ final class KeyboardParakeetDownload {
         guard settings.isEnabled, KeyboardParakeetSettings.fits(), !isDownloaded, task == nil else {
             return
         }
-        if !settings.isTurnedOnByHand {
-            watch()
-            guard hold == nil else { return }
-        }
+        if !settings.isTurnedOnByHand { watch() }
+        guard Self.downloads(turnedOnByHand: settings.isTurnedOnByHand, hold: hold) else { return }
         state = .downloading(0)
         task = Task { [weak self] in
             do {
@@ -122,6 +241,7 @@ final class KeyboardParakeetDownload {
                 guard let self, !Task.isCancelled else { return }
                 self.task = nil
                 self.state = .idle
+                SpeechModelDownloadNetwork.shared.forgetMobileData(for: .english)
             } catch {
                 guard let self, !Task.isCancelled else { return }
                 print("speech model in keyboard: download stopped: \(error)")
@@ -173,22 +293,21 @@ final class KeyboardParakeetDownload {
         startIfWanted()
     }
 
+    /// Use mobile data on the line that says it downloads on Wi-Fi: starts now, on any connection.
+    func useMobileData() {
+        SpeechModelDownloadNetwork.shared.allowMobileData(for: .english)
+        DictationController.shared.startKeyboardParakeetDownloadIfWanted()
+    }
+
     /// The connection, and the keyboard's word that it measured its memory, both of which can
     /// let a held download start while Hex is open.
     private func watch() {
-        guard network == nil else { return }
-        let monitor = NWPathMonitor()
-        monitor.pathUpdateHandler = { path in
-            let unmetered = KeyboardParakeetDownload.isUnmetered(
-                satisfied: path.status == .satisfied,
-                expensive: path.isExpensive,
-                constrained: path.isConstrained,
-                cellular: path.usesInterfaceType(.cellular)
-            )
-            Task { @MainActor in KeyboardParakeetDownload.shared.networkChanged(unmetered) }
+        SpeechModelDownloadNetwork.shared.watch()
+        guard !watching else { return }
+        watching = true
+        SpeechModelDownloadNetwork.shared.observe { unmetered in
+            KeyboardParakeetDownload.shared.networkChanged(unmetered)
         }
-        monitor.start(queue: DispatchQueue.global(qos: .utility))
-        network = monitor
         CFNotificationCenterAddObserver(
             CFNotificationCenterGetDarwinNotifyCenter(),
             nil,
@@ -201,20 +320,20 @@ final class KeyboardParakeetDownload {
         )
     }
 
-    /// Off Wi-Fi, a download Hex started by itself stops (its files resume on Wi-Fi).
+    /// Off Wi-Fi, a download Hex started by itself stops (its files resume on Wi-Fi), unless Use
+    /// mobile data was tapped for it.
     private func networkChanged(_ unmetered: Bool) {
-        guard unmetered != isUnmetered else { return }
-        isUnmetered = unmetered
         if unmetered {
             DictationController.shared.startKeyboardParakeetDownloadIfWanted()
-        } else if task != nil, !KeyboardParakeetSettings().isTurnedOnByHand {
+        } else if task != nil, !KeyboardParakeetSettings().isTurnedOnByHand,
+                  !SpeechModelDownloadNetwork.shared.usesMobileData(for: .english) {
             Task { await stop() }
         }
     }
 }
 
 extension DictationController {
-    /// The switch in Experiments: on downloads Parakeet V2 for the keyboard unless it's there;
+    /// The switch in Settings › Dictation: on downloads Parakeet V2 for the keyboard unless it's there;
     /// off stops the download and deletes it, unless Hex itself dictates with Parakeet V2.
     func keyboardParakeetChanged() {
         let settings = KeyboardParakeetSettings()
@@ -223,7 +342,20 @@ extension DictationController {
             startKeyboardParakeetDownloadIfWanted()
             return
         }
-        let keeps = transcriber is ParakeetTranscriber && (isModelReady || phase == .preparingModel)
+        deleteKeyboardParakeet()
+    }
+
+    /// Whether Hex itself dictates with Parakeet V2, which turning the switch off and Remove
+    /// leave in place.
+    var dictatesWithKeyboardParakeet: Bool {
+        transcriber is ParakeetTranscriber && (isModelReady || phase == .preparingModel)
+    }
+
+    /// What turning the switch off deletes: the download stops and V2's folder goes, unless
+    /// Hex itself dictates with it. Remove, where the keyboard can't use it, does the same with
+    /// the switch left on; `startIfWanted` then never downloads it again there.
+    func deleteKeyboardParakeet() {
+        let keeps = dictatesWithKeyboardParakeet
         Task {
             await KeyboardParakeetDownload.shared.stop()
             if !keeps {
@@ -248,6 +380,8 @@ struct KeyboardParakeetStatus: View {
     var framed = true
     /// About the multilingual model (Settings › Dictation › Model) rather than English's.
     var multilingual = false
+    /// Use mobile data beside "Downloads on Wi-Fi." (Settings; Home's card opens Settings).
+    var offersMobileData = false
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 2)) { context in
@@ -268,6 +402,44 @@ struct KeyboardParakeetStatus: View {
                             .foregroundStyle(HexTheme.textBase)
                             .accessibilityIdentifier("keyboard-parakeet-try-again")
                     }
+                    // Only beside a load that failed, which the keyboard doesn't try again in that
+                    // process by itself.
+                    if line == Self.unavailableLine(.loadFailed) {
+                        Button("Try again") { Self.retryInKeyboard() }
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(HexTheme.textBase)
+                            .buttonStyle(MultilingualStatusButtonStyle())
+                            .accessibilityIdentifier("keyboard-parakeet-retry-load")
+                    }
+                    // Downloaded where the keyboard measured it can't use it (a switch turned on by
+                    // hand downloaded it anyway): never removed by itself. Not Multilingual's,
+                    // which Hex dictates with too, nor V2 while Hex dictates with it.
+                    if !multilingual, download.state == .idle, download.isDownloaded,
+                       download.hold == .keyboardTooSmall,
+                       !DictationController.shared.dictatesWithKeyboardParakeet {
+                        let bytes = KeyboardParakeetDownload.bytesOnDisk(ParakeetTranscriber.cacheDirectory)
+                        Button {
+                            DictationController.shared.deleteKeyboardParakeet()
+                        } label: {
+                            if bytes > 0 {
+                                Text("Remove (\(KeyboardParakeetDownload.wholeMegabytes(bytes)))")
+                            } else {
+                                Text("Remove")
+                            }
+                        }
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(HexTheme.textBase)
+                        .buttonStyle(MultilingualStatusButtonStyle())
+                        .accessibilityIdentifier("keyboard-parakeet-remove")
+                    }
+                    if offersMobileData, !multilingual, download.state == .idle, !download.isDownloaded,
+                       download.hold == .notOnWiFi {
+                        Button("Use mobile data") { download.useMobileData() }
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(HexTheme.textBase)
+                            .buttonStyle(MultilingualStatusButtonStyle())
+                            .accessibilityIdentifier("keyboard-parakeet-use-mobile-data")
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(framed ? 14 : 0)
@@ -284,6 +456,9 @@ struct KeyboardParakeetStatus: View {
                 isDownloaded: download.isDownloaded,
                 hold: download.hold,
                 keyboardState: settings.keyboardState,
+                reason: settings.unavailableReason,
+                keyboardLimit: settings.keyboardLimit,
+                free: settings.shortOfMemoryFree,
                 now: now
             )
         }
@@ -292,8 +467,19 @@ struct KeyboardParakeetStatus: View {
             takesLanguage: MultilingualParakeetSettings().language() != nil,
             fitsKeyboard: settings.keyboardLimit.map { $0 >= KeyboardParakeetBudget.requiredLimit } ?? true,
             keyboardState: settings.keyboardStateIsMultilingual ? settings.keyboardState : nil,
+            reason: settings.keyboardStateIsMultilingual ? settings.unavailableReason : nil,
+            keyboardLimit: settings.keyboardLimit,
+            free: settings.keyboardStateIsMultilingual ? settings.shortOfMemoryFree : nil,
             now: now
         )
+    }
+
+    /// Try again beside "The keyboard couldn't load it": the keyboard drops its compiled copies
+    /// and loads it again the next time it opens, even in the process that set it aside;
+    /// meanwhile the row says it gets it ready then.
+    static func retryInKeyboard(_ settings: KeyboardParakeetSettings = KeyboardParakeetSettings()) {
+        settings.purgesCompiled = true
+        settings.setKeyboardState(nil)
     }
 
     /// Under Model: Multilingual. Its download says where it stands itself
@@ -303,14 +489,17 @@ struct KeyboardParakeetStatus: View {
         takesLanguage: Bool,
         fitsKeyboard: Bool,
         keyboardState: (state: KeyboardParakeetSettings.KeyboardState, at: Date)?,
+        reason: KeyboardParakeetSettings.UnavailableReason? = nil,
+        keyboardLimit: Int? = nil,
+        free: Int? = nil,
         now: Date
     ) -> String? {
         guard isDownloaded else { return nil }
         guard takesLanguage else {
             return String(localized: "Not for this dictation language, so the keyboard uses Apple's speech recognition.")
         }
-        guard fitsKeyboard else { return line(for: .keyboardTooSmall) }
-        return keyboardLine(keyboardState, now: now)
+        guard fitsKeyboard else { return tooSmallLine(keyboardLimit: keyboardLimit) }
+        return keyboardLine(keyboardState, reason: reason, free: free, now: now)
     }
 
     /// What the row says. The keyboard's word is about English: dictating in another language
@@ -321,6 +510,9 @@ struct KeyboardParakeetStatus: View {
         isDownloaded: Bool,
         hold: KeyboardParakeetDownload.Hold?,
         keyboardState: (state: KeyboardParakeetSettings.KeyboardState, at: Date)?,
+        reason: KeyboardParakeetSettings.UnavailableReason? = nil,
+        keyboardLimit: Int? = nil,
+        free: Int? = nil,
         now: Date
     ) -> String? {
         switch state {
@@ -331,24 +523,73 @@ struct KeyboardParakeetStatus: View {
         case .idle:
             break
         }
+        // A limit under 131 MB never loads, downloaded or not (a download turned on by hand
+        // skips the hold): it says so, not what the keyboard last said.
+        if hold == .keyboardTooSmall { return tooSmallLine(keyboardLimit: keyboardLimit) }
         guard isDownloaded, hold != .notEnglish else { return line(for: hold) }
-        return keyboardLine(keyboardState, now: now)
+        return keyboardLine(keyboardState, reason: reason, free: free, now: now)
     }
 
-    /// What the keyboard did with a downloaded model, while its word is fresh.
+    /// What the keyboard did with a downloaded model, while its word is fresh. "Getting ready"
+    /// lasts 3 minutes; the rest stand until the keyboard says something else, so each says
+    /// what happens next rather than that it's so now.
     private static func keyboardLine(
         _ keyboardState: (state: KeyboardParakeetSettings.KeyboardState, at: Date)?,
+        reason: KeyboardParakeetSettings.UnavailableReason?,
+        free: Int?,
         now: Date
     ) -> String {
         switch keyboardState {
         case (.preparing, let at)? where now.timeIntervalSince(at) < 180:
-            return String(localized: "Getting ready in the keyboard")
+            return String(localized: "Getting ready in the keyboard. After a download or an update, this takes a little longer.")
         case (.ready, _)?:
             return String(localized: "Ready in the keyboard")
-        case (.unavailable, _)?:
-            return String(localized: "The keyboard can't use it right now, so it uses Apple's speech recognition.")
+        case (.unavailable, _)? where reason == .shortOfMemory:
+            return shortOfMemoryLine(free: free)
+        case (.unavailable, _)? where reason != nil:
+            return unavailableLine(reason)
         default:
+            // Nothing from the keyboard yet, or an older keyboard's `.unavailable` without a
+            // reason (forgotten at launch: `forgetUnavailableWithoutReason`).
             return String(localized: "Downloaded. The keyboard gets it ready the next time it opens.")
+        }
+    }
+
+    /// Whole megabytes, as the budget counts them (`KeyboardParakeetBudget.megabyte`), rounded
+    /// down so a limit under 131 MB never reads as 131.
+    static func megabytes(_ bytes: Int) -> Int {
+        bytes / KeyboardParakeetBudget.megabyte
+    }
+
+    /// A keyboard limit under 131 MB, with the limit the keyboard measured; without one,
+    /// the same words without numbers.
+    static func tooSmallLine(keyboardLimit: Int?) -> String {
+        guard let keyboardLimit, keyboardLimit < KeyboardParakeetBudget.requiredLimit, megabytes(keyboardLimit) > 0 else {
+            return String(localized: "This iPhone's keyboard doesn't have the memory for it, so it uses Apple's speech recognition.")
+        }
+        return String(localized: "This iPhone's keyboard has \(megabytes(keyboardLimit)) MB; the model needs \(megabytes(KeyboardParakeetBudget.requiredLimit)) MB, so it uses Apple's speech recognition.")
+    }
+
+    /// Short of memory at the keyboard's last open, with what was free then and what a load
+    /// needs; without a measurement (after a memory warning, an older keyboard), no numbers.
+    static func shortOfMemoryLine(free: Int?) -> String {
+        guard let free, free < KeyboardParakeetBudget.loadHeadroom, megabytes(free) > 0 else {
+            return unavailableLine(.shortOfMemory)
+        }
+        return String(localized: "The keyboard had \(megabytes(free)) MB free when it last opened; loading the model needs \(megabytes(KeyboardParakeetBudget.loadHeadroom)) MB, so it used Apple's speech recognition. It tries again the next time it opens.")
+    }
+
+    /// Why the keyboard couldn't use it (`KeyboardParakeetSettings.UnavailableReason`).
+    static func unavailableLine(_ reason: KeyboardParakeetSettings.UnavailableReason?) -> String {
+        switch reason {
+        case .shortOfMemory?:
+            String(localized: "Not enough free memory when the keyboard last opened, so it used Apple's speech recognition. It tries again the next time it opens.")
+        case .noNeuralEngine?:
+            String(localized: "This iPhone can't run it in the keyboard, so the keyboard uses Apple's speech recognition.")
+        case .notOnNeuralEngine?, .loadFailed?:
+            String(localized: "The keyboard couldn't load it, so it uses Apple's speech recognition.")
+        case nil:
+            String(localized: "Downloaded. The keyboard gets it ready the next time it opens.")
         }
     }
 
@@ -359,7 +600,7 @@ struct KeyboardParakeetStatus: View {
         case .keyboardNotMeasured:
             String(localized: "Downloads after you first use the Hex keyboard.")
         case .keyboardTooSmall:
-            String(localized: "The keyboard can't use it right now, so it uses Apple's speech recognition.")
+            String(localized: "This iPhone's keyboard doesn't have the memory for it, so it uses Apple's speech recognition.")
         case .notOnWiFi:
             String(localized: "Downloads on Wi-Fi.")
         case .needsSpace:
@@ -391,8 +632,17 @@ struct SpeechModelHomeCard: View {
         defaults?.set(true, forKey: dismissedKey)
     }
 
-    static func shows(enabled: Bool, fits: Bool, hold: KeyboardParakeetDownload.Hold?, dismissed: Bool) -> Bool {
-        guard enabled, fits, !dismissed else { return false }
+    /// Not where the model can never run in this keyboard (a limit under 131 MB, or no Neural
+    /// Engine), where the card couldn't be dismissed either; still where trying again can help
+    /// (short of memory, a load that failed, with Try again).
+    static func shows(
+        enabled: Bool,
+        fits: Bool,
+        hold: KeyboardParakeetDownload.Hold?,
+        dismissed: Bool,
+        unavailable: KeyboardParakeetSettings.UnavailableReason? = nil
+    ) -> Bool {
+        guard enabled, fits, !dismissed, unavailable != .noNeuralEngine else { return false }
         switch hold {
         case .otherEngine?, .notEnglish?, .keyboardTooSmall?:
             return false
@@ -404,7 +654,13 @@ struct SpeechModelHomeCard: View {
     var body: some View {
         TimelineView(.periodic(from: .now, by: 2)) { _ in
             let settings = KeyboardParakeetSettings()
-            if Self.shows(enabled: settings.isEnabled, fits: KeyboardParakeetSettings.fits(), hold: download.hold, dismissed: dismissed) {
+            if Self.shows(
+                enabled: settings.isEnabled,
+                fits: KeyboardParakeetSettings.fits(),
+                hold: download.hold,
+                dismissed: dismissed,
+                unavailable: settings.unavailableReason
+            ) {
                 card(ready: download.isDownloaded && settings.keyboardState?.state == .ready)
                     .transition(.opacity.combined(with: .scale(scale: 0.98)))
             }

@@ -389,6 +389,16 @@
         }
       }
     },
+    "%@ isn't available on this iPhone yet." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这台 iPhone 暂不支持%@。"
+          }
+        }
+      }
+    },
     "%@ isn't available on this iPhone yet. Using %@." : {
       "localizations" : {
         "en" : {
@@ -722,12 +732,12 @@
         }
       }
     },
-    "Apple can't translate between these languages." : {
+    "Apple can't translate %@ to %@ on this iPhone. Pick another language." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Apple 无法在这两种语言之间翻译。"
+            "value" : "这台 iPhone 上，Apple 无法把%1$@翻译成%2$@。请选择其他语言。"
           }
         }
       }
@@ -1296,12 +1306,12 @@
         }
       }
     },
-    "Type a colon and a name, like :pizza, to pick an emoji." : {
+    "Type a colon and a name, like :pizza, to pick an emoji" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "输入冒号和名称，例如 :pizza，即可选择表情符号。"
+            "value" : "输入冒号和名称，例如 :pizza，即可选择表情符号"
           }
         }
       }
@@ -1362,16 +1372,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "模型识别出的原话"
-          }
-        }
-      }
-    },
-    "Experiments" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "实验"
           }
         }
       }
@@ -1699,7 +1699,7 @@
         }
       }
     },
-    "Insert in" : {
+    "Translate to" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -1735,6 +1735,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "麦克风待命"
+          }
+        }
+      }
+    },
+    "Keeps the mic open after a dictation so the next starts at once" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "听写后保持麦克风开启，下次听写可立即开始"
           }
         }
       }
@@ -1815,6 +1825,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "键盘  ›  Hex Keyboard  ›  允许完全访问"
+          }
+        }
+      }
+    },
+    "Labs" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "实验室"
           }
         }
       }
@@ -1969,12 +1989,12 @@
         }
       }
     },
-    "Remove from keyboard" : {
+    "Remove a quick-switch language" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "从键盘中移除"
+            "value" : "移除快速切换语言"
           }
         }
       }
@@ -2385,12 +2405,12 @@
         }
       }
     },
-    "Checks a second keyboard language and keeps the better match." : {
+    "Checks a second keyboard language and keeps the better match" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "同时识别另一种键盘语言，并保留更准确的结果。"
+            "value" : "同时识别另一种键盘语言，并保留更准确的结果"
           }
         }
       }
@@ -2465,12 +2485,12 @@
         }
       }
     },
-    "Learns where you tap each key." : {
+    "Learns where you tap each key" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "学习你点击每个按键的位置。"
+            "value" : "学习你点击每个按键的位置"
           }
         }
       }
@@ -3471,22 +3491,22 @@
         }
       }
     },
-    "Adds comma, period and semicolon keys to the English Dvorak keyboard." : {
+    "Adds comma, period and semicolon keys to the English Dvorak keyboard" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "为英文 Dvorak 键盘添加逗号、句号和分号键。"
+            "value" : "为英文 Dvorak 键盘添加逗号、句号和分号键"
           }
         }
       }
     },
-    "Puts comma and period keys beside the space bar on the letters keyboard." : {
+    "Comma and period beside the space bar" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "在字母键盘的空格键两侧放置逗号和句号键。"
+            "value" : "空格键两侧的逗号和句号"
           }
         }
       }
@@ -3631,6 +3651,26 @@
         }
       }
     },
+    "Download failed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "下载失败"
+          }
+        }
+      }
+    },
+    "Speech recognition isn't ready" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "语音识别尚未就绪"
+          }
+        }
+      }
+    },
     "Getting the speech model ready." : {
       "localizations" : {
         "zh-Hans" : {
@@ -3657,6 +3697,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "语音模型下载完成前，听写无法使用。"
+          }
+        }
+      }
+    },
+    "The Hex keyboard dictates with Apple's speech recognition until it downloads." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "下载完成前，Hex 键盘使用 Apple 的语音识别听写。"
           }
         }
       }
@@ -4271,12 +4321,12 @@
         }
       }
     },
-    "On the iPhone Duo unfolded, keeps the keys on one keyboard instead of splitting them." : {
+    "On the iPhone Duo unfolded, keeps the keys on one keyboard instead of splitting them" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "在 iPhone Duo 展开时让按键保持在一个键盘上，而不是分开。"
+            "value" : "在 iPhone Duo 展开时让按键保持在一个键盘上，而不是分开"
           }
         }
       }
@@ -4476,7 +4526,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "允许完全访问后即可听写"
+            "value" : "允许完全访问以听写"
           }
         }
       }
@@ -4507,16 +4557,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "打开 Hex 的设置步骤"
-          }
-        }
-      }
-    },
-    "Allow Full Access: Settings › Apps › Hex › Keyboards" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "允许完全访问：设置 › App › Hex › 键盘"
           }
         }
       }
@@ -4697,16 +4737,6 @@
         }
       }
     },
-    "Getting ready in the keyboard" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "正在键盘中准备"
-          }
-        }
-      }
-    },
     "Ready in the keyboard" : {
       "localizations" : {
         "zh-Hans" : {
@@ -4733,16 +4763,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "切换到下一个键盘，iOS 会在那里提供你存储的密码"
-          }
-        }
-      }
-    },
-    "The keyboard can't use it right now, so it uses Apple's speech recognition." : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "键盘暂时无法使用它，因此使用 Apple 的语音识别。"
           }
         }
       }
@@ -5077,7 +5097,7 @@
         }
       }
     },
-    "When you tap Send, Hex sends your message, the pictures above, your email, Hex's version and the language and speech model it dictates with, your iPhone's model, iOS version and language, the screen you opened this from, and a random install id that keeps your reports together, to Anomaly's feedback inbox. Nothing you dictate or type elsewhere is sent." : {
+    "When you tap Send, Hex sends your message, the pictures above, your email, Hex's version and the language and speech model it dictates with, your iPhone's model, iOS version and language, the screen you opened this from, and a random install ID that keeps your reports together, to Anomaly's feedback inbox. Nothing you dictate or type elsewhere is sent." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -5087,12 +5107,22 @@
         }
       }
     },
-    "Hex sends nothing unless you tap Send in Send feedback. Then it sends your message and the pictures you kept, your email if you add one, and details about Hex and this iPhone to Anomaly's feedback inbox. With an email, Hex also sends a random install ID so your reports stay together. Your dictations, what you type, and what Hex learned are never included." : {
+    "Hex sends nothing unless you tap Send in Send feedback. The form lists exactly what goes with it. Your dictations, what you type and what Hex learned are never included." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "除非你在“发送反馈”中轻点“发送”，否则 Hex 不会发送任何内容。轻点后，它会把你的留言和保留的图片、你填写的邮箱（如有），以及 Hex 和这台 iPhone 的相关信息发送到 Anomaly 的反馈收件箱。填写邮箱时，Hex 还会发送一个随机安装 ID，把你的反馈归在一起。你的听写、输入的内容以及 Hex 学到的内容都不会包含在内。"
+            "value" : "除非你在“发送反馈”中轻点“发送”，否则 Hex 不会发送任何内容。表单会列出随之发送的所有内容。你的听写、输入的内容以及 Hex 学到的内容都不会包含在内。"
+          }
+        }
+      }
+    },
+    "Hex downloads its own speech models from Hugging Face; that request carries nothing about you or what you say, though Hugging Face sees your internet address, as with any website." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hex 会从 Hugging Face 下载自己的语音模型；这个请求不包含任何关于你或你所说内容的信息，不过和访问任何网站一样，Hugging Face 会看到你的网络地址。"
           }
         }
       }
@@ -5237,12 +5267,32 @@
         }
       }
     },
-    "The keyboard dictates with the model below. Until it's ready, it uses Apple's speech recognition." : {
+    "Use mobile data" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "键盘使用下方选择的模型听写。准备好之前，使用 Apple 的语音识别。"
+            "value" : "使用蜂窝数据"
+          }
+        }
+      }
+    },
+    "Remove (%@)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "移除（%@）"
+          }
+        }
+      }
+    },
+    "Until it's ready, the keyboard uses Apple's speech recognition" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "准备好之前，键盘使用 Apple 的语音识别"
           }
         }
       }
@@ -5257,32 +5307,32 @@
         }
       }
     },
-    "Other languages use Apple's speech recognition. Only the picked model stays on this iPhone: switching downloads the new one, and the old one goes once the new one is ready." : {
+    "Other languages use Apple's speech recognition. Switching models downloads the new one and removes the old." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "其他语言使用 Apple 的语音识别。这台 iPhone 上只保留所选的模型：切换时会下载新模型，等新模型准备好后再删除旧的。"
+            "value" : "其他语言使用 Apple 的语音识别。切换模型会下载新模型并删除旧模型。"
           }
         }
       }
     },
-    "For English. A %@ download on Wi-Fi." : {
+    "A %@ download on Wi-Fi" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "用于英语。通过 Wi-Fi 下载 %@。"
+            "value" : "通过 Wi-Fi 下载 %@"
           }
         }
       }
     },
-    "25 languages, even mixed in one sentence: %@. A %@ download as soon as you pick it. Hex dictates them with it too." : {
+    "25 European languages, even mixed in one sentence. A %@ download on Wi-Fi." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "支持 25 种语言，一句话里混着说也行：%1$@。选择后立即下载 %2$@。Hex 自己听写这些语言时也会使用它。"
+            "value" : "支持 25 种欧洲语言，一句话里混着说也行。通过 Wi-Fi 下载 %@。"
           }
         }
       }
@@ -6153,6 +6203,286 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "%lld 项替换不写入任何内容，或只写入空格或换行，这台 iPhone 暂时做不到：%@"
+          }
+        }
+      }
+    },
+    "Getting ready in the keyboard. After a download or an update, this takes a little longer." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在键盘中准备。下载或更新后，这一步会久一点。"
+          }
+        }
+      }
+    },
+    "Not enough free memory when the keyboard last opened, so it used Apple's speech recognition. It tries again the next time it opens." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "键盘上次打开时可用内存不足，因此使用了 Apple 的语音识别。下次打开时会再试一次。"
+          }
+        }
+      }
+    },
+    "The keyboard had %lld MB free when it last opened; loading the model needs %lld MB, so it used Apple's speech recognition. It tries again the next time it opens." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "键盘上次打开时只有 %1$lld MB 可用内存，载入模型需要 %2$lld MB，因此使用了 Apple 的语音识别。下次打开时会再试一次。"
+          }
+        }
+      }
+    },
+    "This iPhone can't run it in the keyboard, so the keyboard uses Apple's speech recognition." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这台 iPhone 无法在键盘中运行它，因此键盘使用 Apple 的语音识别。"
+          }
+        }
+      }
+    },
+    "The keyboard couldn't load it, so it uses Apple's speech recognition." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "键盘未能载入它，因此使用 Apple 的语音识别。"
+          }
+        }
+      }
+    },
+    "This iPhone's keyboard doesn't have the memory for it, so it uses Apple's speech recognition." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这台 iPhone 的键盘内存不够运行它，因此使用 Apple 的语音识别。"
+          }
+        }
+      }
+    },
+    "This iPhone's keyboard has %lld MB; the model needs %lld MB, so it uses Apple's speech recognition." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这台 iPhone 的键盘有 %1$lld MB 内存，模型需要 %2$lld MB，因此使用 Apple 的语音识别。"
+          }
+        }
+      }
+    },
+    "Voice isolation" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "语音突显"
+          }
+        }
+      }
+    },
+    "Lets Mic Mode in Control Center isolate your voice. Other audio may go quiet, and Bluetooth headphones may drop to call quality while you dictate." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "让控制中心的麦克风模式突显你的声音。听写时其他音频可能会变小，蓝牙耳机可能会降为通话音质。"
+          }
+        }
+      }
+    },
+    "Korean keyboard (두벌식)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "韩语键盘（두벌식）"
+          }
+        }
+      }
+    },
+    "Adds 한국어, composing syllables as you type" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "添加 한국어，输入时自动组合音节"
+          }
+        }
+      }
+    },
+    "What's new in Hex" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hex 新功能"
+          }
+        }
+      }
+    },
+    "What's new" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "新功能"
+          }
+        }
+      }
+    },
+    "Dutch, Swedish and Slovak" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "荷兰语、瑞典语和斯洛伐克语"
+          }
+        }
+      }
+    },
+    "Add one in Keyboard › Languages to type with its own letters, like å, ä and ö." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在“键盘”›“语言”中添加，就能用它自己的字母打字，比如 å、ä 和 ö。"
+          }
+        }
+      }
+    },
+    "Hex's Swedish keyboard, with the keys å, ä and ö." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hex 的瑞典语键盘，带有 å、ä 和 ö 键。"
+          }
+        }
+      }
+    },
+    "Emoji as you type" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "边打字边出表情符号"
+          }
+        }
+      }
+    },
+    "Type a word like “smile” and tap the 😊 above the keys to put it in its place." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "输入“smile”这样的词，轻点按键上方的 😊，就能用它替换这个词。"
+          }
+        }
+      }
+    },
+    "The keyboard offering 😊 above the keys while “smile” is typed." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "输入“smile”时，键盘在按键上方推荐 😊。"
+          }
+        }
+      }
+    },
+    "In Dictation › Custom vocabulary, tell Hex to write “GitHub” when it hears “jet hub”, and share your list as a file." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在“听写”›“自定词汇”中，让 Hex 听到“jet hub”时写成“GitHub”，还能把列表分享为文件。"
+          }
+        }
+      }
+    },
+    "Word replacements, with “jet hub” written as “GitHub”." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "词语替换：“jet hub”写成“GitHub”。"
+          }
+        }
+      }
+    },
+    "Kept when the screen locks" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "锁屏也不会丢"
+          }
+        }
+      }
+    },
+    "If your iPhone locks mid-dictation, what you said is kept: tap Paste in the keyboard to put it in." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "听写中途 iPhone 锁屏时，你说过的话会被保留：在键盘上轻点“粘贴”即可放进去。"
+          }
+        }
+      }
+    },
+    "The keyboard saying the dictation stopped at 0:44, with Paste." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "键盘提示听写在 0:44 处停止，并提供“粘贴”。"
+          }
+        }
+      }
+    },
+    "Turn on Key colors in Labs, which used to be Experiments, and pick a color for the keys." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在“实验室”（原“实验”）中打开“按键颜色”，为按键选一种颜色。"
+          }
+        }
+      }
+    },
+    "Hex's keyboard with burgundy keys." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "按键为勃艮第红的 Hex 键盘。"
+          }
+        }
+      }
+    },
+    "Tap Send feedback at the bottom of Home to tell us what to fix or add, with a screenshot if it helps." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在主页底部轻点“发送反馈”，告诉我们哪里要修、想加什么，需要时可附上截图。"
+          }
+        }
+      }
+    },
+    "The Send feedback form." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "“发送反馈”表单。"
           }
         }
       }

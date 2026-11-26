@@ -8,7 +8,9 @@ while the shortcut is still held past the hold threshold cancels it; a
 hands-free capture never takes Escape. Every other intentional dictation
 finishes and pastes. The other exception is a Labs › Caps Lock dictation
 capture on macOS: it is hands-free in every shortcut mode, so its own Escape
-binding cancels it even in Hold.
+binding cancels it even in Hold. With Labs › Confirm long cancels on, a dictation
+that has recorded 10 s or more asks for a second cancel press within 3 s
+before it is thrown away (see [labs.md](labs.md), #2837).
 
 This map covers the macOS release path. Linux shares the basic journey, not
 every timing, input, or recovery guarantee; see the
@@ -68,6 +70,20 @@ light and restores normal Caps Lock behaviour. The light needs Input Monitoring
 (which Hex already asks for); without it dictation still works and the light
 stays under macOS's control. Implemented November 7, 2026, not verified on
 hardware; details and checks in [labs.md](labs.md).
+
+macOS with Labs › Middle mouse dictation on (`labs.middle_mouse_dictation`, off
+by default, issue 2838): holding the middle mouse button for 500 ms starts a
+hands-free dictation while the button is still down, and the next long press
+finishes it. Shorter clicks do nothing, a press that drags the pointer more
+than a few points (panning, autoscroll) never counts, and every middle click,
+long or short, still reaches the app in front. A mouse-started capture is the dictation
+shortcut's, so its next press finishes it too; a long press finishes a capture
+the shortcut (or Caps Lock) locked, keeping that capture's output settings. A
+held press, a pending double tap, or an Annotate recording is left alone. While
+the lab is on, Escape cancels any hands-free dictation in every shortcut mode
+and is kept from the app in front, a terminal included; off, the usual cancel
+rules apply. Not verified on hardware; details and checks in
+[labs.md](labs.md).
 
 Wayland's XDG shortcut syntax has no mouse-button trigger. Use the desktop's
 mouse bindings to run `hex dictation start`/`stop` (hold) or `hex dictation toggle`
@@ -871,16 +887,27 @@ Tap, Paste Last menu, or hex paste-last → newest ready, noncancelled dictation
 Hold 200 ms on the Mac event tap → up to eight recent items, without taking focus
 ├── Rows are read from the press, so the picker fades in as the hold passes
 ├── Centred on the display under the pointer; stays open once the keys come up
+├── Rows down a rail (a capture's picture or a dictation's mark, first words, kind · age)
+│   beside the selected row's preview: a capture's first keyframe (else its contact
+│   sheet) over its words, or a dictation's whole text; then app · length · model
 ├── Initially select what tap would paste; with only Cancelled rows select nothing
 ├── Show all History → open the searchable archive, not a paste
-├── Click a row → recheck that item and paste it once into the original field
+├── Click a row → select it; click the selected row (so a double click on any row),
+│   or Paste → recheck that item and paste it once into the original field
 ├── ↑/↓, Tab, or Paste Last's key again (with or without ⌥⇧) → move; its repeats do nothing
 ├── Return or keypad Enter → paste the selected item into the original field
+├── Copy → a dictation's text, or a capture as Annotate copies it, on the clipboard; closes
+├── Open in Editor, or a click on a capture's picture → close, and open the capture as
+│   History's Open in Editor does (its movie to trim, else its picture); not a paste
 └── Escape, a click outside the card, another key, or changed focus → close without touching the clipboard
 ```
 
-Check: `a_tap_pastes_and_a_hold_opens_a_picker_that_stays_until_escape` in
-[paste/browse.rs](../../src/paste/browse.rs). Scene: `mac-paste-picker`.
+Check: `a_tap_pastes_and_a_hold_opens_a_picker_that_stays_until_escape` and
+`a_click_selects_a_second_pastes_and_a_capture_opens_in_its_editor` in
+[paste/browse.rs](../../src/paste/browse.rs). Scenes: `mac-paste-picker` (a
+capture selected) and `mac-paste-picker-dictation`, on fixture rows and drawn
+pictures. Not yet run natively: a real capture's picture loading from its
+bundle, Copy, and Open in Editor from the picker.
 
 With it on, the Mac History puts dictations, annotations, screenshots and
 screen recordings in one list. All types is the default. Search works inside the
@@ -3182,6 +3209,10 @@ keeping its shadow padding. The plate only moves up inside the window once the
 raised window would reach the visible top (a gap above the visible height
 minus 104 pt), which within 0–400 only happens on a very short visible frame,
 and placement clamps it under the menu bar or notch.
+With Labs › Indicator follows mouse on, either visible position instead puts
+the plate just below the pointer (above it near the screen's bottom), inside
+the pointer screen's visible frame, while the HUD shows
+([labs.md](labs.md)).
 The HUD is
 also pinned to the pointer screen's `NSScreenNumber` with a display-local rect;
 that resolves to the same frame as the global `Primary` rect, so the pin is

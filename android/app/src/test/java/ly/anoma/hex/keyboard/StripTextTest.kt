@@ -34,6 +34,8 @@ import ly.anoma.hex.diagnostics.poolWords
 import ly.anoma.hex.diagnostics.processorLine
 import ly.anoma.hex.diagnostics.threadWords
 import ly.anoma.hex.speech.DictationPlace
+import ly.anoma.hex.speech.LanguageChoice
+import ly.anoma.hex.speech.DictationLanguage
 import ly.anoma.hex.speech.DictationTimes
 import ly.anoma.hex.speech.ModelAtTick
 import ly.anoma.hex.speech.RanOn
@@ -280,6 +282,9 @@ class StripTextTest {
         assertTrue(lastDictationLines(DictationTimes(DictationPlace.Home, 2_000, 1_400, ModelAtTick.Loaded, 0, true, 20, 21, 1_321,
             1_330, 3_900, longArrayOf(10_000, 1_000_000, 90_000, 20_000, 0, 320, 4, 0, 610_000, 4))).endsWith(
             "  a phrase written twice, decoded again without your words: 610 ms of the decode\n"))
+        // Labs › Dictate from Quick Settings' sheet names its own place.
+        assertTrue(lastDictationLines(DictationTimes(DictationPlace.QuickSettings, 5_000, 4_800, ModelAtTick.Loaded, 0, true, 20, 25,
+            2_025, 2_030, 7_000, timings)).contains("\n  from Quick Settings, 5.0 s recorded, 4.8 s kept;"))
         // Where a dictation's threads were kept, in the words the report uses: no pool, a pool on any core, a pinned one,
         // and a report from a build before that slot existed.
         assertEquals("started for every graph", poolWords(-1))
@@ -297,6 +302,20 @@ class StripTextTest {
         assertEquals(ModelAtTick.LoadedWhileSpeaking, modelAtTick(tick = 0, prepared = 150, prepareLoaded = true, decodeLoaded = false))
         assertEquals(ModelAtTick.LoadedAfter, modelAtTick(tick = 100, prepared = 0, prepareLoaded = false, decodeLoaded = true))
         assertEquals(ModelAtTick.Unknown, modelAtTick(tick = 100, prepared = 0, prepareLoaded = false, decodeLoaded = false))
+    }
+    @Test fun diagnosticsSayWhichLanguageAutomaticChose() {
+        // Labs › Automatic listens for the language: the language chosen, kept or switched, every candidate's probability
+        // against what a switch takes, on its own line after the decode's.
+        val both = listOf(DictationLanguage.English, DictationLanguage.Spanish)
+        fun last(choice: LanguageChoice?, keptMs: Long = 2_400) = lastDictationLines(DictationTimes(DictationPlace.Keyboard, 2_600, keptMs,
+            ModelAtTick.Loaded, 0, true, 20, 25, 900, 910, 2_000, null, RanOn.Standard, 4, choice)).lines().dropLast(1).last()
+        assertEquals("  language Español, switched from English; English 0.4%, Español 99.6%, switching takes 99%; chosen in 3.3 ms",
+            last(LanguageChoice(both, 1, listOf(0.004, 0.996), 3_300)))
+        assertEquals("  language English, kept the keyboard's; English 38.0%, Español 62.0%, switching takes 95%; chosen in 2.9 ms",
+            last(LanguageChoice(both, 0, listOf(0.38, 0.62), 2_900), keptMs = 5_000))
+        assertEquals("  language English, the only one listened for", last(LanguageChoice(listOf(DictationLanguage.English), 0, null)))
+        // The lab off: the decode's line is the last, as before.
+        assertTrue(last(null).startsWith("  decode 875 ms"))
     }
     @Test fun diagnosticsReportTheFasterModelsTextOnItsOwnLine() {
         val top = Sched("/top-app", "0::/uid_*/pid_*", "0-7", 0)

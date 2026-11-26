@@ -23,6 +23,7 @@ extension DictationController {
             controller.warmDuration = .fifteenMinutes
             controller.setWarmSession(.cold)
             if scene.hasPrefix("model-card-") { KeyboardParakeetDownload.shared.applyFixture(scene) }
+            if scene.hasPrefix("settings-dictation-model-") { controller.applySpeechModelFixture(scene) }
 
         case "language-unavailable":
             // Russian picked by hand on an iPhone whose Apple Speech can't install it.
@@ -36,6 +37,7 @@ extension DictationController {
             controller.engine = .appleSpeech
             controller.applyFixturePhase(.failed(UserFacingError.message(for: unavailable, context: .model)))
             controller.languageOffer = "en-US"
+            controller.languageOfferLine = unavailable.lineBesideOffer
 
         case "language-switched":
             // Automatic moved on from Russian to English.
@@ -233,5 +235,71 @@ extension DictationController {
 
     private func applyFixtureWarmSession(remaining: TimeInterval) {
         setWarmSession(.warm(expiresAt: Date().timeIntervalSince1970 + remaining), remaining: remaining)
+    }
+
+    /// `settings-dictation-model-<english|multilingual>-<waiting|downloading|ready>`: Settings ›
+    /// Dictation › Model with that model picked and its download in that state. Waiting is the
+    /// real rule: pass `--simulate-cellular` and the keyboard has measured room for the model,
+    /// so only the connection holds it. The other states leave the keyboard unmeasured, so
+    /// nothing really downloads on the simulator's Wi-Fi. English also has what the keyboard
+    /// said about a downloaded model, preparing|short|noengine|failed (short with 41 MB free),
+    /// and toosmall, a keyboard limit of 118 MB, under KeyboardParakeetBudget.requiredLimit;
+    /// toosmalldownloaded has English's model on the iPhone all the same (a sparse file of its
+    /// size), as a switch turned on by hand used to download it, for Remove.
+    private func applySpeechModelFixture(_ scene: String) {
+        let multilingual = scene.contains("-multilingual-")
+        let step = scene.split(separator: "-").last.map(String.init) ?? "waiting"
+        let keyboardSaid: [String: (KeyboardParakeetSettings.KeyboardState, KeyboardParakeetSettings.UnavailableReason?)] = [
+            "preparing": (.preparing, nil),
+            "short": (.unavailable, .shortOfMemory),
+            "noengine": (.unavailable, .noNeuralEngine),
+            "failed": (.unavailable, .loadFailed),
+        ]
+        let said = multilingual ? nil : keyboardSaid[step]
+        let card = multilingual ? "waiting" : said == nil && step != "toosmalldownloaded" ? step : "ready"
+        KeyboardParakeetDownload.shared.applyFixture("model-card-\(card)")
+        let megabyte = KeyboardParakeetBudget.megabyte
+        if step == "waiting" {
+            KeyboardParakeetSettings().recordKeyboardLimit(KeyboardParakeetBudget.requiredLimit)
+        } else if step.hasPrefix("toosmall") {
+            KeyboardParakeetSettings().recordKeyboardLimit(118 * megabyte)
+        }
+        if step == "toosmalldownloaded" {
+            // Hex itself dictates with Apple's speech recognition, as on an iPhone 14, so the
+            // model is the keyboard's alone and Remove shows.
+            if #available(iOS 26.0, *) {
+                transcriber = AppleSpeechTranscriber(language: SpeechLanguage(locale: Locale(identifier: "en-US"), module: .speech))
+            }
+            applyFixtureDictationLanguage()
+            let file = ParakeetTranscriber.cacheDirectory.appendingPathComponent("fixture.bin")
+            FileManager.default.createFile(atPath: file.path, contents: nil)
+            let handle = try? FileHandle(forWritingTo: file)
+            try? handle?.truncate(atOffset: UInt64(KeyboardParakeetDownload.bytes))
+            try? handle?.close()
+        }
+        if let said {
+            KeyboardParakeetSettings().setKeyboardState(said.0, reason: said.1, free: step == "short" ? 41 * megabyte : nil)
+        }
+        MultilingualParakeetSettings().isEnabled = multilingual
+        downloadNetwork.forgetMobileData()
+        guard multilingual else { return }
+        ParakeetUltraModel.remove()
+        switch step {
+        case "downloading":
+            multilingualDownload.applyFixture(share: 0.42)
+        case "ready":
+            // Files of the right sizes (sparse), so it reads as on the iPhone; nothing loads them.
+            for file in ParakeetUltraModel.files {
+                let url = ParakeetUltraModel.directory.appendingPathComponent(file.path)
+                try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                FileManager.default.createFile(atPath: url.path, contents: nil)
+                let handle = try? FileHandle(forWritingTo: url)
+                try? handle?.truncate(atOffset: UInt64(file.size))
+                try? handle?.close()
+            }
+            KeyboardParakeetSettings().setKeyboardState(.ready, multilingual: true)
+        default:
+            startMultilingualDownloadIfWanted()
+        }
     }
 }

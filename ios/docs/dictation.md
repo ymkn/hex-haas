@@ -331,7 +331,7 @@ the App Group, or the keyboard's own Library for an unsigned build) from the fir
 `ParakeetLiveTranscriber` (the audio so far again about once a second, a 20 s window) is
 written for when the speech model's own words should show, and not used yet.
 
-## Apple Intelligence cleanup (Settings › Experiments › Clean up with Apple Intelligence, iOS 26+)
+## Apple Intelligence cleanup (Settings › Labs › Clean up with Apple Intelligence, iOS 26+)
 
 Off by default. For every style but `Verbatim`,
 one on-device FoundationModels pass before formatting fixes clearly
@@ -345,10 +345,11 @@ Settings › Dictation's speech model card has **Model: English · Multilingual*
 (`SpeechModelChoice`, `SpeechModelChoiceRow`) under Speech model in keyboard, English
 until Multilingual is picked, on iPhones with 6 GB or more (under that the switch above
 says it needs 6 GB, and the row doesn't show). It moved there from Experiments on
-2026-11-24. Each choice says what it means before anything downloads: English, "For
-English. A 464.4 MB download on Wi-Fi."; Multilingual, its 25 languages by name, "A 632.2 MB
-download as soon as you pick it. Hex dictates them with it too."; both, that other languages
-use Apple's speech recognition and that only the picked model stays on the iPhone. Only the
+2026-11-24. Each choice says what it means before anything downloads: English, "A 464.4 MB
+download on Wi-Fi"; Multilingual, "25 European languages, even mixed in one sentence. A
+632.2 MB download on Wi-Fi." (its languages are no longer named there, since 1.0.5); both,
+"Other languages use Apple's speech recognition. Switching models downloads the new one and
+removes the old." Only the
 picked one is kept, but the other goes only once the picked one is downloaded and has loaded
 once, in Hex or the keyboard (`SpeechModelChoice.unpicked`, checked whenever Hex comes to the
 front and when Hex has loaded the multilingual model; `KeyboardParakeetSettings.hasLoadedOnce`),
@@ -425,7 +426,19 @@ when the keyboard reports its limit. Turned on by hand (a stored true, including
 the builds where it was off by default) it downloads at once on any connection. Until
 then the row says what it waits for: "Downloads after you first use the Hex keyboard",
 "Downloads on Wi-Fi", "Downloads once the iPhone has 2 GB free", "Only for English
-dictation". Home shows the same status under "New: Hex's own speech model" wherever the
+dictation".
+
+Both of Model's downloads follow one rule (`SpeechModelDownloadNetwork`, TestFlight build
+151: Multilingual started 632 MB over mobile data the moment it was picked, while English
+waited for Wi-Fi): on Wi-Fi a picked model downloads as before; off Wi-Fi it waits, its line
+says "Downloads on Wi-Fi." and **Use mobile data** beside it starts it now. Wi-Fi coming back
+starts a waiting download by itself, and a download Hex started on Wi-Fi stops where it is
+(its files resume) when Wi-Fi goes, as English's always did. Use mobile data is one
+decision for that model's download, kept in the App Group (`settings.speechModel.mobileData`)
+until it is on the iPhone: a stop, a Try again or the next launch carries on over any
+connection. Picking the other model forgets it, so that model's download asks again. Home's
+multilingual line has the same action; Home's English card opens Settings instead.
+`--simulate-cellular` makes the simulator read as off Wi-Fi. Home shows the same status under "New: Hex's own speech model" wherever the
 keyboard would use it (`SpeechModelHomeCard`: the switch on, an iPhone that fits, English
 and no other engine); once it's ready in the keyboard the card can be dismissed, for good. The keyboard's own dictation transcribes with Parakeet in
 the keyboard's process (`HEXKeyboard/KeyboardParakeet.swift`), with the app closed:
@@ -454,8 +467,39 @@ again, or moved, compiles again, so the log calls a load "cold" by its time (5 s
 more), and moving a legacy folder forgets the app's compile record for it
 (`ParakeetCompileRecord.forget`), so V2 says it's optimizing for this iPhone and Ultra
 gets ready beside the engine that dictates. The Settings › Dictation row says what it's doing: downloading,
-downloaded, getting ready in the keyboard, ready, or that the keyboard can't use it now
-(`KeyboardParakeetSettings.keyboardState`, written by the keyboard). Dictating in another
+downloaded, getting ready in the keyboard, ready, or why the keyboard couldn't use it
+(`KeyboardParakeetSettings.keyboardState` and `unavailableReason`, written by the keyboard):
+too little memory left when it last opened ("It tries again the next time it opens"), no
+Neural Engine, or a load that failed or didn't land on the Neural Engine (with **Try again**,
+which has the keyboard drop its compiled copies and load it again at its next open, even in
+the process that set it aside, via `purgesCompiled`). A keyboard limit under 131 MB says this
+iPhone's keyboard doesn't have the memory for it. Until 2026-11-25 all of these read "The
+keyboard can't use it right now", which stayed up after the cause had passed: only the
+keyboard's next load, the switch or removing the model clears what it said, and unlike
+"Getting ready" (3 minutes) it never expires, so each line now says what happens next
+rather than that it's so now. A load still going after `loadPatience` (180 s) is only logged;
+it used to say the keyboard couldn't use it. Every keyboard open that decides not to load
+says why: after a memory warning (in that view controller, or within `reloadAfterWarning`)
+it writes `shortOfMemory` rather than nothing, and a model still loaded says ready again if
+Hex cleared it. Where the plan picks no model (a limit under 131 MB, another language, nothing
+downloaded) the keyboard writes nothing and Hex says why from the same plan: a limit under
+131 MB says so even with the model downloaded, as a download turned on by hand skips the
+hold. A `.unavailable` without a reason can only come from a keyboard before 1.0.5 (the
+reason is written before the state), says nothing true, and Hex forgets it at launch
+(`forgetUnavailableWithoutReason`; TestFlight build 153 on an iPhone 14 showed it), so no
+reason means the keyboard hasn't said anything since: "Downloaded. The keyboard gets it
+ready the next time it opens." The two memory causes carry their numbers where the keyboard
+measured them, whole megabytes rounded down, and stay on the iPhone: "This iPhone's keyboard
+has 118 MB; the model needs 131 MB, …" (the limit it records at each open) and "The keyboard
+had 41 MB free when it last opened; loading the model needs 58 MB, …" (`keyboardStateFree`,
+written with `shortOfMemory` by the budget check, not after a memory warning); without them
+the same words without numbers. A switch turned on by hand downloads at once on any
+connection and whatever space is free, but never where the keyboard measured under 131 MB
+(`KeyboardParakeetDownload.downloads`); before the keyboard has ever opened it still
+downloads at once. Where English's model is on the iPhone and the keyboard is too small for
+it, the line offers **Remove (464 MB)** (the folder's size on disk), which deletes it as
+turning the switch off does, with the switch left on; never by itself, not while Hex
+dictates with that model, and not for Multilingual, which Hex dictates with too. Dictating in another
 language than English, Hinglish included, it says "Only for English dictation." even once
 downloaded: Apple's speech recognition takes that dictation whatever the keyboard last wrote
 (build 147 said "Ready in the keyboard", which reads as Parakeet taking Hinglish). Each dictation logs
@@ -711,7 +755,7 @@ Spanish, German ones (äh, ähm, öhm) in German, and none elsewhere (Norwegian
 "er" is "is", Portuguese "um" is "a"); translation's source is the dictation
 language rather than a guess. Custom vocabulary works in any language.
 
-## Voice isolation (Settings › Experiments › Voice isolation)
+## Voice isolation (Settings › Labs › Voice isolation)
 
 Off by default
 (`experiments.voiceIsolation`, App Group). While on, the app records in
@@ -724,7 +768,7 @@ profile. With it off, both record exactly as before. Not verified on a
 device: that Control Center actually offers Voice Isolation for Hex, and how
 the mode changes a recording's level.
 
-## Two-language dictation (Settings › Experiments › Two-language dictation, iOS 26+)
+## Two-language dictation (Settings › Labs › Two-language dictation, iOS 26+)
 
 Off by default (`experiments.twoLanguageDictation`, App Group). While on, and while
 dictation uses Apple Speech's `SpeechTranscriber`, one recording is read twice: in the
@@ -795,7 +839,7 @@ not only when the row
 appears. A long press on a language (a chip, or a row on the Hex key menu's Language
 page) shows **Remove**, which takes it off (`settings.dictationLanguage.removed`, so one
 of the iPhone's own languages stays off too) and puts the one set back on Automatic;
-Settings › Dictation language's **Remove from keyboard** does the same (TestFlight build
+Settings › Dictation language's **Remove a quick-switch language** does the same (TestFlight build
 56: a language couldn't be removed, and one could only be added in Hex). **More
 languages…** lists every other language Apple Speech has, the iPhone's own first, and
 picking one there adds it (in the dictation bar the list takes the keys' place). Removing

@@ -4,7 +4,7 @@ import UIKit
 /// Settings › Dictation language: Automatic, the first iPhone language Apple Speech
 /// transcribes, or any language `SpeechTranscriber` or `DictationTranscriber` has (before
 /// iOS 26, any language Apple's recognizer has on the iPhone: `OnDeviceSpeechLanguages`).
-/// Remove from keyboard takes a language off the keyboard's quick switch.
+/// Remove a quick-switch language takes a language off the keyboard's quick switch.
 struct DictationLanguageRow: View {
     @Bindable var dictation: DictationController
     @Environment(\.scenePhase) private var scenePhase
@@ -46,7 +46,7 @@ struct DictationLanguageRow: View {
                     }
                     if !keyboardChoices.isEmpty {
                         // The keyboard's quick switch: take a language off it here too.
-                        Menu("Remove from keyboard") {
+                        Menu("Remove a quick-switch language") {
                             ForEach(keyboardChoices, id: \.self) { id in
                                 Button(role: .destructive) {
                                     let settings = LanguageSettings()
@@ -69,9 +69,9 @@ struct DictationLanguageRow: View {
                             dictation.setDictationLanguage(option.id)
                         } label: {
                             if dictation.dictationLanguage == option.id {
-                                Label(option.name, systemImage: "checkmark")
+                                Label(name(for: option.id), systemImage: "checkmark")
                             } else {
-                                Text(option.name)
+                                Text(name(for: option.id))
                             }
                         }
                     }
@@ -111,16 +111,12 @@ struct DictationLanguageRow: View {
             options = OnDeviceSpeechLanguages.options()
             listsOnDeviceLanguages = true
             refreshLanguageChoices()
-            automaticName = OnDeviceSpeechLanguages.automatic().map { SpeechLanguagePicker.displayName(for: $0) }
+            automaticName = OnDeviceSpeechLanguages.automatic().map { name(for: $0) }
             return
         }
         options = await AppleSpeechLanguages.options()
         refreshLanguageChoices()
-        automaticName = await AppleSpeechLanguages.automatic().map {
-            HinglishSettings().name(for: $0.identifier)
-                ?? GreeklishSettings().name(for: $0.identifier)
-                ?? SpeechLanguagePicker.displayName(for: $0.identifier)
-        }
+        automaticName = await AppleSpeechLanguages.automatic().map { name(for: $0.identifier) }
     }
 
     @MainActor
@@ -149,7 +145,7 @@ struct DictationLanguageRow: View {
                 preferred: preferred,
                 region: region
             ) else { continue }
-            names.append(SpeechLanguagePicker.shortName(for: identifier))
+            names.append(name(for: identifier))
         }
         guard !names.isEmpty else { return nil }
         return String(localized: "Follows keyboard: \(names.joined(separator: " · "))")
@@ -160,10 +156,11 @@ struct DictationLanguageRow: View {
         return name(for: id)
     }
 
+    /// Every language this row names, as the keyboard names it (`SpeechLanguagePicker.shortNames`).
     private func name(for id: String) -> String {
         if let hinglish = HinglishSettings().name(for: id) { return hinglish }
         if let greeklish = GreeklishSettings().name(for: id) { return greeklish }
-        return SpeechLanguagePicker.shortNames(for: options.map(\.id))[id]
+        return SpeechLanguagePicker.shortNames(for: [id], among: options.map(\.id))[id]
             ?? SpeechLanguagePicker.displayName(for: id)
     }
 }

@@ -685,7 +685,7 @@ pub(crate) struct Ui {
     build_preview: Option<BuildKind>,
     /// A scene showing the Paste Last picker over the window.
     #[cfg(all(target_os = "macos", hex_capture))]
-    paste_preview: bool,
+    paste_preview: paste_picker::Preview,
     capture: Capture,
     vocabulary: vocabulary::VocabularyEditor,
     /// The model the service was last seen preparing, and since when.
@@ -704,6 +704,8 @@ pub(crate) struct Ui {
     /// the hex link, read when the pane opens and after an install.
     #[cfg(hex_capture)]
     agents: scrawl::Agents,
+    #[cfg(all(hex_capture, not(target_os = "macos")))]
+    capture_folder: Option<crate::desktop::file_dialog::Pending>,
     modes: modes::ModesPane,
     output: output::OutputPane,
     picker: picker::Picker,
@@ -829,7 +831,7 @@ impl Ui {
             screenshot_folder: labs::screenshots::FolderChoice::default(),
             build_preview: None,
             #[cfg(all(target_os = "macos", hex_capture))]
-            paste_preview: false,
+            paste_preview: paste_picker::Preview::default(),
             capture: Capture::Idle,
             vocabulary,
             preparing: None,
@@ -842,6 +844,8 @@ impl Ui {
             captures: captures::CapturesPane::default(),
             #[cfg(hex_capture)]
             agents: scrawl::Agents::default(),
+            #[cfg(all(hex_capture, not(target_os = "macos")))]
+            capture_folder: None,
             modes,
             output: output::OutputPane::default(),
             picker: picker::Picker::default(),
@@ -1608,9 +1612,7 @@ fn view(ui: &Ui, cx: &mut Cx<Ui>) -> El {
         None => {}
     }
     #[cfg(all(target_os = "macos", hex_capture))]
-    if ui.paste_preview {
-        layer.push(paste_picker::preview(p));
-    }
+    layer.extend(paste_picker::preview(&ui.paste_preview, p));
     if let Some(first_run) = onboarding_kit::live::overlay(ui, p, cx.is_reduced_motion()) {
         layer.push(first_run);
     }

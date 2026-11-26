@@ -1,7 +1,10 @@
 package ly.anoma.hex.speech
 
+import android.app.LocaleManager
 import android.content.Context
 import android.content.res.Resources
+import android.os.Build
+import java.util.Locale
 
 internal enum class Style { Polished, Casual, Notes, Verbatim }
 /** A keyboard layout's language: its keys, accents and typing model. Dictation languages are
@@ -43,13 +46,50 @@ internal enum class DictationLanguage(val code: String, val label: String, val l
         fun automatic(keyboard: Spoken?, system: List<String>): DictationLanguage =
             entries.firstOrNull { keyboard != null && it.layout == keyboard }
                 ?: system.firstNotNullOfOrNull(::matching) ?: English
+        /** Labs › Automatic listens for the language: the languages Automatic chooses among, at most three. Its own
+         * language ([keyboard], [automatic]'s) comes first and is kept unless the speech is clearly another; then the
+         * phone's other languages Hex dictates, in the phone's order; then the last one picked by hand ([picked]). Bokmål
+         * and Nynorsk are one ([matching]); Danish and Swedish, which Hex doesn't dictate, never count. */
+        fun candidates(keyboard: DictationLanguage, system: List<String>, picked: DictationLanguage?): List<DictationLanguage> =
+            (listOf(keyboard) + system.mapNotNull(::matching) + listOfNotNull(picked)).distinct().take(3)
     }
+}
+
+/** What setup says about the dictation language: [spoken], the phone's first language in its own name when Hex can't
+ * dictate it ([unsupported]), and the phone's other languages Hex dictates, a hold of the space bar away ([others]).
+ * A language chosen in Settings or a pinned layout is the reason itself ([automatic] false), so neither carries the rest. */
+internal data class PhoneLanguage(val spoken: DictationLanguage, val unsupported: String? = null,
+                                  val others: List<DictationLanguage> = emptyList(), val automatic: Boolean = true,
+                                  /** Labs › Automatic listens for the language: the languages it chooses among, when several. */
+                                  val listensAmong: List<DictationLanguage> = emptyList())
+
+/** The phone's languages, in the person's order: Android's system list, never Hex's own App language. From Android 13
+ * an app language is folded into the process's configuration, Resources.getSystem()'s included, so only
+ * LocaleManager still has the system's own list. */
+internal fun systemLocales(context: Context): List<Locale> {
+    val locales = (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
+        context.getSystemService(LocaleManager::class.java)?.systemLocales else null) ?: Resources.getSystem().configuration.locales
+    return (0 until locales.size()).map { locales[it] }
+}
+
+internal fun phoneLanguage(chosen: DictationLanguage?, pinned: Spoken?, system: List<Locale>): PhoneLanguage {
+    val spoken = chosen ?: DictationLanguage.automatic(pinned, system.map { it.language })
+    if (chosen != null || pinned != null) return PhoneLanguage(spoken, automatic = false)
+    val unsupported = system.firstOrNull()?.takeIf { DictationLanguage.matching(it.language) == null }
+        ?.let { it.getDisplayLanguage(it).replaceFirstChar { c -> c.titlecase(it) } }?.takeIf { it.isNotEmpty() }
+    if (unsupported != null) return PhoneLanguage(spoken, unsupported)
+    return PhoneLanguage(spoken, others = system.mapNotNull { DictationLanguage.matching(it.language) }.distinct() - spoken)
 }
 
 /** The layout whose typing model the keyboard reads: the one pinned in Keyboard › Keyboard layout, else the
  * dictation language's own. Null when the keys are only English's stand-in for a language with no layout
  * (Nederlands, Polski, Русский): English's next words and autocorrections are not that language's. */
 internal fun typingLayout(pinned: Spoken?, spoken: DictationLanguage): Spoken? = pinned ?: spoken.layout
+
+/** The dictation language a swipe can't be read in, named in the strip's note: no layout pinned and none of its own,
+ * so English's word list only stands in for the keys and swipes stay off. Null where swipes read a typing model. */
+internal fun swipeUnreadableIn(pinned: Spoken?, spoken: DictationLanguage): DictationLanguage? =
+    spoken.takeIf { typingLayout(pinned, spoken) == null }
 
 internal data class SpeechOptions(val style: Style, val spoken: DictationLanguage, val clean: Boolean, val translate: Boolean,
                                    val lowercase: Boolean = false, val endWithPeriod: Boolean = true,
@@ -65,7 +105,15 @@ internal data class SpeechOptions(val style: Style, val spoken: DictationLanguag
                                     * Never used as forced spellings. */
                                    val hints: List<String> = emptyList(),
                                    /** Custom vocabulary's Word replacements, applied before learned fixes. */
-                                   val replacements: List<WordReplacement> = emptyList()) {
+                                   val replacements: List<WordReplacement> = emptyList(),
+                                   /** Labs › Automatic listens for the language's candidates, [spoken] first: empty unless
+                                    * Automatic is chosen with the lab on. One candidate decodes as the lab off does. */
+                                   val candidates: List<DictationLanguage> = emptyList()) {
+    /** The languages the standard model may write in, [spoken] first. */
+    val languages get() = candidates.ifEmpty { listOf(spoken) }
+    /** These options once the decode chose [heard] among [candidates]: the text is formatted and inserted in it, and it
+     * was translated only when it was Spanish (whisper-language-choice.patch transcribes any other). */
+    fun writtenIn(heard: DictationLanguage) = copy(spoken = heard, translate = translate && heard == DictationLanguage.Spanish)
     /** Whisper's prompt and Parakeet's vocabulary. A translated dictation gets only the custom terms, and off
      * the lab's hints are the terms exactly as they always were. */
     val recognitionHints get() = if (!learnFixes || translate) vocabulary else hints
@@ -86,16 +134,41 @@ internal class SpeechPreferences(private val context: Context) {
     var style: Style
         get() = Style.entries.firstOrNull { it.name == prefs.getString("style", null) } ?: Style.Polished
         set(value) { prefs.edit().putString("style", value.name).apply() }
-    // Null means Automatic; never save the resolved locale over that choice.
+    // Null means Automatic; never save the resolved locale over that choice. A language picked by hand is also kept as
+    // "picked": Labs › Automatic listens for the language counts it once Automatic is chosen again.
     var language: DictationLanguage?
         get() = DictationLanguage.matching(prefs.getString("spoken", null))
-        set(value) { prefs.edit().putString("spoken", value?.code).apply() }
+        set(value) {
+            val edit = prefs.edit().putString("spoken", value?.code)
+            if (value != null) edit.putString("picked", value.code)
+            edit.apply()
+        }
     // Keyboard › Keyboard layout when chosen there (null while the layout follows dictation).
     private val typing = context.getSharedPreferences("typing", Context.MODE_PRIVATE)
+    private fun phoneLanguages() = systemLocales(context).map { it.language }
+    /** The language Automatic dictates in without listening: the keyboard's layout's, else the phone's. */
+    val automaticLanguage: DictationLanguage
+        get() = DictationLanguage.automatic(Spoken.matching(typing.getString("layout", null)), phoneLanguages())
     val spoken: DictationLanguage
-        get() = language ?: Resources.getSystem().configuration.locales.let { locales ->
-            DictationLanguage.automatic(Spoken.matching(typing.getString("layout", null)), (0 until locales.size()).map { locales[it].language })
-        }
+        get() = language ?: automaticLanguage
+    /** What setup's Language row says: what Automatic dictates in and why, from the same languages. */
+    val phoneLanguage: PhoneLanguage
+        get() = phoneLanguage(language, Spoken.matching(typing.getString("layout", null)), systemLocales(context))
+            .copy(listensAmong = candidates.takeIf { it.size > 1 } ?: emptyList())
+    // Labs › Automatic listens for the language, off by default.
+    var listenForLanguage: Boolean
+        get() = prefs.getBoolean("listenForLanguage", false)
+        set(value) { prefs.edit().putBoolean("listenForLanguage", value).apply() }
+    /** What Automatic chooses among, whether or not it is the language chosen now: [automaticLanguage] alone with the
+     * lab off. */
+    val automaticCandidates: List<DictationLanguage>
+        get() = if (!listenForLanguage) listOf(automaticLanguage)
+            else DictationLanguage.candidates(automaticLanguage, phoneLanguages(), DictationLanguage.matching(prefs.getString("picked", null)))
+    /** What a dictation chooses among now ([SpeechOptions.candidates]): empty unless Automatic is chosen with the lab on. */
+    val candidates: List<DictationLanguage>
+        get() = if (language != null || !listenForLanguage) emptyList() else automaticCandidates
+    /** Whether Translate what I say applies: Spanish is the dictation language, or one Automatic chooses among. */
+    val translatable get() = DictationLanguage.Spanish in candidates.ifEmpty { listOf(spoken) }
     var clean: Boolean
         get() = prefs.getBoolean("clean", false)
         set(value) { prefs.edit().putBoolean("clean", value).apply() }
@@ -133,6 +206,15 @@ internal class SpeechPreferences(private val context: Context) {
     var fastEnglish: Boolean
         get() = prefs.getBoolean("fastEnglish", false)
         set(value) { prefs.edit().putBoolean("fastEnglish", value).apply() }
+    // Faster English dictation turned off by hand (its switch or Delete download): Labs › Pick the English model for this
+    // phone never turns it on again. Kept when that lab goes off.
+    var fastEnglishOffByHand: Boolean
+        get() = prefs.getBoolean("fastEnglishOffByHand", false)
+        set(value) { prefs.edit().putBoolean("fastEnglishOffByHand", value).apply() }
+    // Labs › Pick the English model for this phone, off by default (ModelChoice).
+    var pickModel: Boolean
+        get() = prefs.getBoolean("pickModel", false)
+        set(value) { prefs.edit().putBoolean("pickModel", value).apply() }
     // Labs › Learn from my fixes: learn from dictation edits and apply what was learned, off by default.
     var learnFixes: Boolean
         get() = prefs.getBoolean("learnFixes", false)
@@ -146,7 +228,7 @@ internal class SpeechPreferences(private val context: Context) {
             ?.takeIf { Signature.textProblem(it) == null }?.trim() ?: Signature.DEFAULT_TEXT
         set(value) { prefs.edit().putString("signatureText", value).apply() }
     fun options(nextEnglish: Boolean?): SpeechOptions {
-        val translated = translation && spoken == DictationLanguage.Spanish && (nextEnglish ?: true)
+        val translated = translation && translatable && (nextEnglish ?: true)
         // A translated dictation is English the model wrote: nothing learned applies to it, and it hints nothing.
         val learned = if (learnFixes && !translated) fixes.active() else emptyList()
         val terms = if (customVocabulary) vocabularyTerms else emptyList()
@@ -155,6 +237,6 @@ internal class SpeechPreferences(private val context: Context) {
         val vocabulary = forcedSpellings(terms, learned, learnFixes, translated)
         return SpeechOptions(style, spoken, clean, translated, lowercase, endWithPeriod, formatLists, spokenPunctuation,
             vocabulary, fastEnglish, learned, learnFixes, recognitionHints(terms, learned, learnFixes, translated),
-            if (customVocabulary) wordReplacements else emptyList())
+            if (customVocabulary) wordReplacements else emptyList(), candidates)
     }
 }
