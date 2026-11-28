@@ -14,12 +14,13 @@ pub(super) enum Language {
     Hungarian,
 }
 
-/// A one-language table with these strings added.
-pub(super) fn merged(
-    table: &[(&'static str, &'static str)],
+/// Every `(english, translated)` entry for a one-language table plus all
+/// overflow sections, preserving duplicates so tests can catch them.
+pub(super) fn entries(
+    table: &'static [(&'static str, &'static str)],
     language: Language,
-) -> HashMap<&'static str, &'static str> {
-    let sections: &[&[(&'static str, &'static str)]] = match language {
+) -> impl Iterator<Item = (&'static str, &'static str)> {
+    let sections: &'static [&'static [(&'static str, &'static str)]] = match language {
         Language::French => &[
             FRENCH,
             super::agents::FRENCH,
@@ -28,13 +29,14 @@ pub(super) fn merged(
             super::style::FRENCH,
             super::hud_height::FRENCH,
             super::voice_isolation::FRENCH,
-            super::annotate_dictation::FRENCH,
+            super::cleanup::FRENCH,
             super::calls::FRENCH,
             super::transcript_edits::FRENCH,
             super::routing::FRENCH,
             super::meeting_audio_source::FRENCH,
             super::meeting_mute::FRENCH,
             super::middle_mouse::FRENCH,
+            super::speaker_names::FRENCH,
             super::model_switch::FRENCH,
             super::confirm_cancel::FRENCH,
         ],
@@ -46,13 +48,14 @@ pub(super) fn merged(
             super::style::PORTUGUESE,
             super::hud_height::PORTUGUESE,
             super::voice_isolation::PORTUGUESE,
-            super::annotate_dictation::PORTUGUESE,
+            super::cleanup::PORTUGUESE,
             super::calls::PORTUGUESE,
             super::transcript_edits::PORTUGUESE,
             super::routing::PORTUGUESE,
             super::meeting_audio_source::PORTUGUESE,
             super::meeting_mute::PORTUGUESE,
             super::middle_mouse::PORTUGUESE,
+            super::speaker_names::PORTUGUESE,
             super::model_switch::PORTUGUESE,
             super::confirm_cancel::PORTUGUESE,
         ],
@@ -64,13 +67,14 @@ pub(super) fn merged(
             super::style::RUSSIAN,
             super::hud_height::RUSSIAN,
             super::voice_isolation::RUSSIAN,
-            super::annotate_dictation::RUSSIAN,
+            super::cleanup::RUSSIAN,
             super::calls::RUSSIAN,
             super::transcript_edits::RUSSIAN,
             super::routing::RUSSIAN,
             super::meeting_audio_source::RUSSIAN,
             super::meeting_mute::RUSSIAN,
             super::middle_mouse::RUSSIAN,
+            super::speaker_names::RUSSIAN,
             super::model_switch::RUSSIAN,
             super::confirm_cancel::RUSSIAN,
         ],
@@ -82,13 +86,14 @@ pub(super) fn merged(
             super::style::HUNGARIAN,
             super::hud_height::HUNGARIAN,
             super::voice_isolation::HUNGARIAN,
-            super::annotate_dictation::HUNGARIAN,
+            super::cleanup::HUNGARIAN,
             super::calls::HUNGARIAN,
             super::transcript_edits::HUNGARIAN,
             super::routing::HUNGARIAN,
             super::meeting_audio_source::HUNGARIAN,
             super::meeting_mute::HUNGARIAN,
             super::middle_mouse::HUNGARIAN,
+            super::speaker_names::HUNGARIAN,
             super::model_switch::HUNGARIAN,
             super::confirm_cancel::HUNGARIAN,
         ],
@@ -98,7 +103,14 @@ pub(super) fn merged(
         .iter()
         .chain(sections.iter().flat_map(|section| section.iter()))
         .copied()
-        .collect()
+}
+
+/// A one-language table with these strings added.
+pub(super) fn merged(
+    table: &'static [(&'static str, &'static str)],
+    language: Language,
+) -> HashMap<&'static str, &'static str> {
+    entries(table, language).collect()
 }
 
 /// Columns: Polish, Chinese (Simplified), Japanese, German, Spanish, Ukrainian.

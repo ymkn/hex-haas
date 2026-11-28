@@ -492,6 +492,11 @@ pub(super) const KEYS: &[Key] = &[
         "Labs: rewrite dictations in chosen modes into plain, neutral wording on this Mac, so your writing style doesn't show (macOS)",
     ),
     key(
+        "labs.cleanup_tagger",
+        Kind::Bool,
+        "Labs: remove ums, repeated words, false starts, and spoken self-corrections from English dictations with a small model on this Mac that only removes words; turning it on downloads the 26 MB model at the next dictation (macOS)",
+    ),
+    key(
         "labs.second_dictation_shortcut",
         Kind::Bool,
         "Labs: second_dictation_hotkey dictates like the dictation shortcut",
@@ -720,11 +725,6 @@ pub(super) const KEYS: &[Key] = &[
         "Labs: on Wayland desktops without layer-shell, such as GNOME, Annotate's capsule and ink float over the screen through XWayland while it is already running; Esc can't stop drawing there, so use the capsule's pen button or let go of a held Annotate key (Linux)",
     ),
     key(
-        "labs.dictate_while_annotating",
-        Kind::Bool,
-        "Labs: while an Annotate capture records, the dictation shortcut dictates as usual; the text pastes into the app in front and the capture keeps recording",
-    ),
-    key(
         "labs.annotate_pointer_screen",
         Kind::Bool,
         "Labs: on Wayland, a screen capture records the monitor under the pointer, and each monitor keeps its own screen-cast choice (Linux)",
@@ -743,6 +743,11 @@ pub(super) const KEYS: &[Key] = &[
         "labs.meeting_microphone_mute",
         Kind::Bool,
         "Labs: while a meeting records, Mute microphone leaves Hex's microphone out of the recording and Unmute microphone puts it back; the call's own audio keeps recording and transcribing (macOS)",
+    ),
+    key(
+        "labs.meeting_speaker_names",
+        Kind::Bool,
+        "Labs: while a meeting records a Slack huddle, Hex reads who Slack shows speaking, through Accessibility, and names remote speakers in the transcript, in the call and in the saved copy; what it saw is kept in the meeting's folder (macOS)",
     ),
     key(
         "labs.meeting_indicator_display",
@@ -1170,6 +1175,7 @@ pub(super) const NEEDS: &[(&str, &str)] = &[
     ("labs.live_chapters", "meetings"),
     ("labs.stop_any_call_recording", "meetings"),
     ("labs.meeting_microphone_mute", "meetings"),
+    ("labs.meeting_speaker_names", "meetings"),
     ("labs.meeting_indicator_display", "meetings"),
     ("experimental.hex_microphone", "fun"),
     ("typed_text_hotkey", "typed_text"),

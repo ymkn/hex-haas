@@ -367,6 +367,8 @@ pub(crate) fn apply(settings: &LabsSettings) {
     // Labs › Pause from menu bar: turning it off resumes at once, without
     // waiting for the menu to refresh; the menu row hides itself there.
     crate::shortcut_pause::reconcile(pause_menu());
+    // Labs › Clean up what I say: turning it off frees the loaded model.
+    crate::dictation::cleanup::reconcile(cleanup_tagger());
 }
 
 #[cfg(test)]
@@ -596,6 +598,20 @@ mod tests {
     }
 
     #[test]
+    fn the_cleanup_tagger_is_a_macos_output_lab_off_by_default() {
+        let feature = Feature::CleanupTagger;
+        assert_eq!(feature.name(), "clean-up-what-i-say");
+        assert_eq!(feature.settings_key(), "labs.cleanup_tagger");
+        assert_eq!(feature.group(), Group::Output);
+        assert_eq!(feature.audience(), Audience::Everyone);
+        assert_eq!(feature.oses(), &[Os::Macos]);
+        assert_eq!(feature.added(), 20261126);
+        assert!(!feature.on(&AppSettings::default()));
+        assert_eq!(feature.on_this_os(), cfg!(target_os = "macos"));
+        assert_eq!(Feature::from_name("clean-up-what-i-say"), Some(feature));
+    }
+
+    #[test]
     fn the_middle_mouse_dictation_lab_is_a_macos_shortcuts_lab_off_by_default() {
         let feature = Feature::MiddleMouseDictation;
         assert_eq!(feature.name(), "middle-mouse-dictation");
@@ -606,6 +622,21 @@ mod tests {
         assert!(!feature.on(&AppSettings::default()));
         assert_eq!(feature.on_this_os(), cfg!(target_os = "macos"));
         assert_eq!(Feature::from_name("middle-mouse-dictation"), Some(feature));
+    }
+
+    #[test]
+    fn the_speaker_names_lab_is_a_macos_meetings_lab_off_by_default() {
+        let feature = Feature::MeetingSpeakerNames;
+        assert_eq!(feature.name(), "speaker-names");
+        assert_eq!(feature.settings_key(), "labs.meeting_speaker_names");
+        assert_eq!(feature.title(), "Speaker names");
+        assert_eq!(feature.group(), Group::Meetings);
+        assert_eq!(feature.audience(), Audience::Everyone);
+        assert_eq!(feature.oses(), &[Os::Macos]);
+        assert_eq!(feature.added(), 20261127);
+        assert!(!feature.on(&AppSettings::default()));
+        assert_eq!(feature.on_this_os(), cfg!(target_os = "macos"));
+        assert_eq!(Feature::from_name("speaker-names"), Some(feature));
     }
 
     #[test]

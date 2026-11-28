@@ -15,6 +15,8 @@ use crate::desktop::events::now_ms;
 use crate::durable::{lock_contended, sync_directory, sync_file};
 
 const SAMPLE_RATE: u32 = 16_000;
+/// A recording's first-audio time before any audio has arrived.
+const NO_AUDIO_YET: u64 = u64::MAX;
 /// Beside the manifest of a meeting Hex quit while recording or during its
 /// final transcription: its audio is
 /// saved and its final transcript runs at the next launch.
@@ -39,8 +41,9 @@ mod os;
 #[path = "meeting/windows.rs"]
 mod os;
 pub(crate) mod window_title;
-/// Linux's Trash, for capture retention too: distros ship no `trash` command.
-#[cfg(target_os = "linux")]
+/// Linux's Trash and Windows' Recycle Bin, for capture retention and the
+/// Annotate list too: distros ship no `trash` command.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 pub(crate) use os::move_to_trash;
 #[cfg(target_os = "macos")]
 pub(crate) use os::{
@@ -53,6 +56,7 @@ mod delete;
 mod delta;
 mod echo;
 mod edit;
+mod entry;
 mod export_name;
 mod finish;
 pub(crate) mod finished_events;
@@ -72,26 +76,28 @@ mod retention;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 pub(crate) mod runtime;
 pub(crate) mod seen_calls;
+mod speakers;
 pub(crate) mod sweep;
 mod transcript;
 mod turn;
 mod warning;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) mod watcher;
+mod write;
 pub use capture::{microphone_muted, track_levels};
 #[cfg(all(debug_assertions, target_os = "macos"))]
 pub use chapters::chapters_file;
 #[cfg(target_os = "macos")]
 pub use chapters::section_for_id;
-pub use chapters::{Chapter, chapter_entries, section_markdown};
+pub use chapters::{Chapter, chapter_entries};
 #[cfg(test)]
 pub use delete::DeleteRefusal;
 pub use delete::{DeleteError, TrashedMeeting, delete, trash};
 pub use delta::*;
+pub use entry::{MeetingSource, TranscriptEntry, TranscriptEntryKey};
 pub(crate) use finish::keep_or_discard;
 pub use markdown::{
-    live_transcript_markdown, render_turns_markdown, speaker_label, transcript_markdown,
-    transcript_markdown_with,
+    live_transcript_markdown, render_turns_markdown, section_markdown, transcript_markdown,
 };
 pub use notes::{MeetingNotes, display_title, notes_in_progress, notes_wanted, spawn_summary};
 #[cfg(all(debug_assertions, target_os = "macos"))]
@@ -100,6 +106,9 @@ pub use recording::recording;
 #[cfg(test)]
 pub use retention::audio_expired;
 pub use retention::{expire, expire_audio, list, retention_for};
+pub use speakers::{Label, Labels, SpeakerName, Speakers, Tracks};
+#[cfg(test)]
+pub use speakers::{NameSource, SpeakerId};
 pub use transcript::TranscriptReader;
 pub use turn::coalesce_transcript;
 pub use warning::TrackWarning;
@@ -271,15 +280,13 @@ pub struct MeetingManifest {
     /// labelled Speaker.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub imported: bool,
+    /// The remote speakers this meeting could name; a transcript line's
+    /// `speaker` is an id in this table. Empty unless something named one.
+    #[serde(default, skip_serializing_if = "Speakers::is_empty")]
+    pub speakers: Speakers,
 }
 
 impl MeetingManifest {
-    /// What a transcript line's source is called in the user's Markdown: an
-    /// imported meeting has one track, so every turn is just Speaker.
-    pub fn speaker_label(&self, source: MeetingSource) -> &'static str {
-        markdown::speaker_label(source, self.imported)
-    }
-
     /// Where `title` came from, inferred for manifests that predate the field.
     pub fn title_source(&self) -> TitleSource {
         self.title_source.unwrap_or_else(|| {
@@ -362,56 +369,6 @@ fn missing_samples(track: &TrackManifest, packet: &AudioPacket) -> u64 {
         missing
     } else {
         0
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-pub struct TranscriptEntry {
-    pub source: MeetingSource,
-    pub start_ms: u64,
-    pub end_ms: u64,
-    pub text: String,
-}
-
-/// Identifies one published transcript line by its speaker and exact span,
-/// not its text: the Meetings pane carries these keys so an edit deletes the
-/// lines it showed even if the words were rewritten meanwhile.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-pub struct TranscriptEntryKey {
-    pub source: MeetingSource,
-    pub start_ms: u64,
-    pub end_ms: u64,
-}
-
-impl TranscriptEntryKey {
-    pub fn of(entry: &TranscriptEntry) -> Self {
-        Self {
-            source: entry.source,
-            start_ms: entry.start_ms,
-            end_ms: entry.end_ms,
-        }
-    }
-
-    pub fn matches(self, entry: &TranscriptEntry) -> bool {
-        self.source == entry.source
-            && self.start_ms == entry.start_ms
-            && self.end_ms == entry.end_ms
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MeetingSource {
-    System,
-    Microphone,
-}
-
-impl MeetingSource {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::System => "Them",
-            Self::Microphone => "You",
-        }
     }
 }
 
@@ -552,6 +509,7 @@ pub fn record(
         notes_export_removed: false,
         audio_removed_at_ms: None,
         imported: false,
+        speakers: Speakers::default(),
     };
     set_title_source(&mut manifest, title_source);
     write_manifest(&meeting_dir, &manifest)?;
@@ -563,11 +521,23 @@ pub fn record(
         let (sender, receiver) = mpsc::sync_channel::<AudioPacket>(128);
         let system_drops = Arc::new(AtomicU64::new(0));
         let microphone_drops = Arc::new(AtomicU64::new(0));
-        let mut rolling =
-            transcript::Rolling::start(meeting_dir.clone(), transcription_selection.clone());
+        // Labs › Speaker names: the in-call transcript's speaker table
+        // arrives here each time it changes, for the manifest.
+        let live_speakers = speakers::LiveTable::default();
+        let mut rolling = transcript::Rolling::start(
+            meeting_dir.clone(),
+            transcription_selection.clone(),
+            speakers::LiveNames::handing_to(live_speakers.clone()),
+        );
         let rolling_feed = rolling.feed();
         let writer_dir = meeting_dir.clone();
-        let writer = thread::spawn(move || write_tracks(&writer_dir, receiver, rolling_feed));
+        // When the first audio arrived on the capture clock, in microseconds:
+        // where the transcript's lines, and the speaker reader, count from.
+        let first_audio = Arc::new(AtomicU64::new(NO_AUDIO_YET));
+        let writer_first_audio = first_audio.clone();
+        let writer = thread::spawn(move || {
+            write_tracks(&writer_dir, receiver, rolling_feed, &writer_first_audio)
+        });
         let cleanup_failed_setup =
             |sender: SyncSender<AudioPacket>, writer: thread::JoinHandle<Result<CaptureStats>>| {
                 drop(sender);
@@ -612,6 +582,15 @@ pub fn record(
         }
 
         let started = Instant::now();
+        // Labs › Speaker names: reads who the call app shows speaking, for
+        // as long as the recording runs.
+        #[cfg(target_os = "macos")]
+        let speaker_reader = speakers::SpeakerReader::start(
+            &meeting_dir,
+            start.application.as_deref(),
+            capture_clock,
+            first_audio,
+        );
         let titles = notes::ProvisionalTitles::start(manifest.id.clone());
         let live_chapters = crate::labs::live_chapters()
             .then(|| chapters::LiveChapters::start(manifest.id.clone()));
@@ -622,6 +601,9 @@ pub fn record(
             }
             if let Some(chapters) = live_chapters.as_ref().and_then(|live| live.take()) {
                 record_chapters(&meeting_dir, manifest, chapters, updates.as_ref());
+            }
+            if let Some(speakers) = live_speakers.take() {
+                record_speakers(&meeting_dir, manifest, speakers);
             }
             // Written as soon as the microphone is warned about, so a crash
             // while recording still says it was digitally silent.
@@ -642,6 +624,8 @@ pub fn record(
         drop(microphone_capture);
         drop(sender);
         drop(sleep_prevention);
+        #[cfg(target_os = "macos")]
+        drop(speaker_reader);
 
         manifest.ended_at_ms = Some(now_ms());
         manifest.duration_ms = Some(started.elapsed().as_millis() as u64);
@@ -765,6 +749,16 @@ fn record_chapters(
     }
 }
 
+/// Saves the speaker table the in-call transcript's lines now point into
+/// (Labs › Speaker names).
+fn record_speakers(directory: &Path, manifest: &mut MeetingManifest, speakers: Speakers) {
+    keep_rename(directory, manifest);
+    manifest.speakers = speakers;
+    if let Err(error) = write_manifest(directory, manifest) {
+        tracing::warn!(%error, meeting = manifest.id, "could not record meeting speakers");
+    }
+}
+
 /// Records where the title came from, which only live chapters read; with
 /// the experiment off, a manifest that has neither stays as it was.
 fn set_title_source(manifest: &mut MeetingManifest, source: TitleSource) {
@@ -874,6 +868,7 @@ fn write_tracks(
     directory: &Path,
     receiver: Receiver<AudioPacket>,
     mut rolling: Option<transcript::RollingFeed>,
+    first_audio: &AtomicU64,
 ) -> Result<CaptureStats> {
     let mut system = None;
     let mut microphone = None;
@@ -933,6 +928,7 @@ fn write_tracks(
             track.samples += missing;
         }
         track.first_arrival_us.get_or_insert(packet.arrival_us);
+        first_audio.fetch_min(packet.arrival_us, Ordering::Relaxed);
         packet.position = track.samples;
         track.samples += packet.samples.len() as u64;
         for &sample in &packet.samples {
@@ -983,9 +979,12 @@ fn transcribe(
     let (transcript, echo_suppressed) =
         transcript::transcribe(directory, manifest, selection, rolling)?;
     manifest.echo_suppressed_utterances = echo_suppressed;
+    // Labs › Speaker names: the lines and the manifest's table, from what
+    // the speaker reader saved beside the recording.
+    let transcript = speakers::name_transcript(directory, manifest, transcript);
     // Transcription takes a while; the headings use a rename made meanwhile.
     keep_rename(directory, manifest);
-    publish_transcript_files(directory, &display_title(manifest), &transcript)?;
+    publish_transcript_files(directory, manifest, &transcript)?;
 
     match transcript::export_markdown(
         &crate::app_settings::meeting_output_folder(),
@@ -1012,20 +1011,21 @@ fn transcribe(
 /// pair. Final publication and a transcript edit write the same files.
 pub(super) fn publish_transcript_files(
     directory: &Path,
-    title: &str,
+    manifest: &MeetingManifest,
     entries: &[TranscriptEntry],
 ) -> Result<()> {
+    let labels = Labels::by_track(&manifest.speakers);
     let ndjson_temporary = directory.join("transcript.ndjson.tmp");
     let markdown_temporary = directory.join("transcript.md.tmp");
     let mut ndjson = BufWriter::new(File::create(&ndjson_temporary)?);
     let mut markdown = BufWriter::new(File::create(&markdown_temporary)?);
     set_owner_only(&ndjson_temporary, false)?;
     set_owner_only(&markdown_temporary, false)?;
-    writeln!(markdown, "# {title}\n")?;
+    writeln!(markdown, "# {}\n", display_title(manifest))?;
     for entry in entries {
         serde_json::to_writer(&mut ndjson, entry)?;
         ndjson.write_all(b"\n")?;
-        writeln!(markdown, "{}", markdown_line(entry))?;
+        writeln!(markdown, "{}", markdown::folder_line(labels, entry))?;
     }
     ndjson.flush()?;
     markdown.flush()?;
@@ -1275,46 +1275,7 @@ fn rename_meeting_with(
     title: &str,
     descriptive_filenames: bool,
 ) -> Result<MeetingManifest> {
-    let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
-    if title.is_empty() {
-        return Err(eyre!("The title is empty"));
-    }
-    let id = directory
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let mut manifest = read_manifest(directory)?;
-    let previous = display_title(&manifest);
-    manifest.title = title;
-    set_title_source(&mut manifest, TitleSource::User);
-    let next = display_title(&manifest);
-    let mut markdown_error = None;
-    let title_changed = previous != next;
-    let mut heading_updated = title_changed;
-    if heading_updated
-        && let Some(path) = manifest.export_path.clone().filter(|path| path.exists())
-        && let Err(error) =
-            notes::retitle_markdown_file(&path, &mut manifest.export_sha256, &previous, &next)
-    {
-        tracing::warn!(%error, meeting = id, "could not retitle meeting Markdown");
-        markdown_error = Some(error);
-        heading_updated = false;
-    }
-    // The notes writer applies its own title and renames the file; leaving
-    // the name alone here keeps it from racing that in-place rewrite. A
-    // failed heading update keeps the old name too, as notes do. The notes
-    // file follows the title independently, since it is Hex's own copy.
-    if heading_updated && !notes_in_progress(&manifest.id) {
-        export_name::rename_to_title(&mut manifest, &next, descriptive_filenames);
-    }
-    if title_changed && !notes_in_progress(&manifest.id) {
-        notes_file::refresh(&mut manifest);
-    }
-    write_manifest(directory, &manifest)?;
-    match markdown_error {
-        Some(error) => Err(error.wrap_err("Renamed, but the Markdown heading was not updated")),
-        None => Ok(manifest),
-    }
+    write::rename(directory, title, descriptive_filenames)
 }
 
 /// Debug CLI: transcribes a finished or interrupted meeting's WAV tracks
@@ -1378,20 +1339,12 @@ pub fn show(id: &str) -> Result<String> {
     }
     let manifest = read_manifest(&directory)?;
     let mut markdown = format!("# {}\n\n", manifest.title);
+    let labels = Labels::by_track(&manifest.speakers);
     for entry in transcript_entries_in(&directory)? {
-        markdown.push_str(&markdown_line(&entry));
+        markdown.push_str(&markdown::folder_line(labels, &entry));
         markdown.push('\n');
     }
     Ok(markdown)
-}
-
-fn markdown_line(entry: &TranscriptEntry) -> String {
-    format!(
-        "**{} {}**  {}",
-        format_duration(entry.start_ms),
-        entry.source.label(),
-        entry.text
-    )
 }
 
 /// Callers recover the final publication first; `show` does so before its

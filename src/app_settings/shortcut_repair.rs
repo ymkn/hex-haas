@@ -1,7 +1,8 @@
 //! Shortcut keys a Labs feature allows, and the repair that puts a saved
 //! shortcut on one back while the feature is off: mouse buttons (Labs ›
 //! Mouse shortcuts, macOS), Menu, Pause, or Scroll Lock (Labs › Special
-//! keys alone, Linux), the ISO section key (Labs › § key alone, Linux
+//! keys alone, Linux), a navigation key alone (the same Lab,
+//! Windows), the ISO section key (Labs › § key alone, Linux
 //! and macOS), the microphone key (Labs › Microphone key alone, macOS),
 //! shortcuts without a key (Labs › Double-tap Option, Command, or
 //! Globe, macOS), and the persisted double-tap mode those need.
@@ -62,6 +63,14 @@ impl HotkeyKey {
                 .as_str(),
             "insert" | "home" | "end" | "pageup" | "pagedown"
         )
+    }
+
+    /// Whether `name` names Caps Lock: `capslock`, `caps_lock`, or
+    /// `Caps Lock`.
+    pub fn caps_lock_name(name: &str) -> bool {
+        name.trim()
+            .replace([' ', '_'], "")
+            .eq_ignore_ascii_case("capslock")
     }
 
     /// Whether `label` names a function key (`F1`–`F20`, any case).
@@ -331,6 +340,81 @@ mod tests {
             crate::dictation::ShortcutMode::Hold,
             "the mode returns to Hold or double-tap"
         );
+    }
+
+    #[test]
+    fn caps_lock_names_are_not_labs_gated_special_or_navigation_keys() {
+        for name in ["capslock", "caps_lock", "Caps Lock", " caps lock "] {
+            assert!(HotkeyKey::caps_lock_name(name), "{name}");
+            let key = HotkeyKey::named(name);
+            assert_eq!(key.label, "Caps Lock");
+            assert!(!key.is_special());
+            assert!(!key.is_navigation());
+        }
+        assert!(!HotkeyKey::caps_lock_name("scroll lock"));
+    }
+
+    #[test]
+    fn special_keys_lab_off_keeps_caps_lock_and_repairs_only_windows_navigation() {
+        for name in ["capslock", "insert", "home", "end", "pageup", "pagedown"] {
+            let binding = HotkeyBinding {
+                modifiers: Default::default(),
+                key: Some(HotkeyKey::named(name)),
+            };
+            let mut settings = AppSettings {
+                dictation_hotkey: binding.clone(),
+                raw_dictation_hotkey: Some(binding.clone()),
+                ..Default::default()
+            };
+            settings.labs.standalone_special_keys = true;
+            settings.repair_special_keys();
+            assert_eq!(settings.dictation_hotkey, binding);
+            crate::labs::Feature::StandaloneSpecialKeys.set(&mut settings, false);
+            settings.repair_special_keys();
+            if cfg!(target_os = "windows") && name != "capslock" {
+                assert_eq!(
+                    settings.dictation_hotkey,
+                    HotkeyBinding::default(),
+                    "{name}"
+                );
+                assert_eq!(settings.raw_dictation_hotkey, None, "{name}");
+            } else {
+                assert_eq!(settings.dictation_hotkey, binding, "{name}");
+                assert_eq!(settings.raw_dictation_hotkey, Some(binding), "{name}");
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn caps_lock_survives_save_and_load_with_the_special_keys_lab_off() {
+        let sequence = crate::app_settings::SETTINGS_TEMP_SEQUENCE
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "hex-caps-lock-settings-{}-{sequence}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        for name in ["capslock", "insert", "home", "end", "pageup", "pagedown"] {
+            let binding = HotkeyBinding {
+                modifiers: Default::default(),
+                key: Some(HotkeyKey::named(name)),
+            };
+            let settings = AppSettings {
+                dictation_hotkey: binding.clone(),
+                ..Default::default()
+            };
+            settings.write_to(&path).unwrap();
+            let loaded = AppSettings::load_from(&path).unwrap();
+            assert!(!loaded.labs.standalone_special_keys);
+            if name == "capslock" {
+                assert_eq!(loaded.dictation_hotkey, binding);
+            } else {
+                assert_eq!(loaded.dictation_hotkey, HotkeyBinding::default(), "{name}");
+            }
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

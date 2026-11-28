@@ -78,6 +78,38 @@ VITE_SHOUT_CAPTURE=1 bunx vite --port 5531
 HEX_SITE_URL=http://127.0.0.1:5531 bun run generate:poster
 ```
 
+## Changelog
+
+`/hex/changelog` is the stable changelog: every `docs/releases/<X.Y.Z>.md`,
+newest first, each under its version's anchor (`#3.5.0`) with a link to its
+GitHub release (`v<version>` from 3.0.0, `app-v<version>` from 2.1.16 through
+2.3.1, none before). `scripts/changelog.ts` reads the folder at build and
+`src/changelog.ts` renders it in the Labs pages' look, so a release appears
+when the site next deploys and nothing is written by hand. Files that aren't
+`<X.Y.Z>.md` (`linux-wayland-beta.md`) are not releases and are left out. The
+notes' Markdown is a title, `###` sections, paragraphs, bullets, `>` callouts,
+and inline code, bold, links, and `#123` issue references; anything else
+reads as a paragraph. `/hex/dev`, the dev builds' notes, links it and is
+linked from it, and the landing page's footer links it.
+
+## Meetings
+
+`/hex/meetings/` is the Meetings showcase, a standalone page (plain HTML, ES
+modules, CSS, and a voice bank) built outside the site and kept in
+`public/meetings/` exactly as it loads. The landing page links it from the
+header and the footer. Swap in a new cut with
+`bun run import:meetings <bundle folder>`: it follows the page's references from
+`index.html` (`scripts/meetings/bundle.ts`) and copies only what the page loads,
+leaving build scripts, shader sources, reports, and raw audio behind, and drops
+session ids and the bundle's own social tags. The build (`scripts/meetings/build.ts`)
+writes the canonical address and social tags for its origin and refuses a
+missing reference or a file over Workers' 25 MiB asset limit. The Worker
+redirects `/hex/meetings` to `/hex/meetings/` so the page's relative paths
+resolve. Its card, `public/meetings/og-meetings.png`, shows the Hex mark,
+"Hex Meetings", and the meeting pill and nothing of the show; regenerate it with
+`bun run generate:og-meetings` (`CHROMIUM_PATH` names another Chromium when
+Playwright's isn't downloaded).
+
 ## Performance
 
 `perf/hex.bench.ts` is a [strobe](https://github.com/anomalyco/strobe) bench: load to

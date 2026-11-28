@@ -5,6 +5,11 @@ use std::time::{Duration, Instant};
 
 use crate::dictation::caret_text::{Keep, bounded_units};
 
+mod live;
+pub(crate) mod probe;
+pub(crate) mod tree;
+pub(crate) mod watch;
+
 type CfTypeRef = *const c_void;
 type CfStringRef = *const c_void;
 type AxUiElementRef = *const c_void;

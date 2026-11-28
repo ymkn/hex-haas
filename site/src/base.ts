@@ -10,11 +10,16 @@ export const RELEASE_SERVICE = "https://anoma.ly/release"
 export const DEV_DOWNLOAD_PATH = `${BASE_PATH}/download/dev`
 // The dev builds' changelog (worker.ts, src/dev-notes.ts).
 export const DEV_NOTES_PATH = `${BASE_PATH}/dev`
+// The stable releases' changelog, built from docs/releases (src/changelog.ts).
+export const CHANGELOG_PATH = `${BASE_PATH}/changelog`
 // The Release workflow publishes the dev builds' notes to this one-commit
 // branch (publish-dev-notes.sh), which the Worker serves at
 // `${FILES_PATH}/dev-notes.json` and renders at `DEV_NOTES_PATH`, so neither
 // the app nor the changelog waits for a site deploy.
 export const DEV_NOTES_URL = "https://raw.githubusercontent.com/anomalyco/hex/dev-notes/dev-notes.json"
+// The Meetings showcase, a standalone page in public/meetings/ (scripts/meetings/build.ts).
+// The Worker redirects this to its trailing-slash address.
+export const MEETINGS_PATH = withBase("/meetings")
 // Redirects to the current release's file for a target (worker.ts).
 export const DOWNLOAD_PATH = `${BASE_PATH}/download`
 // Short link to Hex for iPhone on the App Store (worker.ts).

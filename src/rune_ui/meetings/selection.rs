@@ -124,11 +124,13 @@ impl Selection {
 
 /// The detail header's way into selection mode.
 pub(super) fn action(p: Paint) -> El {
-    ld::ghost_icon(
+    ld::quiet_action(
         p,
         "meeting-select-lines",
         &SELECT_ICON,
+        None,
         tr("Select lines"),
+        None,
         |ui: &mut Ui, _| ui.meetings.selection.start(),
     )
 }
@@ -255,7 +257,8 @@ pub(super) fn turn_row(p: Paint, index: usize, turn: &Turn, imported: bool, sele
     let mut line = row()
         .key(format!("select-turn{index}"))
         .role("checkbox")
-        .label(if turn.mine { tr("You") } else { tr("Them") })
+        // This row has always been named by track, an import's included.
+        .label(turn.speaker(false))
         .description(turn.text.clone())
         .checked(selected)
         .gap(8.0)

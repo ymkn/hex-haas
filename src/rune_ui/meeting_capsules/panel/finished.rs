@@ -74,17 +74,35 @@ pub(in crate::rune_ui::meeting_capsules) fn ready(
                 .shrink()
                 .min_w(0.0)
                 .gap(2.0)
+                // The cue trails the title's words on their line, not the ✕.
                 .child(
-                    text(words)
-                        .key("title")
-                        .font(p.k.ty.ui_medium)
-                        .color(p.text())
-                        .truncate()
-                        .opacity(strength)
-                        .opacity_motion(Anim::INSTANT)
-                        .blur(soft)
-                        .blur_motion(Anim::INSTANT)
-                        .a11y_hidden(),
+                    row()
+                        .key("title-line")
+                        .gap(6.0)
+                        .center_y()
+                        .child(
+                            text(words)
+                                .key("title")
+                                .font(p.k.ty.ui_medium)
+                                .color(p.text())
+                                .truncate()
+                                .shrink()
+                                .min_w(0.0)
+                                .opacity(strength)
+                                .opacity_motion(Anim::INSTANT)
+                                .blur(soft)
+                                .blur_motion(Anim::INSTANT)
+                                .a11y_hidden(),
+                        )
+                        .child(
+                            icon(&icons::OUTLINE_ARROW_UP_RIGHT, 14.0)
+                                .key("open-cue")
+                                .color(p.muted())
+                                // Quiet at rest, so the title reads as a link
+                                // before the pointer finds it.
+                                .group_opacity(0.6, 1.0)
+                                .a11y_hidden(),
+                        ),
                 )
                 .children(manifest.duration_ms.map(|duration| {
                     text(meeting::format_duration(duration))
@@ -92,13 +110,6 @@ pub(in crate::rune_ui::meeting_capsules) fn ready(
                         .font(p.tabular(p.meta()))
                         .color(p.muted())
                 })),
-        )
-        .child(
-            icon(&icons::OUTLINE_ARROW_UP_RIGHT, 14.0)
-                .key("open-cue")
-                .color(p.muted())
-                .group_opacity(0.0, 1.0)
-                .a11y_hidden(),
         );
     let close = match &capsule.state {
         State::Ready { stay, .. } => Some(stay),
@@ -178,7 +189,6 @@ pub(in crate::rune_ui::meeting_capsules) fn ready(
 
 /// The ready panel's height for `manifest`: the title band, the summary
 /// while there is one, and the two copies.
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub(super) fn ready_height(manifest: &MeetingManifest) -> f32 {
     let band = 2.0 * TITLE_PY + 20.0 + 2.0 + 12.0;
     let summary = if ready_summary(manifest).is_some() {

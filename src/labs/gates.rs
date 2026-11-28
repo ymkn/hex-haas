@@ -51,6 +51,16 @@ pub fn meeting_microphone_mute() -> bool {
     feature_on(Feature::MeetingMicrophoneMute)
 }
 
+/// Labs › Speaker names: while a meeting records a call in an app Hex can
+/// read (Slack huddles), a reader saves who the app shows speaking, and the
+/// transcript's remote lines take those names (macOS; read where a
+/// recording would start its speaker reader and at each of the reader's
+/// looks, so nothing is read through Accessibility with the lab off, and
+/// each time a transcript is named, in the call and after it).
+pub fn meeting_speaker_names() -> bool {
+    feature_on(Feature::MeetingSpeakerNames)
+}
+
 /// Labs › Indicator on any display: a released meeting capsule lands in
 /// the corner of the display under the pointer, and the capsules show on the
 /// display they were dragged to instead of only the primary display (macOS
@@ -109,16 +119,6 @@ pub fn cursor_context() -> bool {
 #[cfg_attr(not(hex_capture), allow(dead_code))]
 pub fn copy_capture_zip() -> bool {
     feature_on(Feature::CopyCaptureZip)
-}
-
-/// While an Annotate capture records, the dictation shortcut dictates as it
-/// always does: hold, toggle, or double-tap lock it, and the text pastes
-/// into the app in front, History, and Paste Last. The capture keeps
-/// recording, and its narration hears the words too. Read at each press the
-/// capture would otherwise swallow, on every OS.
-#[cfg_attr(not(hex_capture), allow(dead_code))]
-pub fn dictate_while_annotating() -> bool {
-    feature_on(Feature::DictateWhileAnnotating)
 }
 
 /// A kept dictation recording may be copied from History and the menu bar or
@@ -198,6 +198,14 @@ pub fn clean_up() -> bool {
 /// processing stage).
 pub fn neutral_voice() -> bool {
     feature_on(Feature::NeutralVoice)
+}
+
+/// Labs › Clean up what I say: Hex's cleanup tagger takes ums, repeats, false
+/// starts, and spoken corrections out of each English dictation on this Mac
+/// (macOS; read as each capture starts, which fetches and loads the model,
+/// and as each dictation's processing starts).
+pub fn cleanup_tagger() -> bool {
+    feature_on(Feature::CleanupTagger)
 }
 
 /// A pasted dictation gets one leading space when the character before the

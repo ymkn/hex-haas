@@ -97,9 +97,9 @@ const REPLAYS: &[Replay] = &[
         enters: false,
         cues: &[
             (12, Cue::Move(432., 23.)),
-            (20, Cue::Leave),
-            (27, Cue::Move(432., 23.)),
-            (33, Cue::Leave),
+            (17, Cue::Leave),
+            (22, Cue::Move(432., 23.)),
+            (26, Cue::Leave),
             (60, Cue::Move(432., 23.)),
             (74, Cue::PressStop),
             (78, Cue::Leave),
@@ -773,6 +773,18 @@ fn replayed(name: &str) -> Vec<Shot> {
     play(replay(name), |_, _, _| {})
 }
 
+/// The replayed call has words, so its open panel ends in the foot they give it.
+fn replay_open_height() -> f32 {
+    panel::open_height_without_notice() + panel::WORDS_FOOT
+}
+
+/// How much farther that panel opens than the 178 pt one the bounds below
+/// were measured on. The spring's time is fixed, so its speeds scale with
+/// its travel.
+fn travel() -> f32 {
+    (replay_open_height() - REST_HEIGHT) / (178. - REST_HEIGHT)
+}
+
 /// The right and top edges of the surface never leave the saved corner.
 fn anchored(shots: &[Shot]) {
     for (frame, shot) in shots.iter().enumerate() {
@@ -835,7 +847,7 @@ fn the_panel_opens_width_first_and_its_rows_follow_in_order() {
         let [_, _, w, h] = shot.pill.unwrap();
         let (dw, dh) = (
             (w - REST_WIDTH) / (PANEL_WIDTH - REST_WIDTH),
-            (h - REST_HEIGHT) / (panel::open_height_without_notice() - REST_HEIGHT),
+            (h - REST_HEIGHT) / (replay_open_height() - REST_HEIGHT),
         );
         if dh > 0.02 && dh < 0.98 {
             assert!(dw > dh, "the width trails at {w}×{h}");
@@ -910,29 +922,33 @@ fn an_interrupted_panel_turns_round_without_a_stop_or_a_jump() {
         .collect();
     // No frame moves the edge by more than a frame of its peak speed, and
     // no frame's travel differs from the one before by more than a launch
-    // from rest does (6.8 pt), reversals included.
+    // from rest does (15.3 pt on the 0.28 s spring), reversals included.
     for (frame, w) in sizes.windows(3).enumerate() {
         let (a, b) = (w[1].1 - w[0].1, w[2].1 - w[1].1);
-        assert!(b.abs() < 20.0, "f{frame}: a {b} pt step");
-        assert!((b - a).abs() < 7.5, "f{frame}: speed {a} → {b}");
+        assert!(b.abs() < 30.0 * travel(), "f{frame}: a {b} pt step");
+        assert!((b - a).abs() < 17.0 * travel(), "f{frame}: speed {a} → {b}");
     }
     // The first candidate dropped from 651 to -57 pt/s in the frame after
-    // the pointer left at 20. The speed now bends round: in that frame the
+    // the pointer left (at 20 then, 17 on the 0.28 s spring). The speed now bends round: in that frame the
     // edge still travels the way it was going, a little slower, and no frame
-    // anywhere changes its speed by more than a launch from rest (532 pt/s).
-    for at in [21, 28, 34] {
+    // anywhere changes its speed by more than a launch from rest (1,197 pt/s).
+    for at in [18, 23, 27] {
         let (before, after) = (shots[at - 1].velocity.1, shots[at].velocity.1);
         assert!(
-            before * after > 0.0 && (after - before).abs() < 350.0,
+            before * after > 0.0 && (after - before).abs() < 790.0 * travel(),
             "f{at}: {before} → {after} pt/s"
         );
     }
     for (frame, pair) in shots.windows(2).enumerate() {
         let step = (pair[1].velocity.1 - pair[0].velocity.1).abs();
-        assert!(step < 540.0, "f{}: the speed stepped {step} pt/s", frame + 1);
+        assert!(
+            step < 1215.0 * travel(),
+            "f{}: the speed stepped {step} pt/s",
+            frame + 1
+        );
     }
-    assert!(sizes[21].1 > sizes[20].1 && sizes[20].1 > sizes[19].1);
-    assert!(sizes[26].1 < sizes[22].1);
+    assert!(sizes[18].1 > sizes[17].1 && sizes[17].1 > sizes[16].1);
+    assert!(sizes[21].1 < sizes[19].1);
     let last = shots.last().unwrap();
     assert_eq!(last.phase, "summary");
     assert_eq!((last.veil, last.velocity), ((0., 0.), (0., 0.)));
@@ -954,6 +970,8 @@ fn reduced_motion_lands_the_surface_and_only_fades() {
         // The outline is either where it was or where it is going.
         let rests = [
             (REST_WIDTH, REST_HEIGHT),
+            (PANEL_WIDTH, replay_open_height()),
+            // Capture ended: the foot has gone with the recording.
             (PANEL_WIDTH, panel::open_height_without_notice()),
             (a[2], a[3]),
         ];

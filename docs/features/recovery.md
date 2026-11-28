@@ -257,13 +257,18 @@ disable event (timeout | user input)
 every 5 s on the tap thread
   ├── tap disabled without notice -> re-enable  // "event tap was disabled without notice"
   ├── tap invalidated or re-enable fails -> recreate  // "recreated event tap"
+  ├── replacement stays disabled -> recreate after 5, 10, 20, 40, then every 60 s
+  │                                         // "event tap stayed disabled; recreating it"
+  ├── retired tap -> invalidated before release  // macOS drops its registration (#2968)
   └── creation fails -> retry next check    // "could not recreate event tap", logged once
   -> key or modifier gap -> recover.tap-interruption
 tap thread holds a user-initiated activity  // App Nap cannot throttle it; idle sleep allowed
 ```
-Source: `TapSet::check`, `reenable_disabled_taps`, and `AppNapOptOut` in
-[suppression.rs](../../src/suppression.rs). No check: it needs macOS to disable
-a real tap. Proof limit: reported field failure (#612), not reproduced.
+Source: `TapSet::check`, `AttachedTap`'s drop, `reenable_disabled_taps`, and
+`AppNapOptOut` in [suppression/tap.rs](../../src/suppression/tap.rs). Check:
+`a_tap_macos_keeps_disabled_is_rebuilt_less_often_up_to_once_a_minute` covers
+the retry spacing; disabling a real tap still needs macOS. Proof limit:
+reported field failures (#612, #2968), not reproduced.
 
 The [2.1.11 release notes](../releases/2.1.11.md) describe the shipped navigation
 and missed-release fix; they are historical context, not a current-tree test.
@@ -1151,6 +1156,23 @@ verification is claimed. The installed local app and its settings were not chang
 Changing layouts during a running GUI session still requires a restart to
 refresh its snapshot; live GUI layout refresh is not part of this fix.
 
+### Launch Past A Leftover Discovery File
+
+**Fixed November 26, 2026 (issue 2887):** a Hex that stopped uncleanly (a
+restart, a power loss) leaves `local-api.json` behind. Launch used to probe
+the pid and port it names and refuse to start when both answered, with
+"another local API service appears to be running". After a reboot the system
+can hand both to unrelated programs, so Hex quit about 70 ms into every
+launch, with no window, until the file was moved aside. The local API takes
+its instance lock (`local-api.lock`, beside the file) before it looks at the
+file, and while it holds that lock no other Hex can publish there, so the
+launching Hex now replaces a leftover file without probing it. A second Hex
+is still refused, by the lock. Clients that only read the file (`hex status`
+while no Hex runs) still probe the pid and port.
+Check: `a_leftover_file_naming_a_live_pid_and_port_does_not_stop_the_lock_holder`
+in [local_api/discovery.rs](../../src/local_api/discovery.rs); not reproduced
+by rebooting a Mac.
+
 ## Gaps And Constraints
 
 These five known gaps still limit recovery claims; they are not proposed features.
@@ -1236,6 +1258,8 @@ occur.
 Which insertion?                                       // paste.rs
 ├── Chromium 155/156 frontmost -> type instead (#212)
 ├── Windows App frontmost -> type one paced key at a time (#1048)
+│       // 50 ms lead-in before the first key so the session has settled
+│       // and keeps the first character (#2942)
 │       // both skip the paste; Keep dictation on clipboard still writes the
 │       // typed text to the clipboard afterwards
 └── else -> publish clipboard -> post Paste

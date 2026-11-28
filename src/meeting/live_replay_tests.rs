@@ -110,7 +110,7 @@ fn compare(reference: &[TranscriptEntry], entries: &[TranscriptEntry]) -> String
         total += count;
         parts.push(format!(
             "{} {:.1}% of {count} through {}s",
-            source.label(),
+            Labels::default().track(source),
             wrong as f64 * 100.0 / count.max(1) as f64,
             through / 1_000
         ));
@@ -261,6 +261,7 @@ fn meeting_live_replay() {
         notes_export_removed: false,
         audio_removed_at_ms: None,
         imported: false,
+        speakers: Default::default(),
     };
     write_manifest(&directory, &manifest).unwrap();
 
@@ -499,11 +500,17 @@ impl Pipeline {
         receiver: Receiver<AudioPacket>,
         selection: &TranscriptionSelection,
     ) -> Self {
-        let mut rolling = transcript::Rolling::start(directory.to_path_buf(), selection.clone());
+        let mut rolling = transcript::Rolling::start(
+            directory.to_path_buf(),
+            selection.clone(),
+            speakers::LiveNames::default(),
+        );
         let feed = rolling.feed();
         let writer = {
             let directory = directory.to_path_buf();
-            thread::spawn(move || write_tracks(&directory, receiver, feed))
+            thread::spawn(move || {
+                write_tracks(&directory, receiver, feed, &AtomicU64::new(NO_AUDIO_YET))
+            })
         };
         Self { writer, rolling }
     }

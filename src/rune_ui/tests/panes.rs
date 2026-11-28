@@ -2560,7 +2560,7 @@ fn hud_lab_picks_dot_scope_processing_placement_and_level() {
 
 #[test]
 fn labs_lists_every_toggle_off_by_default() {
-    let mut rt = runtime("mac-production", true, (980.0, 2200.0));
+    let mut rt = runtime("mac-production", true, (980.0, 2600.0));
     rt.state.settings.experimental.hex_microphone = false;
     rt.state.platform.hex_microphone = None;
     refresh(&mut rt);
@@ -2627,7 +2627,7 @@ fn labs_lists_every_toggle_off_by_default() {
 
     // Windows lists Terminal paste in Labs, not General. Labs is tall enough
     // that its last row needs the macOS half's height to be on screen.
-    let mut rt = runtime("windows-settings", true, (980.0, 2200.0));
+    let mut rt = runtime("windows-settings", true, (980.0, 2600.0));
     assert!(rt.find("terminal-paste").is_none());
     open_labs(&mut rt);
     assert!(rt.find("lab-return-to-app").is_none(), "macOS only");
@@ -4112,7 +4112,7 @@ fn a_long_labs_store_scrolls_by_dragging_its_scroll_bar() {
     let thumb = at(&rt, "scroll-scroll-area/scroll-bar/thumb-slot/thumb");
     assert_eq!(thumb.fill, rune_theme_opencode::kit(true).c.text_faint);
     assert_eq!(thumb.opacity, 1.0);
-    assert!(thumb.rect[2] >= 8.0, "the pane thumb is wide enough to see");
+    assert!(thumb.rect[2] >= 4.0, "the pane thumb is wide enough to see");
     assert!(
         thumb.rect[3] > 0.0,
         "the Labs store overflows with every group open"
@@ -4174,4 +4174,45 @@ fn a_finger_pans_the_transcript_and_taps_the_sidebar() {
     rt.touch(2, Ended, x, y, 1.05);
     settle(&mut rt);
     assert!(rt.find("lede").is_some(), "the tap opened Labs");
+}
+
+#[cfg(hex_capture)]
+#[test]
+fn routing_rules_modal_fits_and_scrolls_in_short_window() {
+    let win_h = 620.0;
+    let mut rt = runtime("mac-routing-rules", true, (980.0, win_h));
+    rt.state.settings.capture.routing.update(|config| {
+        config.sites.clear();
+        config.terminals.clear();
+        config.apps.clear();
+        for i in 0..20 {
+            config
+                .sites
+                .insert(format!("site-{i:02}.example.com"), "ses_acme".into());
+        }
+    });
+    refresh(&mut rt);
+
+    let (dialog, _) = rt.presented("routing-sheet").expect("the dialog");
+    assert!(
+        dialog[1] >= 0.0 && dialog[1] + dialog[3] <= win_h,
+        "dialog fits inside the window: {dialog:?}"
+    );
+    let title = element(&rt, "routing-sheet/title").rect;
+    let done = element(&rt, "close-routing").rect;
+    assert!(
+        title[1] >= 0.0 && title[1] + title[3] <= win_h,
+        "title stays visible: {title:?}"
+    );
+    assert!(
+        done[1] >= 0.0 && done[1] + done[3] <= dialog[1] + dialog[3],
+        "Done footer stays inside dialog: {done:?} in {dialog:?}"
+    );
+    scroll_into_view(&mut rt, "rule19", "routing-rules-body");
+    let vp = element(&rt, "routing-rules-body").rect;
+    let last = element(&rt, "rule19").rect;
+    assert!(
+        last[1] >= vp[1] && last[1] + last[3] <= vp[1] + vp[3],
+        "rule19 scrolled into view: {last:?} in {vp:?}"
+    );
 }

@@ -38,10 +38,9 @@ mod stop_phrase;
 use capture_actions::{control_dictation, handle_hotkey_action, paste_last};
 use context_watch::ContextWatch;
 use events::handle_dictation_event;
-use guards::{
-    Release, WarmRelease, caps_lock_can_press, capture_boundary, capture_owns_dictation,
-    capture_refusal, paste_last_refusal,
-};
+#[cfg(hex_capture)]
+use guards::paste_picker_paused;
+use guards::{Release, WarmRelease, capture_boundary, capture_refusal, paste_last_refusal};
 use hotkeys::{Hotkeys, Shortcut};
 use output::{finish_dictation, finish_dictation_with, interrupted_dictation};
 
@@ -765,22 +764,9 @@ pub fn listen(
         // while a shortcut is recorded or a programmatic dictation owns the
         // microphone.
         while let Some(at) = caps_lock.try_recv_press() {
+            // An Annotate capture recording never holds a press back: the
+            // capture keeps recording beside the dictation.
             if hotkey_capture_suspended || programmatic.is_some() {
-                continue;
-            }
-            let caps_recording = hotkeys.caps_lock.is_recording();
-            #[cfg(hex_capture)]
-            let annotate_recording = capture_host
-                .as_mut()
-                .is_some_and(|host| host.recording_since(&input).is_some());
-            #[cfg(not(hex_capture))]
-            let annotate_recording = false;
-            // Labs › Dictate while annotating leaves dictation working while
-            // a capture records, so a Caps Lock press may start there too.
-            if !caps_lock_can_press(
-                caps_recording,
-                capture_owns_dictation(annotate_recording, crate::labs::dictate_while_annotating()),
-            ) {
                 continue;
             }
             let Some(action) = hotkeys.caps_lock_press() else {
@@ -819,40 +805,29 @@ pub fn listen(
             crate::suppression::middle_button_down,
         ) && !hotkey_capture_suspended
             && programmatic.is_none()
+            && let Some((shortcut, action)) = hotkeys.middle_mouse_press()
         {
-            #[cfg(hex_capture)]
-            let annotate_recording = capture_host
-                .as_mut()
-                .is_some_and(|host| host.recording_since(&input).is_some());
-            #[cfg(not(hex_capture))]
-            let annotate_recording = false;
-            if caps_lock_can_press(
-                hotkeys.any_recording(),
-                capture_owns_dictation(annotate_recording, crate::labs::dictate_while_annotating()),
-            ) && let Some((shortcut, action)) = hotkeys.middle_mouse_press()
-            {
-                tracing::info!(action = ?action, "middle mouse long press");
-                let (raw, print) = if action == HotkeyAction::Start {
-                    (false, None)
-                } else {
-                    hotkeys.resolve_action(shortcut, action)
-                };
-                let accepted = handle_hotkey_action(
-                    action,
-                    raw,
-                    print,
-                    CaptureInstant::now(),
-                    &input,
-                    &dictation_worker,
-                    &mut context,
-                    &input.device_name(),
-                    &mut events,
-                    indicator,
-                    &mut release,
-                )?;
-                if !accepted {
-                    hotkeys.suspend(shortcut);
-                }
+            tracing::info!(action = ?action, "middle mouse long press");
+            let (raw, print) = if action == HotkeyAction::Start {
+                (false, None)
+            } else {
+                hotkeys.resolve_action(shortcut, action)
+            };
+            let accepted = handle_hotkey_action(
+                action,
+                raw,
+                print,
+                CaptureInstant::now(),
+                &input,
+                &dictation_worker,
+                &mut context,
+                &input.device_name(),
+                &mut events,
+                indicator,
+                &mut release,
+            )?;
+            if !accepted {
+                hotkeys.suspend(shortcut);
             }
         }
         // The capture shortcut ignores keys while shortcuts are suspended or
@@ -918,21 +893,9 @@ pub fn listen(
             {
                 continue;
             }
-            // Annotate records the narration itself: while it records, the
-            // dictation shortcut starts nothing. The tap still swallows its
-            // chord, so it never reaches the app. Labs › Dictate while
-            // annotating leaves it working as usual instead.
-            #[cfg(hex_capture)]
-            if capture_owns_dictation(
-                !hotkeys.any_recording()
-                    && capture_host
-                        .as_mut()
-                        .is_some_and(|host| host.recording_since(&input).is_some()),
-                crate::labs::dictate_while_annotating(),
-            ) {
-                hotkeys.track_key_state(input_event, capture_at);
-                continue;
-            }
+            // An Annotate capture never takes the dictation shortcut: it
+            // dictates as usual while the capture records, the capture's own
+            // narration hearing the same microphone timeline.
             for (shortcut, action) in hotkeys.process(input_event, capture_at) {
                 let (raw, print) = hotkeys.resolve_action(shortcut, action);
                 // Only a physical edge from the owner of a shortcut recording.
@@ -1014,10 +977,11 @@ pub fn listen(
         #[cfg(hex_capture)]
         if let Some(picker) = paste_lab.picker()
             && let Err(error) = picker.tick(
-                hotkey_capture_suspended
-                    || programmatic.is_some()
-                    || hotkeys.any_recording()
-                    || capture_was_recording,
+                paste_picker_paused(
+                    hotkey_capture_suspended,
+                    programmatic.is_some(),
+                    hotkeys.any_recording(),
+                ),
                 &dictation_worker,
             )
         {
@@ -1795,19 +1759,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn caps_lock_does_not_start_over_an_annotate_recording() {
-        assert!(
-            !caps_lock_can_press(false, true),
-            "a Caps Lock start waits while Annotate records"
-        );
-        assert!(caps_lock_can_press(false, false));
-        assert!(
-            caps_lock_can_press(true, true),
-            "a Caps Lock capture still finishes while Annotate records"
-        );
-    }
-
     /// A released microphone's press takes wall-clock time; while it is being
     /// opened again a press keeps that, so it never anchors to the closed
     /// timeline's zero instant.
@@ -1967,6 +1918,18 @@ mod tests {
         assert!(hotkeys.middle_mouse_press().is_some());
         assert!(!hotkeys.takes_escape(at(500)));
         assert!(hotkeys.process(escape, at(500)).is_empty());
+        assert!(
+            hotkeys
+                .process(
+                    InputEvent::Key {
+                        code: 53,
+                        down: false,
+                        flags: 0,
+                    },
+                    at(550),
+                )
+                .is_empty()
+        );
         assert!(hotkeys.dictation.is_locked());
 
         hotkeys.dictation.set_escape_cancels_lock(true);
@@ -2022,6 +1985,19 @@ mod tests {
         assert_eq!(code(Some(FinishResult::Silent)), "discarded");
         assert_eq!(code(None), "discarded");
         assert_eq!(code(Some(FinishResult::Rejected("full".into()))), "failed");
+    }
+
+    /// Paste Last's picker stands down for a suspension, a programmatic
+    /// dictation, or a shortcut dictation, and for nothing else: an Annotate
+    /// capture or a meeting recording isn't even an input, so a tap or a hold
+    /// works over either and leaves it recording.
+    #[cfg(hex_capture)]
+    #[test]
+    fn the_paste_picker_works_over_annotate_and_meetings() {
+        assert!(!paste_picker_paused(false, false, false));
+        assert!(paste_picker_paused(true, false, false));
+        assert!(paste_picker_paused(false, true, false));
+        assert!(paste_picker_paused(false, false, true));
     }
 
     #[test]

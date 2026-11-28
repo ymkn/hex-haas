@@ -13,15 +13,14 @@
 
 use rune::{El, TextEdit, Tx, col, row, text};
 use rune_kit::{
-    Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Loader, Menu as KitMenu,
-    MenuItem, Placement, TextInput,
+    Button, ButtonVariant, ControlSize, Loader, Menu as KitMenu, MenuItem, Placement, TextInput,
 };
 
 use super::controls::{
     ButtonKind, DESCRIPTION, Paint, button, card, page, pulsing_dot, segmented_tx,
 };
 use super::list_detail::{self as ld, Item};
-use super::lists::{Tone, dismissible_error_panel, error_panel, tone_tag};
+use super::lists::{Tone, dismissible_error_panel, error_panel, status_pill};
 use super::notes_writer::NotesWriter;
 use super::platform::MeetingRequest;
 use super::{Menu, Ui};
@@ -63,6 +62,8 @@ impl Status {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Turn {
     pub(super) mine: bool,
+    /// The remote speaker's name, when the meeting could name them.
+    pub(super) name: Option<crate::meeting::SpeakerName>,
     pub(super) start_ms: u64,
     pub(super) text: String,
     /// A silence of 30 s or more before this turn.
@@ -235,15 +236,9 @@ pub(super) fn length(milliseconds: u64) -> String {
 /// Speaker turns as Markdown, delegating to the canonical meeting renderer.
 fn transcript_markdown(turns: &[Turn], imported: bool) -> String {
     crate::meeting::render_turns_markdown(
-        turns.iter().map(|turn| {
-            let source = if turn.mine {
-                crate::meeting::MeetingSource::Microphone
-            } else {
-                crate::meeting::MeetingSource::System
-            };
-            (source, turn.start_ms, turn.text.as_str())
-        }),
-        imported,
+        turns
+            .iter()
+            .map(|turn| (turn.label(imported), turn.start_ms, turn.text.as_str())),
     )
 }
 
@@ -377,9 +372,8 @@ fn copy(ui: &mut Ui, tx: &mut Tx, id: String, what: impl Into<String>, text: Str
     ui.meetings.copied = Some((id, what.into()));
 }
 
-/// The status tag; `Ready` only in the detail header, so the list stays
-/// quiet for finished meetings.
-/// The detail's status, while it is one worth a tag.
+/// The detail's status as a soft pill, while it is one worth showing; a
+/// finished meeting shows none.
 pub(super) fn status_tag(p: Paint, status: Status, stop_pending: bool) -> Option<El> {
     let (label, tone) = match status {
         Status::Recording if stop_pending => (tr("Transcribing"), Tone::Accent),
@@ -389,7 +383,7 @@ pub(super) fn status_tag(p: Paint, status: Status, stop_pending: bool) -> Option
         Status::Interrupted => (tr("Interrupted"), Tone::Neutral),
         Status::Failed => (tr("Failed"), Tone::Danger),
     };
-    Some(tone_tag(p, "status", label, tone))
+    Some(status_pill(p, "status", label, tone))
 }
 
 /// Escape in the Meetings pane: the selection's confirmation or selection
@@ -1007,51 +1001,64 @@ fn system_audio_notice(p: Paint) -> El {
         ))
 }
 
-/// The detail's two copies, labelled, transcript first.
-fn copy_buttons(p: Paint, pane: &MeetingsPane, meeting: &Meeting) -> [El; 2] {
+/// What a detail copy puts on the clipboard: the agent prompt for
+/// `"prompt"`, otherwise the transcript as Markdown.
+fn copy_detail(ui: &mut Ui, tx: &mut Tx, id: &str, what: &'static str) {
+    let Some(meeting) = ui.meetings.meeting(id) else {
+        return;
+    };
+    let text = if what == "prompt" {
+        let recording = (meeting.status == Status::Recording)
+            .then(|| meeting.turns().last().map_or(0, |turn| turn.start_ms));
+        super::meeting_capsules::meeting_agent_prompt(&meeting.id, shown_title(meeting), recording)
+    } else {
+        transcript_markdown(meeting.turns(), meeting.imported)
+    };
+    copy(ui, tx, id.to_string(), what, text);
+}
+
+/// The detail's two copies as quiet actions, transcript first, each under
+/// its short `labels` entry, or as its icon alone without one. The tooltip
+/// gives the full name.
+fn copy_actions(
+    p: Paint,
+    pane: &MeetingsPane,
+    meeting: &Meeting,
+    labels: [Option<&'static str>; 2],
+) -> [El; 2] {
     let copied = |what: &str| {
         pane.copied
             .as_ref()
             .is_some_and(|(id, copied)| id == &meeting.id && copied == what)
     };
-    let labelled = |key: &'static str, what: &'static str, glyph, label: &'static str| {
-        let done = copied(what);
-        let id = meeting.id.clone();
-        Button::new(if done { tr("Copied") } else { label })
-            .variant(ButtonVariant::Neutral)
-            .control_size(ControlSize::Small)
-            .icon(if done { p.k.glyph.check_small } else { glyph })
-            .on_press_tx(move |ui: &mut Ui, tx: &mut Tx| {
-                let Some(meeting) = ui.meetings.meeting(&id) else {
-                    return;
-                };
-                let text = if what == "prompt" {
-                    let recording = (meeting.status == Status::Recording)
-                        .then(|| meeting.turns().last().map_or(0, |turn| turn.start_ms));
-                    super::meeting_capsules::meeting_agent_prompt(
-                        &meeting.id,
-                        shown_title(meeting),
-                        recording,
-                    )
-                } else {
-                    transcript_markdown(meeting.turns(), meeting.imported)
-                };
-                copy(ui, tx, id.clone(), what, text);
-            })
-            .build(p.k)
-            .key(key)
-    };
+    let quiet =
+        |key: &'static str, what: &'static str, glyph, label: Option<&'static str>, name| {
+            let done = copied(what);
+            let id = meeting.id.clone();
+            ld::quiet_action(
+                p,
+                key,
+                if done { p.k.glyph.check_small } else { glyph },
+                label.map(|label| if done { tr("Copied") } else { label }),
+                name,
+                None,
+                move |ui: &mut Ui, tx: &mut Tx| copy_detail(ui, tx, &id, what),
+            )
+        };
+    let [transcript, prompt] = labels;
     [
-        labelled(
+        quiet(
             "meeting-copy-transcript",
             "transcript",
             ld::COPY_ICON,
+            transcript,
             tr("Copy transcript"),
         ),
-        labelled(
+        quiet(
             "meeting-copy-prompt",
             "prompt",
-            &rune_theme_opencode::icons::OUTLINE_CONSOLE,
+            &super::icons::SPARKLES_OUTLINE,
+            prompt,
             tr("Copy agent prompt"),
         ),
     ]
@@ -1107,6 +1114,7 @@ mod tests {
     fn an_imported_meeting_labels_its_one_track_speaker() {
         let turn = |mine| Turn {
             mine,
+            name: None,
             start_ms: 1_000,
             text: "Hi.".into(),
             pause_before_ms: None,

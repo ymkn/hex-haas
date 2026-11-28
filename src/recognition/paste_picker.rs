@@ -213,17 +213,26 @@ impl Picker {
     /// Asks the one bounded reader for this invocation's rows.
     fn read(&mut self, epoch: u64) -> Result<(), &'static str> {
         if self.reader.is_none() {
-            let (tx, rx) = mpsc::sync_channel(1);
+            let (tx, rx) = mpsc::sync_channel(4);
             let history = self.history.clone();
             std::thread::Builder::new()
                 .name("paste-choices".into())
                 .spawn(move || {
-                    while let Ok(epoch) = rx.recv() {
-                        let rows = history
-                            .as_ref()
-                            .map(recent::current_rows)
-                            .unwrap_or_default();
-                        browse::show(epoch, rows);
+                    while let Ok(mut epoch) = rx.recv() {
+                        // Only the newest press can still be current.
+                        while let Ok(newer) = rx.try_recv() {
+                            epoch = newer;
+                        }
+                        let Some(history) = history.as_ref() else {
+                            browse::show(epoch, Vec::new());
+                            continue;
+                        };
+                        // The first rows open the picker at once; the deep
+                        // list follows, unless a tap or a choice came first.
+                        browse::show(epoch, recent::current_rows(history, recent::FIRST));
+                        if browse::wants(epoch) {
+                            browse::extend(epoch, recent::current_rows(history, recent::DEEP));
+                        }
                     }
                 })
                 .map_err(|_| "paste list is unavailable")?;
@@ -252,6 +261,27 @@ impl Drop for Picker {
 mod tests {
     use super::*;
     use crate::paste::gesture::Effect;
+
+    /// Paste Last runs the same gesture over an Annotate capture or a
+    /// meeting as anywhere else (the capture never takes the shortcut): a
+    /// tap pastes, a hold opens the picker.
+    #[test]
+    fn paste_last_taps_and_holds_while_annotate_records() {
+        use crate::app_settings::{HotkeyBinding, OPTION_KEY_MASK, SHIFT_KEY_MASK};
+        let binding = HotkeyBinding::paste_last_default().runtime();
+        let v = binding.key_code.expect("Paste Last binds a key");
+        let key = |code, down, flags| InputEvent::Key { code, down, flags };
+        let held = OPTION_KEY_MASK | SHIFT_KEY_MASK;
+        let at = |ms| CaptureInstant::from_nanos(ms * 1_000_000u64);
+        let mut lab = Lab::new(None, None);
+        lab.sync(true);
+        let picker = lab.picker().unwrap();
+        assert_eq!(picker.hold.press(binding, at(0), true), Effect::Wait);
+        let up = key(v, false, held);
+        assert_eq!(picker.hold.edge(up, at(90)), Effect::PasteLatest);
+        assert_eq!(picker.hold.press(binding, at(1_000), true), Effect::Wait);
+        assert_eq!(picker.hold.tick(at(1_400)), Effect::Browse);
+    }
 
     #[test]
     fn toggling_the_lab_after_start_changes_what_holding_paste_last_does() {

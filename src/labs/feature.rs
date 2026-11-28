@@ -167,6 +167,7 @@ define_features! {
     FillerWords => labs(filler_words), "filler-words", Output, Everyone, EVERY, 20261031;
     CleanUpWithAppleIntelligence => labs(clean_up_with_apple_intelligence), "clean-up-apple-intelligence", Output, Everyone, MACOS, 20261113;
     NeutralVoice => labs(neutral_voice), "neutral-voice", Output, Everyone, MACOS, 20261120;
+    CleanupTagger => labs(cleanup_tagger), "clean-up-what-i-say", Output, Everyone, MACOS, 20261126;
     SecondDictationShortcut => labs(second_dictation_shortcut), "second-dictation-shortcut", Shortcuts, Everyone, EVERY, 20261031;
     TerminalPasteShortcut => labs(terminal_paste_shortcut), "terminal-paste-shortcut", Shortcuts, Everyone, WINDOWS_LINUX, 20261108;
     SmartSpacing => labs(smart_spacing), "smart-spacing", Output, Everyone, MACOS, 20261031;
@@ -229,7 +230,6 @@ define_features! {
     HudHeight => labs(hud_height), "hud-height", Dictation, Everyone, MACOS, 20261122, extra: ["labs.hud_bottom_gap"];
     IndicatorFollowsMouse => labs(indicator_follows_mouse), "indicator-follows-mouse", Dictation, Everyone, MACOS, 20261125;
     VoiceIsolation => labs(voice_isolation), "voice-isolation", Dictation, Everyone, MACOS, 20261122;
-    DictateWhileAnnotating => labs(dictate_while_annotating), "dictate-while-annotating", Annotate, Everyone, EVERY, 20261122;
     StopAnyCallRecording => labs(stop_any_call_recording), "stop-any-call-recording", Meetings, Everyone, EVERY, 20261123;
     ClipboardPhrase => labs(clipboard_phrase), "clipboard-phrase", Output, Everyone, EVERY, 20261124, extra: ["labs.clipboard_phrase_text"];
     MeetingMicrophoneMute => labs(meeting_microphone_mute), "meeting-microphone-mute", Meetings, Everyone, MACOS, 20261124;
@@ -237,6 +237,7 @@ define_features! {
     MeetingAudioSource => labs(meeting_audio_source), "meeting-audio-source", Meetings, Everyone, EVERY, 20261124, extra: ["labs.meeting_audio_source_choice"];
     ConfirmLongCancels => labs(confirm_long_cancels), "confirm-long-cancels", Dictation, Everyone, EVERY, 20261125;
     MiddleMouseDictation => labs(middle_mouse_dictation), "middle-mouse-dictation", Shortcuts, Everyone, MACOS, 20261125;
+    MeetingSpeakerNames => labs(meeting_speaker_names), "speaker-names", Meetings, Everyone, MACOS, 20261127;
 }
 
 impl Feature {

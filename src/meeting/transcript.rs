@@ -31,6 +31,7 @@ use crate::transcription::transcript::{Transcript, TranscriptSegment};
 
 use super::chunk_level;
 use super::echo::{EchoEnvelope, Signal};
+use super::speakers::LiveNames;
 use super::{
     AudioPacket, MeetingManifest, MeetingSource, TranscriptEntry, set_owner_only, sync_directory,
 };
@@ -305,23 +306,15 @@ impl TrackTranscript {
                     let text = segment.text.trim().to_string();
                     let start = (segment.start_ms.max(0) as u64).min(duration_ms);
                     let end = (segment.end_ms.max(0) as u64).min(duration_ms);
-                    (!text.is_empty() && end > start).then(|| TranscriptEntry {
-                        source: self.source,
-                        start_ms: chunk_ms + start,
-                        end_ms: chunk_ms + end,
-                        text,
+                    (!text.is_empty() && end > start).then(|| {
+                        TranscriptEntry::new(self.source, chunk_ms + start, chunk_ms + end, text)
                     })
                 })
                 .collect()
         } else {
             let text = text.trim();
             (!text.is_empty())
-                .then(|| TranscriptEntry {
-                    source: self.source,
-                    start_ms: chunk_ms,
-                    end_ms: chunk_ms + duration_ms,
-                    text: text.into(),
-                })
+                .then(|| TranscriptEntry::new(self.source, chunk_ms, chunk_ms + duration_ms, text))
                 .into_iter()
                 .collect()
         };
@@ -428,20 +421,18 @@ impl TrackTranscript {
         let mut words = self.words.drain(..end).collect::<Vec<_>>();
         for group in groups.into_iter().take(published) {
             let group = words.drain(..group.len()).collect::<Vec<_>>();
-            self.entries.push(TranscriptEntry {
-                source: self.source,
-                start_ms: group[0].start_ms as u64,
-                end_ms: group
-                    .iter()
-                    .map(|word| word.end_ms)
-                    .max()
-                    .unwrap_or_default() as u64,
-                text: group
-                    .iter()
-                    .map(|word| word.text.as_str())
-                    .collect::<Vec<_>>()
-                    .join(" "),
-            });
+            let end_ms = group.iter().map(|word| word.end_ms).max();
+            let text = group
+                .iter()
+                .map(|word| word.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            self.entries.push(TranscriptEntry::new(
+                self.source,
+                group[0].start_ms as u64,
+                end_ms.unwrap_or_default() as u64,
+                text,
+            ));
         }
     }
 }
@@ -1027,13 +1018,17 @@ pub(super) struct RollingOutcome {
 }
 
 impl Rolling {
-    pub(super) fn start(directory: PathBuf, selection: TranscriptionSelection) -> Self {
+    pub(super) fn start(
+        directory: PathBuf,
+        selection: TranscriptionSelection,
+        names: LiveNames,
+    ) -> Self {
         let (sender, receiver) = mpsc::sync_channel(ROLLING_QUEUE_CAPACITY);
         let incomplete = Arc::new([AtomicBool::new(false), AtomicBool::new(false)]);
         let worker_incomplete = incomplete.clone();
         let worker = thread::Builder::new()
             .name("meeting-transcription".into())
-            .spawn(move || run_rolling(&directory, &selection, receiver, &worker_incomplete))
+            .spawn(move || run_rolling(&directory, &selection, receiver, &worker_incomplete, names))
             .expect("meeting transcription thread must start");
         Self {
             sender: Some(sender),
@@ -1066,10 +1061,11 @@ struct RollingWorker<'a, M> {
     model: M,
     model_failed: bool,
     microphone_shown_ms: u64,
+    names: LiveNames,
 }
 
 impl<'a, M: ChunkTranscriber> RollingWorker<'a, M> {
-    fn new(directory: &'a Path, model: M) -> Self {
+    fn new(directory: &'a Path, model: M, names: LiveNames) -> Self {
         Self {
             directory,
             tracks: [None, None],
@@ -1078,6 +1074,7 @@ impl<'a, M: ChunkTranscriber> RollingWorker<'a, M> {
             model,
             model_failed: false,
             microphone_shown_ms: 0,
+            names,
         }
     }
 
@@ -1109,6 +1106,7 @@ impl<'a, M: ChunkTranscriber> RollingWorker<'a, M> {
             &self.tracks,
             &mut self.microphone_shown_ms,
             &self.envelope,
+            &mut self.names,
         );
     }
 }
@@ -1118,9 +1116,10 @@ fn run_rolling(
     selection: &TranscriptionSelection,
     receiver: Receiver<AudioPacket>,
     incomplete: &[AtomicBool; 2],
+    names: LiveNames,
 ) -> RollingOutcome {
     crate::transcription::background_priority::deprioritize_background_thread();
-    let mut worker = RollingWorker::new(directory, ChunkModel::new(selection.clone()));
+    let mut worker = RollingWorker::new(directory, ChunkModel::new(selection.clone()), names);
     loop {
         let mut disconnected = false;
         loop {
@@ -1457,12 +1456,13 @@ fn system_advancing(tracks: &[Option<RollingTrack>; 2]) -> bool {
     })
 }
 
-/// Atomically replaces the in-call transcript.
+/// Atomically replaces the in-call transcript, named by Labs › Speaker names.
 fn write_rolling_snapshot(
     directory: &Path,
     tracks: &[Option<RollingTrack>; 2],
     microphone_shown_ms: &mut u64,
     envelope: &EchoEnvelope,
+    names: &mut LiveNames,
 ) {
     let result = (|| -> Result<()> {
         let [system, microphone] = tracks;
@@ -1491,7 +1491,7 @@ fn write_rolling_snapshot(
             },
         )?;
         file.write_all(b"\n")?;
-        for entry in &view.entries {
+        for entry in &names.name(directory, view.entries) {
             serde_json::to_writer(&mut file, entry)?;
             file.write_all(b"\n")?;
         }
@@ -1778,7 +1778,7 @@ pub(super) fn echo_report(
                 "  {} {:>6} {:<5} {:<6} {}",
                 if kept { "KEEP" } else { "drop" },
                 entry.start_ms,
-                entry.source.label(),
+                super::Labels::default().of(&entry),
                 match signal {
                     Some(Some(Signal::Bleed)) => "bleed",
                     Some(Some(Signal::Local)) => "local",
@@ -2029,12 +2029,7 @@ mod tests {
     use super::*;
 
     fn entry(source: MeetingSource, start_ms: u64, end_ms: u64, text: &str) -> TranscriptEntry {
-        TranscriptEntry {
-            source,
-            start_ms,
-            end_ms,
-            text: text.into(),
-        }
+        TranscriptEntry::new(source, start_ms, end_ms, text)
     }
 
     fn speech(seconds: usize) -> Vec<f32> {
@@ -2624,7 +2619,11 @@ mod tests {
         let directory =
             std::env::temp_dir().join(format!("hex-meeting-quit-{}", std::process::id()));
         fs::create_dir_all(&directory).unwrap();
-        let mut rolling = Rolling::start(directory.clone(), TranscriptionSelection::default());
+        let mut rolling = Rolling::start(
+            directory.clone(),
+            TranscriptionSelection::default(),
+            LiveNames::default(),
+        );
         let mut feed = rolling.feed().unwrap();
         // Set before any audio arrives so no chunk can start a load first.
         if mode == "quit" {

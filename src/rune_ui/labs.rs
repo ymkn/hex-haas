@@ -710,6 +710,8 @@ fn rows(ui: &Ui) -> Vec<Row> {
         // macOS's menu bar, capsule, and Meetings pane offer the switch.
         if cfg!(target_os = "macos") {
             rows.push(row(Feature::MeetingMicrophoneMute, None));
+            // macOS's Accessibility client reads the call app's window.
+            rows.push(row(Feature::MeetingSpeakerNames, None));
         }
         // macOS's status item lists them, from the meeting controller's own
         // calendar read.
@@ -848,6 +850,11 @@ fn rows(ui: &Ui) -> Vec<Row> {
     rows.push(row(Feature::SpokenFormatting, None));
     rows.push(row(Feature::SpokenSymbols, None));
     rows.push(row(Feature::FillerWords, None));
+    // Core ML runs the tagger, and only macOS builds link its bridge, so
+    // Linux renders of macOS scenes leave it out.
+    if caps.os == super::platform::Os::Macos && cfg!(target_os = "macos") {
+        rows.push(row(Feature::CleanupTagger, Some(&SPARKLES)));
+    }
     // Every OS writes each dictation in the chosen style after its
     // corrections and before its transformations.
     rows.push(row(Feature::DictationStyle, None));
@@ -965,7 +972,6 @@ fn rows(ui: &Ui) -> Vec<Row> {
         rows.push(row(Feature::CopyCaptureZip, Some(&FOLDER)));
         rows.push(row(Feature::AnnotateAgentTools, Some(&TERMINAL)));
         rows.push(row(Feature::AnnotateAgentInstall, Some(&TERMINAL)));
-        rows.push(row(Feature::DictateWhileAnnotating, Some(&KEYBOARD)));
         let locked = crate::policy::Policy::current().locks(crate::policy::Lock::Annotate);
         rows.push(Row {
             lab: Lab::Annotate,
@@ -1065,6 +1071,7 @@ fn row_key(lab: Lab) -> &'static str {
         Feature::FillerWords => "lab-filler-words",
         Feature::CleanUpWithAppleIntelligence => "lab-clean-up",
         Feature::NeutralVoice => "lab-neutral-voice",
+        Feature::CleanupTagger => "lab-clean-up-what-i-say",
         Feature::SecondDictationShortcut => "lab-second-dictation-shortcut",
         Feature::MoreDictationShortcuts => "lab-more-dictation-shortcuts",
         Feature::TerminalPasteShortcut => "lab-terminal-paste-shortcut",
@@ -1107,7 +1114,6 @@ fn row_key(lab: Lab) -> &'static str {
         Feature::CopyCaptureZip => "lab-copy-capture-zip",
         Feature::AnnotateAgentTools => "lab-annotate-agent-tools",
         Feature::AnnotateAgentInstall => "lab-annotate-agent-install",
-        Feature::DictateWhileAnnotating => "lab-dictate-while-annotating",
         Feature::MeetingImport => "lab-meeting-import",
         Feature::TranscriptEdits => "lab-transcript-edits",
         Feature::OpenCodeInWsl => "lab-opencode-in-wsl",
@@ -1136,6 +1142,7 @@ fn row_key(lab: Lab) -> &'static str {
         Feature::MeetingIndicatorDisplay => "lab-meeting-indicator-display",
         Feature::MeetingAudioSource => "lab-meeting-audio-source",
         Feature::MiddleMouseDictation => "lab-middle-mouse-dictation",
+        Feature::MeetingSpeakerNames => "lab-meeting-speaker-names",
     }
 }
 

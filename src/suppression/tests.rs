@@ -543,6 +543,16 @@ fn mouse_hotkeys() -> RuntimeHotkeys {
 }
 
 #[test]
+fn a_tap_macos_keeps_disabled_is_rebuilt_less_often_up_to_once_a_minute() {
+    // A tap rebuilt every health check piled up registrations (#2968).
+    let seconds: Vec<f64> = (0..7)
+        .map(|stuck| f64::from(disabled_retry_skips(stuck) + 1) * TAP_HEALTH_INTERVAL_SECONDS)
+        .collect();
+    assert_eq!(seconds, [5.0, 10.0, 20.0, 40.0, 60.0, 60.0, 60.0]);
+    assert_eq!(disabled_retry_skips(u32::MAX), MAX_DISABLED_RETRY_SKIPS);
+}
+
+#[test]
 fn mouse_events_reach_the_filtering_tap_only_while_a_mouse_shortcut_is_bound() {
     // Idle clicks and drags on a filtering tap broke dragging windows
     // between displays and Spaces (#1215).
@@ -4711,6 +4721,39 @@ fn escape_during_a_capture_ends_nothing() {
     assert!(!capture.takes_escape());
     assert_eq!(hotkey.process(escape, now), None);
     assert!(hotkey.is_recording());
+}
+
+/// Holding ⌥ while a screen capture records dictates as usual: the capture
+/// shortcut answers nothing to either edge, so the listener hands both to
+/// dictation, which starts on the press and finishes on the release. The
+/// capture keeps recording (its shortcut neither finished nor drew).
+#[cfg(hex_capture)]
+#[test]
+fn holding_option_dictates_while_a_capture_records() {
+    use crate::capture_host::{CaptureShortcut, ShortcutAction, ShortcutActivity};
+    let now = capture_time();
+    let mut hotkey = test_hotkey(false, now);
+    let mut capture = CaptureShortcut::default();
+    let recording = ShortcutActivity::Recording {
+        elapsed: std::time::Duration::from_secs(5),
+    };
+    let hotkeys = RuntimeHotkeys::default();
+    let press = InputEvent::Flags(OPTION_KEY_MASK);
+    let release = InputEvent::Flags(0);
+    assert_eq!(
+        capture.input(press, hotkeys, recording),
+        ShortcutAction::None
+    );
+    assert_eq!(hotkey.process(press, now), Some(HotkeyAction::Start));
+    assert!(hotkey.is_recording());
+    assert_eq!(
+        capture.input(release, hotkeys, recording),
+        ShortcutAction::None
+    );
+    assert_eq!(
+        hotkey.process(release, now + Duration::from_secs(2)),
+        Some(HotkeyAction::Finish)
+    );
 }
 
 #[test]
